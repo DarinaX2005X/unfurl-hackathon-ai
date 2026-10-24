@@ -11,6 +11,7 @@ export const commonCopy = {
     explore: "Explore",
     library: "My library",
     create: "Create a course",
+    newChat: "New chat",
   },
   accessibility: {
     skipToContent: "Skip to content",

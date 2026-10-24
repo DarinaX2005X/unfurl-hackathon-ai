@@ -10,7 +10,7 @@ Source: `scope.md > The Unique Kernel`, `scope.md > Who It's For`, and `scope.md
 
 ## Planning Status and Authorized Foundation
 
-This is a draft of the complete product. The product owner has authorized starting the application foundation and interface design while model access is pending. That authorization covers connected navigation, the visual system, local request drafts, an isolated working learning activity, and interfaces prepared for the contracts in `spec.md`.
+This is a draft of the complete product. The product owner has authorized starting the application foundation and interface design while model access is pending. That authorization covers connected navigation, the visual system, local conversation history and writing, an isolated working learning activity, and interfaces prepared for the contracts in `spec.md`.
 
 It does not record approval of an unseen complete plan, selection of paid services, or authorization to publish a production deployment. Live research, generation, shared accounts, durable storage, and production execution require the integration decisions listed under **Open Questions**. A working interface alone does not satisfy the complete product requirements.
 
@@ -19,9 +19,9 @@ The requested scope is a complete service. The sections retaining the term POC d
 ## The Core Journey
 
 1. A visitor understands that Unfurl turns a learning goal into a substantial course and offers varied practice. They can create a course, explore available courses, or try an explicitly isolated learning activity.
-2. The creator opens a familiar English-language chat interface and describes the subject, desired outcome, and relevant background. They can save the request on their current device before sending it. The requested course language is independent of the interface language.
+2. The creator opens a familiar English-language chat interface and describes the subject, desired outcome, and relevant background. Conversation history and unfinished writing are retained automatically on the current device in the local foundation. Opening an empty chat alone does not create a record. Course language follows the conversation, independently of the interface language.
 3. With live services configured, the agent clarifies consequential gaps and researches the subject. The conversation streams real replies and understandable records of actual search, reading, and comparison actions.
-4. The creator receives a curriculum with learning outcomes, prerequisites, ordered modules, and an estimated study commitment. They can revise it and explicitly approve its current version. Detailed exercises and their answers are not exposed during this review.
+4. When the agent creates a course artifact, it assigns the course's title, summary, and language and supplies a curriculum with learning outcomes, prerequisites, ordered modules, and an estimated study commitment. The creator can edit course details, revise its curriculum, and explicitly approve that artifact's current revision. Detailed exercises and their answers are not exposed during this review. The conversation can also create or edit other course artifacts; each retains its own curriculum and approval.
 5. The agent researches the approved modules, selects appropriate activity families, constructs lessons and tasks, and checks the resulting course. The creator can leave and return without losing accepted work. Failure or cancellation preserves the work that actually completed.
 6. A validated course appears in the creator's library. Its detail page explains the intended audience, prerequisites, outcomes, modules, and estimated commitment before study begins.
 7. A learner studies an explanation or example, performs a meaningful task, receives feedback about their answer, and takes the next appropriate action. The system distinguishes independent work, help used, uncertainty, and a confirmed result.
@@ -38,15 +38,15 @@ Source: `scope.md > The Core Loop`, `scope.md > What "Working" Looks Like`, and 
 | Landing | Explain the experience and offer an immediate entry | A clear headline, short description, expressive course illustration, create-course action, catalog link, and separate playable trial |
 | Explore | Find genuinely available public courses | Search, relevant filters, course covers, titles, outcomes or summaries, language and depth, and honest empty or no-match states |
 | Course detail | Decide whether to begin a course | Audience, prerequisites, outcomes, module outline, estimated commitment, available version, access terms, and begin or continue action |
-| Library | Resume study or creation | Real enrollments and owned courses, with device-only request drafts in a separately labelled group |
-| Creator | Develop and approve a course request | Conversation history, central chat, composer, real work events, and a curriculum panel only when a curriculum exists |
+| Library | Open courses and resume study | Actual owned courses and enrollments; no conversation or request-draft list |
+| Creator | Discuss goals and work on course artifacts | Conversation history, central chat, composer, scenario cards, real work events, and the selected artifact's curriculum when it exists |
 | Learning player | Concentrate on a learning activity | Goal and material, a dominant activity surface, nearby answer controls and feedback, contextual help, sources, and unobtrusive progress |
 | Trial | Try a genuine bounded activity before creating a course | The same activity renderer and interaction principles as the player, clearly isolated from accounts, catalog, and account XP |
 | Shared course | Open a specific accessible course version | Course information and a route into the recipient's own enrollment; no creator or other learner progress |
 | Account | Manage the actual signed-in identity | A real identity lifecycle and access information after authentication is connected |
 | About, help, and privacy information | Answer practical questions | Factual product explanations, storage and access boundaries, and working navigation |
 
-Desktop work surfaces use one compact navigation area and a generous central workspace. The creator can show conversation history on the left and the curriculum on the right when relevant. On narrow screens, conversation and curriculum use accessible views that preserve the current draft and selection. The player opens the course contents on demand rather than permanently sacrificing the task's working area.
+Desktop work surfaces use one compact navigation area and a generous central workspace. The creator can show conversation history on the left and the selected course artifact's curriculum on the right when relevant. On narrow screens, conversation and curriculum use accessible views that preserve unfinished writing and artifact selection. The player opens the course contents on demand rather than permanently sacrificing the task's working area.
 
 ## Look and Feel
 
@@ -68,7 +68,7 @@ Source: `scope.md > Inspiration & Identity`.
 
 The first screen should make the product's purpose and next action apparent. The trial provides a genuine activity with input, evaluation, and explanation. It does not automatically create a course, enroll the visitor, or award account XP.
 
-The first trial explores model capacity using explicitly synthetic data. The learner predicts an effect, adjusts polynomial degree and regularization, compares actual training and validation errors, and explains why a perfect training fit does not guarantee reliable results elsewhere. It accepts multiple configurations that meet the stated criterion. A validation set used to choose a configuration is not presented as independent proof of future performance.
+The first trial explores model capacity using explicitly synthetic data. A short sequence of visual cards explains the goal, identifies the controls, and shows how to read the result beside the activity. The learner adjusts polynomial degree and regularization through shape and bending controls, compares actual training and validation errors, and explains why a perfect training fit does not guarantee reliable results elsewhere. They can also record a prediction. The activity accepts multiple configurations that meet the stated criterion. A validation set used to choose a configuration is not presented as independent proof of future performance.
 
 Acceptance criteria:
 
@@ -76,6 +76,7 @@ Acceptance criteria:
 - Every displayed navigation or footer link reaches meaningful content.
 - A changed trial answer changes the evaluated result; a valid alternative is accepted when the task allows one.
 - The trial's purpose and isolation are visible. It never appears as a generated deep course or as another learner's work.
+- The introduction explains the learner's goal, the next interaction, and the meaning of the result without requiring prior familiarity with the controls. Guidance can be revisited, and help use remains distinct from independent work.
 - Keyboard and touch users can complete the activity and reach its feedback.
 - A reset clears only the trial's own state, and repeating submission does not duplicate an award or outcome.
 
@@ -85,18 +86,27 @@ Source: `scope.md > Inspiration & Identity` and `scope.md > Explicitly Cut`.
 
 The composer supports ordinary writing, multiline input, clear submission feedback, and recovery of unsent work. Enter sends and Shift+Enter inserts a line break when an input method composition is not active. The course request can describe a general subject or a concrete ability; the service is not restricted to AI courses.
 
-Local drafts can be created, reopened, renamed, and deleted. Their device-only scope is explicit. A local save is acknowledged only after it succeeds. When live generation is unavailable, the request remains editable and recoverable, and the interface explains that the request could not be started. It does not play a recorded assistant response.
+The conversation is a standalone object, not a course or a single request. Its history, name, unfinished writing, and references to created courses persist within the stated storage scope. New, reopen, rename, and delete actions belong to chat history. There is no manual save action. Save feedback stays unobtrusive after success and visible on failure; it never claims storage before the write succeeds. Ordered writes preserve the newest text through reload, errors, and rapid conversation switching.
 
-Quick actions for starting knowledge, desired outcome, and time commitment append editable text while preserving the existing request and composer focus. The complete chat supports saved conversations, a real streaming reply, stop, retry, and editing an earlier request as a separate continuation. Editing does not allow an older response to overwrite the newer direction. Attachments become available only when the service really accepts, extracts, and uses supported content.
+Sending records the user's actual message with a delivery state distinct from acceptance by a server. When live generation is unavailable, the message remains visibly not sent or failed and offers retry. The application creates no assistant reply, run, or course in that case. Retry retains the original message and request identity; an edited request starts a new identity. Neither a delayed save nor an old response may overwrite text the user is currently writing.
+
+Scenario cards insert complete, editable learning intentions. They do not append disconnected field fragments or send automatically. Existing nonempty writing must be preserved unless the creator deliberately replaces it. The complete chat supports real streaming replies, stop, retry, and editing an earlier request as a separate continuation. Attachments become available only when the service really accepts, extracts, and uses supported content.
+
+A course appears only when an actual agent operation creates it. One conversation can contain references to several existing courses and select each artifact independently. The agent initially supplies course title, summary, and content language; editing these values acts on the selected, existing course through a real persistence operation. The composer has no course-language selector. Removing a conversation removes its chat history without implicitly deleting its course artifacts.
+
+An ordinary agent reply can finish without creating a course, or can work with several artifacts. Completing that reply is separate from finishing the construction of a course. Only the course's actual validated ready state permits study.
 
 Acceptance criteria:
 
-- A meaningful request survives route changes and reload after successful local saving.
-- Deleting one draft leaves other drafts untouched; cancelling deletion changes nothing.
-- Pending submission is visible, and repeated submission does not create duplicate messages or runs.
-- Failure preserves the request and offers an appropriate retry or correction.
-- Changing the requested course language is explicit and does not silently translate or discard the request text.
-- An old conversation branch cannot replace the active branch's answer or curriculum.
+- A meaningful conversation and its unfinished writing survive route changes, rapid switching, and reload after successful local persistence; an untouched empty view creates no record.
+- Deleting one conversation leaves other conversations and all course records untouched; cancelling deletion changes nothing.
+- Sending while generation is unavailable preserves an actual user message with truthful delivery feedback and creates no assistant message, run, or course.
+- Pending submission is visible; retry reuses the same request identity, while editing and resubmitting starts a new one. Repeated attempts do not create duplicate accepted effects.
+- Migration of an older device request preserves its identity, title, text, and timestamps, remains idempotent, and does not resurrect a deleted imported chat. Older language metadata is retained as provenance without adding a composer selector.
+- Several course artifacts can be represented and selected in the same conversation. Each has independent metadata, curriculum revision, approval, and generation state.
+- A successful agent reply with no course is valid. Neither reply completion nor an optimistic interface update marks a course ready for learning.
+- Metadata changes acknowledge the actual course mutation. Unavailable persistence cannot produce a local-looking success.
+- An old conversation branch cannot replace the active branch's answer, selected artifact, curriculum, or unsent writing.
 
 Source: `scope.md > The Core Loop` and `scope.md > The POC Boundary`.
 
@@ -104,7 +114,7 @@ Source: `scope.md > The Core Loop` and `scope.md > The POC Boundary`.
 
 The agent identifies useful subject foundations, dependencies, version-sensitive material, and sources appropriate to the learning goal. It reports actual work in understandable language. Source quality is judged by relevance and support for the material, not by a decorative link count.
 
-The curriculum describes observable learning outcomes, assumed knowledge, modules, their dependencies, and an honest estimate of study commitment. Consequential open questions are visible. The creator can change supported fields or ask for a meaningful revision. Approval is an explicit action attached to the exact displayed revision.
+Each course artifact's curriculum describes observable learning outcomes, assumed knowledge, modules, their dependencies, and an honest estimate of study commitment. Consequential open questions are visible. The creator can change supported fields or ask for a meaningful revision. Approval is an explicit action attached to the selected artifact and exact displayed revision; approval for one course cannot authorize another.
 
 Acceptance criteria:
 
@@ -198,7 +208,7 @@ Source: `scope.md > The Core Loop` and `scope.md > What "Working" Looks Like`.
 
 ### Browse, Share, and Publish
 
-The public catalog contains only genuinely public, ready course versions. The library groups created courses, enrollments, and device-only request drafts clearly. Empty and no-match states explain what the learner can do next.
+The public catalog contains only genuinely public, ready course versions. The library contains actual created courses and enrollments. Conversation history and unfinished requests remain in chat, where they can be reopened, renamed, and deleted. Empty and no-match states explain what the learner can do next. Catalog language filtering helps find existing courses and remains separate from course creation.
 
 Creators choose private, link-accessible, or public access deliberately. A link grants access to a specific version, can be revoked, and never transfers the creator's learning record. Public publication requires the specified level and a validated ready version; reaching a level does not itself prove course quality.
 
@@ -216,7 +226,7 @@ Source: `scope.md > Who It's For`, `scope.md > The Core Loop`, and `scope.md > T
 
 ### Provide an Accessible English Interface
 
-The interface is English only. Course language follows the course request and supported generation capability. Writing in another language does not alter navigation labels or silently translate the user's material. There is no language switch advertising an unimplemented interface locale.
+The interface is English only. The agent infers course language from the conversation and explicit intent when it creates the course; the creator may edit language on that actual artifact. Writing in another language does not alter navigation labels or silently translate the user's material. There is no composer language selector or language switch advertising an unimplemented interface locale.
 
 Acceptance criteria:
 
@@ -235,10 +245,10 @@ Source: `scope.md > Inspiration & Identity`.
 | --- | --- |
 | First visit | Explain the product and offer creation, exploration, or the isolated trial; do not manufacture an identity or past activity |
 | Empty public catalog | Show the real absence of public courses and useful creation or trial actions |
-| Cloud account or library unavailable | Distinguish unavailable cloud capability from a genuinely empty signed-in library; local drafts remain usable |
+| Cloud account or library unavailable | Distinguish unavailable cloud capability from a genuinely empty signed-in library; local chat remains usable in its own surface |
 | No search matches | Preserve the query and filters and offer a clear reset |
 | Device storage unavailable | Keep the current text in view, explain the failed save, and allow another save attempt |
-| Model or research capability unavailable | Do not accept a generation run; preserve the request and return a truthful recoverable failure |
+| Model or research capability unavailable | Preserve the actual user message with not-sent or failed delivery feedback and retry; do not create an assistant response, accepted run, or course |
 | Queued or running generation | Display actual state and received material; never fabricate work events or percentages |
 | Waiting for curriculum approval | Keep the current revision inspectable and editable; do not generate detailed tasks until explicit approval |
 | Stale approval or concurrent edit | Reject the stale change, retain useful local input, and show the latest revision |
@@ -251,7 +261,7 @@ Source: `scope.md > Inspiration & Identity`.
 | Unavailable course or revoked link | Explain that access is unavailable without exposing private content |
 | Narrow viewport or reduced motion | Preserve primary actions, reading order, feedback, and meaningful final states |
 
-Local request drafts and isolated trial state may persist on the current device. Production conversations, approvals, ready course versions, enrollments, attempts, XP awards, and share grants require durable server storage. The product must accurately label which kind of persistence an action has achieved.
+Local conversations, unfinished writing, and isolated trial state may persist on the current device. Production conversations, approvals, ready course versions, enrollments, attempts, XP awards, and share grants require durable server storage. A local conversation has no invented signed-in owner. The product must accurately label which kind of persistence an action has achieved.
 
 ## Product Decisions
 
@@ -265,6 +275,8 @@ Local request drafts and isolated trial state may persist on the current device.
 | Start foundation and design before model access is supplied | Explicit current authorization; useful local behavior and interaction quality can be developed without simulated AI |
 | Vercel as the hosting target | Product-owner direction; deployment details and production services still need resolution |
 | English-only interface, retained brand slogan, and Learn with cycling topic pills in the hero | Product-owner direction; "everything" is one of the cycling entries and course language remains independent |
+| A conversation can create or edit several separate course artifacts | Product-owner direction; requests and chat history are independent of courses, and library records represent actual courses and enrollments |
+| Automatic course metadata with editing on the created artifact | Product-owner direction; a normal chat composer needs neither course-language selection nor a manual save action |
 | Unfurl identity, paper material, and vermilion accent | Working design choices within the assignment; final visual review is still required |
 | Immutable released course versions and enrollment-specific routes | Technical proposal supporting stable shared content and independent learning records |
 
@@ -272,7 +284,7 @@ Local request drafts and isolated trial state may persist on the current device.
 
 The complete scope includes the landing and support pages; public catalog and course detail; personal library; creation chat with live research and streaming; editable and explicitly approved curricula; substantial validated course generation; a broad supported activity library; a learning player with useful evaluation; enrollment-specific adaptation; durable progress, XP, and levels; versioned sharing and level-gated publication; complete English interface states; a reproducible application; and the agreed hosting arrangement.
 
-The first authorized delivery establishes the foundation and coherent interface experience. It contains genuine local draft operations and a bounded playable activity. Live-service requirements remain part of the complete scope and must pass their own acceptance checks before the product is called complete.
+The first authorized delivery establishes the foundation and coherent interface experience. It contains genuine local conversation operations and a bounded playable activity with understandable guidance. Live-service requirements remain part of the complete scope and must pass their own acceptance checks before the product is called complete.
 
 ## Deferred From the POC
 

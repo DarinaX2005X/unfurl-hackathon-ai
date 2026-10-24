@@ -1,7 +1,7 @@
 .uf-collection { max-width: 1280px; margin-inline: auto; padding: 44px clamp(20px, 4vw, 56px) 64px; }
 .uf-collection__heading { display: flex; align-items: center; justify-content: space-between; gap: 24px; margin-bottom: 36px; }
 .uf-collection__heading > div { min-width: 0; }
-.uf-collection__heading h1 { font-size: clamp(30px, 3vw, 40px); line-height: 1.2; letter-spacing: -.045em; }
+.uf-collection__heading h1 { min-width: 0; font-size: clamp(30px, 3vw, 40px); line-height: 1.2; letter-spacing: -.045em; }
 .uf-collection__heading p { margin-top: 12px; color: var(--color-muted); max-width: 48ch; }
 .uf-collection__heading > .uf-button { flex-shrink: 0; }
 .uf-collection-filters { display: flex; flex-wrap: wrap; align-items: end; gap: 16px; margin-bottom: 32px; }
@@ -10,11 +10,11 @@
 .uf-collection-filters > .uf-field { flex: 0 1 200px; }
 .uf-collection-filters__reset { flex-shrink: 0; }
 .uf-catalog-results { min-height: 300px; display: grid; gap: 24px; }
-.uf-collection-empty { display: grid; grid-template-columns: 1.15fr 1fr; align-items: center; gap: 24px; padding: 36px 28px 36px 40px; border-radius: var(--radius-scene); background: var(--color-surface); }
+.uf-collection-empty { display: grid; grid-template-columns: 1fr 1.1fr; align-items: center; gap: 16px; min-height: 350px; padding: 36px 16px 36px 40px; border-radius: var(--radius-scene); background: var(--color-surface); }
 .uf-collection-empty__copy { max-width: 46ch; }
 .uf-collection-empty h2 { font-size: clamp(24px, 2.4vw, 32px); line-height: 1.25; max-width: 17ch; }
 .uf-collection-empty p { color: var(--color-muted); margin: 16px 0 24px; }
-.uf-empty-book { width: 100%; height: auto; max-width: 420px; }
+.uf-empty-shelf { width: 100%; height: auto; max-width: 560px; }
 .uf-collection-empty--search { display: flex; flex-direction: column; align-items: flex-start; justify-content: center; gap: 0; min-height: 300px; }
 .uf-collection-empty--search h2 { max-width: none; }
 .uf-collection-empty--search p { max-width: 56ch; }
@@ -24,23 +24,27 @@
 .uf-catalog-practice h2 { font-size: 20px; }
 .uf-catalog-practice p { max-width: 55ch; color: var(--color-muted); margin-top: 8px; }
 .uf-catalog-practice > .uf-button { flex-shrink: 0; }
-.uf-course-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 28px; align-items: start; }
+.uf-course-list { display: grid; gap: 24px; }
 .uf-course-card { min-width: 0; }
-.uf-course-card__link { display: block; border-radius: 24px; min-height: 44px; transition: background-color var(--motion-hover) var(--ease-out); }
-.uf-course-art { overflow: hidden; background: #e9e4d7; border-radius: 24px; }
+.uf-course-card__link { display: grid; grid-template-columns: minmax(200px, .75fr) minmax(0, 1.65fr); align-items: center; gap: 24px; padding: 12px 24px 12px 0; border-radius: 24px; min-height: 44px; transition: background-color var(--motion-hover) var(--ease-out), box-shadow var(--motion-press) var(--ease-out); }
+.uf-course-art { overflow: hidden; border-radius: 24px; }
 .uf-course-art svg { width: 100%; height: auto; }
 .uf-course-art__cover { transform-origin: 120px 125px; transition: transform var(--motion-state) var(--ease-out); }
-.uf-course-card__body { padding: 20px 8px 8px; }
-.uf-course-card h3 { font-size: 23px; line-height: 1.35; overflow-wrap: anywhere; }
-.uf-course-card__body > p { margin-top: 12px; color: var(--color-muted); display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+.uf-course-art__pages { transition: transform var(--motion-state) var(--ease-out); }
+.uf-course-art__shadow { transform-origin: 216px 238px; transition: transform var(--motion-state) var(--ease-out), opacity var(--motion-state) var(--ease-out); }
+.uf-course-card__body { min-width: 0; padding: 12px 0; }
+.uf-course-card :is(h2,h3) { font-size: 26px; line-height: 1.27; overflow-wrap: anywhere; }
+.uf-course-card__body > p { margin-top: 12px; color: var(--color-muted); max-width: 64ch; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .uf-course-card__facts { display: flex; flex-wrap: wrap; gap: 20px; margin: 24px 0 16px; }
-.uf-course-card__facts > div { display: flex; flex-direction: column-reverse; gap: 2px; }
+.uf-course-card__facts > div { display: flex; gap: 6px; }
 .uf-course-card__facts dt { color: var(--color-muted); font-size: 14px; }
-.uf-course-card__facts dd { margin: 0; font-weight: 650; font-variant-numeric: tabular-nums; }
+.uf-course-card__facts dd { margin: 0; font-size: 14px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .uf-course-card__footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 14px; }
-.uf-course-card__footer > :last-child { font-weight: 750; color: var(--color-action-hover); }
-.uf-course-card__link:active { background: var(--color-selected); }
+.uf-course-card__footer > :last-child { padding: 8px 14px; min-height: 44px; display: inline-flex; align-items: center; border-radius: 10px; font-weight: 750; color: var(--color-action-hover); background: var(--color-surface-inset); transition: color var(--motion-hover), background-color var(--motion-hover); }
+.uf-course-card__link:active { background: var(--color-selected); box-shadow: inset 0 2px 4px rgb(37 39 43 / 7%); }
+.uf-course-card__link:active .uf-course-art__cover { transform: translate(-3px, -1px) skewY(-1deg); transition-duration: var(--motion-press); }
 .uf-course-card__link:focus-visible { outline-offset: 6px; }
+.uf-course-card__link:focus-visible .uf-course-card__footer > :last-child { background: var(--color-selected); }
 .uf-collection-more { display: flex; justify-content: center; padding-top: 8px; }
 .uf-course-detail > .uf-button:first-child { margin-left: -16px; margin-bottom: 24px; }
 .uf-course-detail__hero { display: grid; grid-template-columns: 1.25fr 1fr; align-items: center; gap: 32px; margin-bottom: 48px; }
@@ -77,10 +81,12 @@
 .uf-course-detail__access > .uf-button { margin-top: 20px; }
 @media (hover: hover) and (pointer: fine) {
   .uf-course-card__link:hover { background: var(--color-surface); }
-  .uf-course-card__link:hover .uf-course-art__cover { transform: skewY(-3deg) translateY(-3px); }
+  .uf-course-card__link:hover .uf-course-art__cover { transform: translate(-9px, -4px) skewY(-4deg); }
+  .uf-course-card__link:hover .uf-course-art__pages { transform: translate(3px, -1px); }
+  .uf-course-card__link:hover .uf-course-art__shadow { transform: scaleX(1.04); opacity: .12; }
+  .uf-course-card__link:hover .uf-course-card__footer > :last-child { background: var(--color-selected); color: var(--color-action-hover); }
   .uf-course-detail__program summary:hover { background: var(--color-selected); }
 }
-@media (min-width: 1500px) { .uf-course-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 1100px) {
   .uf-collection-empty { padding: 28px; gap: 8px; }
   .uf-course-detail__body { gap: 28px; }
@@ -92,10 +98,12 @@
   .uf-collection-filters__query { flex-basis: 100%; }
   .uf-collection-filters > .uf-field { flex: 1 1 180px; }
   .uf-collection-empty { grid-template-columns: 1fr; padding: 28px; }
-  .uf-collection-empty > .uf-empty-book { grid-row: 1; max-width: 250px; margin-inline: auto; }
+  .uf-collection-empty > .uf-empty-shelf { grid-row: 1; max-width: 280px; margin-inline: auto; }
   .uf-collection-empty h2 { max-width: none; }
   .uf-catalog-practice { align-items: flex-start; flex-direction: column; gap: 20px; }
-  .uf-course-grid { grid-template-columns: 1fr; }
+  .uf-course-card__link { grid-template-columns: 1fr; padding: 0 16px 20px; gap: 0; }
+  .uf-course-card__link > .uf-course-art { width: min(80%, 260px); margin-inline: auto; }
+  .uf-course-card :is(h2,h3) { font-size: 24px; }
   .uf-course-detail__hero, .uf-course-detail__body { grid-template-columns: 1fr; }
   .uf-course-detail__hero { gap: 24px; margin-bottom: 32px; }
   .uf-course-detail__hero .uf-course-art { max-width: 420px; width: 100%; }
@@ -105,6 +113,6 @@
 }
 @media (max-width: 360px) { .uf-collection-filters__query { flex-wrap: wrap; } .uf-collection-filters__query > .uf-field { flex-basis: 100%; } }
 @media (prefers-reduced-motion: reduce) {
-  .uf-course-art__cover, .uf-course-card__link, .uf-course-detail__program summary { transition: none; }
-  .uf-course-card__link:hover .uf-course-art__cover { transform: none; }
+  .uf-course-art__cover, .uf-course-art__pages, .uf-course-art__shadow, .uf-course-card__link, .uf-course-card__footer > :last-child, .uf-course-detail__program summary { transition: none; }
+  .uf-course-card__link:hover .uf-course-art__cover, .uf-course-card__link:hover .uf-course-art__pages, .uf-course-card__link:hover .uf-course-art__shadow, .uf-course-card__link:active .uf-course-art__cover { transform: none; }
 }

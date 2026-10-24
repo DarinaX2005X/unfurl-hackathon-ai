@@ -1,218 +1,188 @@
 "use client";
 
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
-import { Check, Clock3, FileText, Flag, Plus, Save } from "lucide-react";
-import { AppShell } from "@/components/shell";
-import { Button, LinkButton, Notice, Select, Tabs, Textarea } from "@/components/ui";
-import { localApplication } from "@/application/local-adapter";
+import { useSearchParams } from "next/navigation";
+import { useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { ArrowUp, Check, MessageSquare } from "lucide-react";
+import { AppShell } from "@/components/shell/AppShell";
+import { Button, Dialog, IconButton, LinkButton, Menu, Notice, Tabs, Textarea, TextField } from "@/components/ui";
 import type { ApplicationPort } from "@/application/ports";
-import type { DraftStore, LocalDraft } from "@/domain/drafts";
+import { localApplication } from "@/application/local-adapter";
+import type { ChatStore, EditCourseMetadata, LocalConversation } from "@/domain/chat";
 import type { RunSnapshot } from "@/domain/generation";
-import { draftStore } from "@/lib/drafts";
+import { chatStore } from "@/lib/chats";
 import { routes } from "@/lib/routes";
-import { appendQuickAction, DraftEditor, quickActions, REQUEST_LIMIT, storageMessage } from "./draft-editor";
-import { languageOptions } from "./languages";
-import { tabRequestBuffer } from "./request-buffer";
+import { ChatSession, chatStorageMessage, MESSAGE_LIMIT } from "./chat-session";
+import { tabChatRecovery } from "./chat-recovery";
 import { Conversation } from "./Conversation";
-import { CurriculumPanel, type ApproveCurriculum } from "./CurriculumPanel";
-import { canApproveCurriculum, creatorStreamReducer, createStreamState, type CreatorStreamState } from "./stream";
+import { CourseArtifactsPanel } from "./CourseArtifactsPanel";
+import type { ApproveCurriculum } from "./CurriculumPanel";
+import { chatScenarios } from "./scenarios";
 import "./creator.css";
 
-function subscribeToWidth(listener: () => void) {
-  const query = window.matchMedia("(max-width: 1279px)");
+const sessions = new WeakMap<ChatStore, WeakMap<ApplicationPort, Map<string, ChatSession>>>();
+function sessionFor(store: ChatStore, services: ApplicationPort, id: string | null): ChatSession {
+  let byService = sessions.get(store);
+  if (!byService) { byService = new WeakMap(); sessions.set(store, byService); }
+  let byId = byService.get(services);
+  if (!byId) { byId = new Map(); byService.set(services, byId); }
+  const existing = id ? byId.get(id) : undefined;
+  if (existing) return existing;
+  const registry = byId;
+  const session = new ChatSession(store, services, id, { recovery: tabChatRecovery,
+    userLocale: () => typeof navigator === "undefined" ? undefined : navigator.language,
+    onIdentity: (conversationId, current) => { registry.set(conversationId, current); },
+  });
+  if (id) registry.set(id, session);
+  return session;
+}
+
+const compactQuery = "(max-width: 1279px)";
+function subscribeCompact(listener: () => void) {
+  const query = window.matchMedia(compactQuery);
   query.addEventListener("change", listener);
   return () => query.removeEventListener("change", listener);
 }
 
 export interface CreatorWorkspaceProps {
-  draftId?: string | null;
+  conversationId?: string | null;
+  store?: ChatStore;
   services?: ApplicationPort;
-  store?: DraftStore;
   initialSnapshot?: RunSnapshot;
   onApprove?: ApproveCurriculum;
+  onEditMetadata?: EditCourseMetadata;
 }
 
-export function CreatorWorkspace({ draftId = null, services = localApplication, store = draftStore, initialSnapshot, onApprove }: CreatorWorkspaceProps) {
-  const router = useRouter();
-  const [editor] = useState(() => new DraftEditor(store, draftId, undefined, undefined, tabRequestBuffer));
-  const draft = useSyncExternalStore(editor.subscribe, editor.getSnapshot, editor.getSnapshot);
-  const [history, setHistory] = useState<LocalDraft[]>([]);
+export function CreatorWorkspace({ conversationId = null, store = chatStore, services = localApplication, initialSnapshot, onApprove, onEditMetadata }: CreatorWorkspaceProps) {
+  const searchParams = useSearchParams();
+  const routeId = searchParams?.getAll("conversation").length > 1 ? "invalid" : searchParams?.get("conversation") ?? conversationId;
+  const [previousRouteId, setPreviousRouteId] = useState(routeId);
+  const [session, setSession] = useState(() => sessionFor(store, services, routeId));
+  // Native URL canonicalization keeps this composer mounted. A later New chat navigation creates a fresh session.
+  if (previousRouteId !== routeId) {
+    setPreviousRouteId(routeId);
+    if (routeId !== session.getSnapshot().conversation?.id) setSession(sessionFor(store, services, routeId));
+  }
+  const state = useSyncExternalStore(session.subscribe, session.getSnapshot, session.getSnapshot);
+  const compact = useSyncExternalStore(subscribeCompact, () => window.matchMedia(compactQuery).matches, () => false);
+  const [history, setHistory] = useState<LocalConversation[]>([]);
   const [historyError, setHistoryError] = useState(false);
-  const [historyLoading, setHistoryLoading] = useState(true);
-  const [sendPending, setSendPending] = useState(false);
-  const [sendError, setSendError] = useState<string | null>(null);
-  const [stream, setStream] = useState<CreatorStreamState | null>(() => initialSnapshot
-    ? creatorStreamReducer(createStreamState(initialSnapshot.run), { type: "snapshot", snapshot: initialSnapshot }) : null);
-  const [mobilePanel, setMobilePanel] = useState("conversation");
-  const narrow = useSyncExternalStore(subscribeToWidth, () => window.matchMedia("(max-width: 1279px)").matches, () => false);
+  const [migrationIssues, setMigrationIssues] = useState(false);
+  const [panel, setPanel] = useState("chat");
+  const [dialog, setDialog] = useState<"rename" | "delete" | null>(null);
+  const [renamedTitle, setRenamedTitle] = useState("");
+  const [dialogPending, setDialogPending] = useState(false);
+  const [dialogError, setDialogError] = useState<string | null>(null);
+  const [replaceScenario, setReplaceScenario] = useState<(typeof chatScenarios)[number] | null>(null);
+  const [editNotice, setEditNotice] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
-  const composing = useRef(false);
-  const sending = useRef(false);
-  const mounted = useRef(true);
-  const requestController = useRef<AbortController | null>(null);
-  const lastRequest = useRef<{ key: string; id: string } | null>(null);
-
-  const refreshHistory = useCallback(async () => {
-    try {
-      const records = await store.list();
-      if (mounted.current) { setHistory(records); setHistoryError(false); }
-    } catch { if (mounted.current) setHistoryError(true); }
-    finally { if (mounted.current) setHistoryLoading(false); }
-  }, [store]);
+  const restored = useRef(false);
+  const conversation = state.conversation;
+  const hasMessages = Boolean(conversation?.messages.length);
+  const artifacts = conversation?.artifacts ?? [];
+  const hasArtifacts = artifacts.length > 0;
+  const pending = state.transmittingId !== null || Boolean(state.stream?.pending);
+  const composerText = conversation?.composerText ?? "";
 
   useEffect(() => {
-    mounted.current = true;
-    void editor.open();
-    void Promise.resolve().then(refreshHistory);
-    const onFocus = () => void refreshHistory();
-    window.addEventListener("focus", onFocus);
-    return () => {
-      mounted.current = false;
-      requestController.current?.abort();
-      window.removeEventListener("focus", onFocus);
-      const state = editor.getSnapshot();
-      if (state.savedDraft && state.saveStatus === "unsaved") void editor.save();
-    };
-  }, [editor, refreshHistory]);
+    void session.open();
+    const flush = () => { void session.flush(); };
+    window.addEventListener("pagehide", flush);
+    return () => { window.removeEventListener("pagehide", flush); flush(); };
+  }, [session]);
 
   useEffect(() => {
-    if (draft.savedDraft && draft.saveStatus === "unsaved") {
-      void editor.save().then((saved) => { if (saved) void refreshHistory(); });
-    }
-  }, [draft.saveStatus, draft.savedDraft, editor, refreshHistory]);
+    if (!conversation?.id || window.location.pathname !== "/chat") return;
+    const current = new URL(window.location.href).searchParams.get("conversation");
+    if (current === null) window.history.replaceState(null, "", routes.chat(conversation.id));
+  }, [conversation?.id]);
 
-  // Tab recovery never creates a library record. Saving is an explicit action.
-  async function saveDraft() {
-    const saved = await editor.save();
-    if (!saved || !mounted.current) return;
-    await refreshHistory();
-    if (draftId !== saved.id) router.replace(routes.create(saved.id), { scroll: false });
+  useEffect(() => {
+    let active = true;
+    Promise.all([store.list(), store.migrateLegacy()]).then(([items, migration]) => {
+      if (active) { setHistory(items); setHistoryError(false); setMigrationIssues(migration.issues.length > 0); }
+    }).catch(() => { if (active) setHistoryError(true); });
+    return () => { active = false; };
+  }, [store, state.saveStatus, conversation?.id]);
+
+  useEffect(() => {
+    if (!initialSnapshot || !conversation || restored.current || state.loadStatus !== "ready") return;
+    restored.current = true;
+    session.restoreSnapshot(initialSnapshot);
+  }, [session, initialSnapshot, conversation, state.loadStatus]);
+
+  function applyScenario(scenario: (typeof chatScenarios)[number]) {
+    if (composerText.trim()) { setReplaceScenario(scenario); return; }
+    session.setComposer(scenario.text);
+    inputRef.current?.focus();
   }
 
-  async function sendRequest() {
-    const current = editor.getSnapshot();
-    if (sending.current || stream?.pending || current.loadStatus !== "ready" || !current.text.trim()) return;
-    const text = current.text;
-    const key = `${current.savedDraft?.id ?? "new"}\n${current.contentLanguage}\n${text}`;
-    if (lastRequest.current?.key !== key) lastRequest.current = { key, id: crypto.randomUUID() };
-    const controller = new AbortController();
-    requestController.current = controller;
-    sending.current = true;
-    setSendPending(true);
-    setSendError(null);
-    try {
-      const result = await services.startGeneration({
-        requestId: lastRequest.current.id,
-        draftId: current.savedDraft?.id ?? null,
-        text, contentLanguage: current.contentLanguage,
-      }, controller.signal);
-      if (!mounted.current || controller.signal.aborted) return;
-      if (!result.ok) {
-        setSendError(result.error.error.code === "invalid_input"
-          ? "Check your request and course language, then try again. Your text is still here."
-          : "Course creation is unavailable right now. Your request has not been sent. You can try again or save it as a draft.");
-        return;
-      }
-      setStream(createStreamState(result.data.run, [result.data.message]));
-      // Clear only the submitted buffer. A concurrent edit remains available.
-      if (editor.getSnapshot().text === text) editor.edit({ text: "" });
-    } catch {
-      if (mounted.current && !controller.signal.aborted) setSendError("Your request could not be sent. Your text is still here. Check your connection and try again.");
-    } finally {
-      sending.current = false;
-      if (mounted.current) setSendPending(false);
-    }
-  }
-
-  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && !composing.current && event.keyCode !== 229) {
+  function onComposerKey(event: KeyboardEvent<HTMLTextAreaElement>) {
+    if (event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing && event.keyCode !== 229) {
       event.preventDefault();
-      void sendRequest();
+      if (!pending) void session.send();
     }
   }
 
-  const hasConversation = (stream?.messages.length ?? 0) > 0;
-  const pending = sendPending || Boolean(stream?.pending);
-  const program = stream?.draft ? <CurriculumPanel
-    draft={stream.draft}
-    currentRevision={Math.max(stream.requiredDraft?.revision ?? 0, stream.draft.revision)}
-    awaitingApproval={canApproveCurriculum(stream, stream.draft.id, stream.draft.revision)}
-    {...(onApprove ? { onApprove } : {})}
-  /> : null;
+  async function confirmDialog() {
+    if (dialogPending) return;
+    setDialogPending(true);
+    setDialogError(null);
+    const success = dialog === "rename" ? await session.rename(renamedTitle) : await session.remove();
+    setDialogPending(false);
+    if (!success) { setDialogError("The change couldn’t be saved. Try again."); return; }
+    if (dialog === "delete") window.location.assign(routes.chat());
+    else setDialog(null);
+  }
 
-  const composer = <div className="creator-writing">
-    <form className="creator-composer" onSubmit={(event) => { event.preventDefault(); void sendRequest(); }}>
-      <Textarea ref={inputRef} id="course-request" label={hasConversation ? "Message" : "Your learning goal"}
-        className="creator-composer__field" rows={4} maxLength={REQUEST_LIMIT} value={draft.text}
-        placeholder="I want to learn about…"
-        onChange={(event) => { editor.edit({ text: event.target.value }); setSendError(null); }}
-        onKeyDown={handleKeyDown} onCompositionStart={() => { composing.current = true; }} onCompositionEnd={() => { composing.current = false; }}
-        aria-describedby="composer-keyboard composer-limit" />
-      <div className="creator-composer__toolbar">
-        <Select id="course-language" label="Course language" className="creator-composer__language"
-          value={draft.contentLanguage} options={languageOptions(draft.contentLanguage)}
-          onChange={(event) => editor.edit({ contentLanguage: event.target.value })} />
-        <Button type="submit" pending={pending} disabled={!draft.text.trim()}>{sendError ? "Try again" : "Send request"}</Button>
-      </div>
-    </form>
-    <div className="creator-composer__help"><span id="composer-keyboard">Enter to send. Shift + Enter for a new line.</span><span id="composer-limit" className={draft.text.length === REQUEST_LIMIT ? "creator-composer__limit" : ""}>{draft.text.length >= REQUEST_LIMIT - 1000 ? `${draft.text.length.toLocaleString("en")} / 20,000` : ""}</span></div>
-    <div className="creator-feedback" aria-live="polite">
-      {sendError && <Notice tone="error" title="Request not sent">{sendError}</Notice>}
-      {draft.saveStatus === "error" && <Notice tone="error" title="Draft not saved" action={<Button variant="secondary" size="compact" onClick={() => void saveDraft()}>Try saving again</Button>}>{storageMessage(draft.error)}</Notice>}
-    </div>
-    {!hasConversation && <div className="creator-quick-actions" aria-label="Build your request">
-      {quickActions.map((action, index) => <Button key={action.id} variant="quiet" size="compact" disabled={draft.text.length >= REQUEST_LIMIT} onClick={() => {
-        editor.edit({ text: appendQuickAction(draft.text, action.text) });
-        const input = inputRef.current;
-        input?.focus();
-        requestAnimationFrame(() => { if (input) input.setSelectionRange(input.value.length, input.value.length); });
-      }}>{index === 0 ? <Plus size={17} aria-hidden="true" /> : index === 1 ? <Flag size={17} aria-hidden="true" /> : <Clock3 size={17} aria-hidden="true" />}{action.label}</Button>)}
-    </div>}
-  </div>;
-
-  const conversation = <div className={`creator-chat${hasConversation ? " creator-chat--conversation" : ""}`}>
-    {hasConversation && stream ? <Conversation messages={stream.messages} actionEvents={stream.actionEvents} pending={stream.pending} interrupted={stream.run.status === "failed" || stream.run.status === "cancelled"} active={!program || !narrow || mobilePanel === "conversation"} /> : <div className="creator-introduction">
-      <h1>What would you<br className="creator-introduction__break" /> like to learn?</h1>
-      <p>Start with a subject, a question, or something<br className="creator-introduction__break" /> you want to be able to do.</p>
-    </div>}
-    {composer}
-    {!hasConversation && <p className="creator-expectation">Shape the goal together, then review your course program.</p>}
-  </div>;
-
-  return <AppShell active="create" sidebarContent={<DraftHistory drafts={history} selectedId={draft.savedDraft?.id ?? draftId} loading={historyLoading} error={historyError} onRetry={() => void refreshHistory()} />}>
-    <div className={`creator${program ? " creator--with-program" : ""}`}>
-      <header className="creator-header">
-        <div className="creator-header__title">{hasConversation ? <h1>{draft.savedDraft?.title ?? "Create a course"}</h1> : <p>{draft.savedDraft?.title ?? "Create a course"}</p>}<SaveStatus status={draft.saveStatus} saved={Boolean(draft.savedDraft)} /></div>
-        {draft.loadStatus === "ready" && <Button variant="secondary" size="compact" pending={draft.saveStatus === "saving"} disabled={!draft.text.trim() || draft.saveStatus === "saved"} onClick={() => void saveDraft()}><Save size={17} aria-hidden="true" />Save draft</Button>}
-      </header>
-      {draft.loadStatus === "loading" ? <div className="creator-recovery" role="status"><h1>Opening your draft</h1><p>Reading the request saved on this device.</p></div>
-        : draft.loadStatus !== "ready" ? <div className="creator-recovery"><h1>{draft.loadStatus === "invalid" ? "This draft link isn’t valid" : draft.loadStatus === "missing" ? "This draft isn’t on this device" : "This draft couldn’t be opened"}</h1>
-          <p>{draft.loadStatus === "invalid" ? "Open a draft from your library, or start with a new learning goal." : draft.loadStatus === "missing" ? "It may have been removed or saved in a different browser. Your other drafts are in your library." : storageMessage(draft.error, "open")}</p>
-          <div>{draft.loadStatus === "error" && <Button onClick={() => void editor.open()}>Try again</Button>}<LinkButton href={routes.library} variant="secondary">Open library</LinkButton><LinkButton href={routes.create()} variant="quiet">Start a new request</LinkButton></div>
-        </div>
-          : <div className="creator-workspace">
-            {program && narrow ? <Tabs className="creator-mobile-panels" value={mobilePanel} onValueChange={setMobilePanel} label="Course workspace" items={[
-              { id: "conversation", label: "Conversation", panel: conversation }, { id: "program", label: "Program", panel: program },
-            ]} /> : <><div className="creator-desktop-chat">{conversation}</div>{program && <div className="creator-desktop-program">{program}</div>}</>}
-          </div>}
-    </div>
-  </AppShell>;
-}
-
-function SaveStatus({ status, saved }: { status: "unsaved" | "saving" | "saved" | "error"; saved: boolean }) {
-  return <span className={`creator-save-status creator-save-status--${status}`} role="status">
-    {status === "saved" && <Check size={14} aria-hidden="true" />}
-    {status === "saved" ? "Saved on this device" : status === "saving" ? "Saving on this device…" : status === "error" ? "Not saved" : saved ? "Unsaved changes" : "Not saved yet"}
-  </span>;
-}
-
-function DraftHistory({ drafts, selectedId, loading, error, onRetry }: { drafts: LocalDraft[]; selectedId: string | null; loading: boolean; error: boolean; onRetry: () => void }) {
-  return <section className="creator-history" aria-label="Draft history"><h2>Your drafts</h2>
-    {drafts.length > 0 && <ul>{drafts.map((draft) => <li key={draft.id}><Link href={routes.create(draft.id)} aria-current={selectedId === draft.id ? "page" : undefined}><FileText size={17} aria-hidden="true" /><span>{draft.title}</span></Link></li>)}</ul>}
-    {error ? <div className="creator-history__empty"><p>Your drafts couldn’t be loaded.</p><Button variant="quiet" size="compact" onClick={onRetry}>Try again</Button></div>
-      : loading ? <p className="creator-history__empty" role="status">Loading drafts…</p>
-        : drafts.length === 0 ? <p className="creator-history__empty">Saved requests will be here when you’re ready to return.</p> : <p className="creator-history__device">On this device</p>}
+  const visibleHistory = conversation ? [conversation, ...history.filter((item) => item.id !== conversation.id)] : history;
+  const historyPanel = <section className="creator-history" aria-label="Chat history"><h2>Your chats</h2>
+    {visibleHistory.length > 0 ? <ul>{visibleHistory.map((item) => <li key={item.id}><Link href={routes.chat(item.id)} aria-current={conversation?.id === item.id ? "page" : undefined} title={item.title} onClick={() => { void session.flush(); }}><MessageSquare size={16} aria-hidden="true" /><span>{item.title}</span></Link></li>)}</ul> : <p className="creator-history__empty">{historyError ? "Chat history couldn’t be loaded." : "Your conversations will appear here."}</p>}
+    {historyError && visibleHistory.length > 0 && <p className="creator-history__issue" role="status">The rest of your chat history couldn’t be loaded. Your current conversation is still here.</p>}
+    <p className="creator-history__device">On this device</p>
+    {migrationIssues && <p className="creator-history__issue">Some older chats couldn’t be opened. Their original data is still on this device.</p>}
   </section>;
+
+  const chat = <section className={`creator-chat${hasMessages ? " creator-chat--conversation" : ""}`} aria-label="Chat">
+    {!hasMessages && <div className="creator-introduction"><h1>What would you like to learn?</h1></div>}
+    {hasMessages && <Conversation messages={conversation?.messages ?? []} actionEvents={state.stream?.actionEvents ?? []} pending={pending} transmittingId={state.transmittingId}
+      interrupted={state.run?.status === "cancelled" || state.run?.status === "failed"} active={!compact || !hasArtifacts || panel === "chat"}
+      onRetry={(id) => { void session.retry(id); }} onEdit={(id) => { if (session.editMessage(id)) { setEditNotice(false); inputRef.current?.focus(); } else setEditNotice(true); }} />}
+    <div className="creator-writing">
+      {state.editingMessageId && <div className="creator-editing"><span>Editing an unsent message</span><Button variant="quiet" size="compact" onClick={() => session.cancelEdit()}>Cancel edit</Button></div>}
+      <form className="creator-composer" onSubmit={(event) => { event.preventDefault(); void session.send(); }}>
+        <Textarea ref={inputRef} id="chat-message" className="creator-composer__field" label="Message" placeholder="Ask a question or describe what you want to learn…" value={composerText}
+          maxLength={MESSAGE_LIMIT} rows={hasMessages ? 2 : 4} onChange={(event) => session.setComposer(event.target.value)} onKeyDown={onComposerKey} />
+        <div className="creator-composer__toolbar"><span className="creator-composer__shortcut">Shift + Enter for a new line</span><IconButton type="submit" variant="primary" className="creator-composer__send" label={state.editingMessageId ? "Send edited message" : "Send message"} icon={<ArrowUp size={22} strokeWidth={2} />} pending={state.transmittingId !== null} disabled={!composerText.trim() || pending} /></div>
+      </form>
+      <div className="creator-feedback">
+        {composerText.length >= MESSAGE_LIMIT && <p className="creator-composer__limit" role="status">This message has reached the {MESSAGE_LIMIT.toLocaleString("en-US")} character limit.</p>}
+        {state.saveStatus === "error" && <Notice tone="error"><p>{chatStorageMessage(state.storageError)}</p><Button variant="quiet" size="compact" onClick={() => void session.flush()}>Retry saving</Button></Notice>}
+        {editNotice && <Notice tone="info">Finish or clear the current message before editing an earlier one.</Notice>}
+      </div>
+      {!hasMessages && <div className="creator-scenarios" aria-label="Ideas to start with">{chatScenarios.map((scenario) => <button type="button" className="creator-scenario" key={scenario.id} onClick={() => applyScenario(scenario)}><strong>{scenario.title}</strong><span>{scenario.preview}</span></button>)}</div>}
+    </div>
+  </section>;
+
+  const courses = <CourseArtifactsPanel artifacts={artifacts} selectedCourseId={conversation?.selectedCourseId ?? null} onSelect={(id) => session.selectCourse(id)}
+    getCurrentArtifact={(id) => session.getSnapshot().conversation?.artifacts.find((artifact) => artifact.courseId === id)} onArtifactChange={(artifact) => session.updateArtifact(artifact)}
+    onApproval={(courseId, approval) => session.acknowledgeApproval(courseId, approval)} awaitingSnapshotCourseIds={state.stream?.pendingSnapshotCourseIds ?? []}
+    {...(onApprove ? { onApprove } : {})} {...(onEditMetadata ? { onEditMetadata } : {})} />;
+
+  const ready = state.loadStatus === "ready";
+  return <AppShell active="chat" sidebarContent={historyPanel}>
+    <div className={`creator${hasArtifacts ? " creator--with-artifacts" : ""}`}>
+      {ready ? <><header className="creator-header"><div className="creator-header__title"><p>{conversation?.title ?? "New chat"}</p><div className={`creator-save-status creator-save-status--${state.saveStatus}`} role="status">{state.saveStatus === "saved" && <Check size={14} aria-hidden="true" />}{state.saveStatus === "saved" ? "Saved on this device" : state.saveStatus === "saving" ? "Saving…" : state.saveStatus === "error" ? "Couldn’t save" : ""}</div></div>
+        {conversation && <Menu label="Chat options" items={[{ id: "rename", label: "Rename chat", onSelect: () => { setRenamedTitle(conversation.title); setDialog("rename"); setDialogError(null); } }, { id: "delete", label: "Delete chat", danger: true, onSelect: () => { setDialog("delete"); setDialogError(null); } }]} />}
+      </header><div className="creator-workspace">{hasArtifacts ? <Tabs className="creator-panels" label="Chat and courses" value={panel} onValueChange={setPanel} items={[{ id: "chat", label: "Conversation", panel: chat }, { id: "courses", label: `Courses (${artifacts.length})`, panel: courses }]} /> : chat}</div></> : <div className="creator-recovery">
+        <h1>{state.loadStatus === "loading" ? "Opening your chat…" : state.loadStatus === "invalid" ? "This chat link isn’t valid" : state.loadStatus === "missing" ? "This chat isn’t on this device" : "This chat couldn’t be opened"}</h1>
+        {state.loadStatus !== "loading" && <><p>{state.loadStatus === "missing" ? "It may have been deleted or saved in another browser." : state.loadStatus === "invalid" ? "Open a chat from your history or start a new one." : chatStorageMessage(state.storageError)}</p><div><LinkButton href={routes.chat()}>New chat</LinkButton>{state.loadStatus === "error" && <Button variant="secondary" onClick={() => void session.open()}>Try again</Button>}</div></>}
+      </div>}
+    </div>
+    <Dialog open={dialog !== null} onOpenChange={(open) => { if (!open && !dialogPending) setDialog(null); }} title={dialog === "delete" ? "Delete this chat?" : "Rename chat"}
+      footer={<><Button variant="quiet" onClick={() => setDialog(null)} disabled={dialogPending}>Cancel</Button><Button variant={dialog === "delete" ? "danger" : "primary"} pending={dialogPending} disabled={dialog === "rename" && !renamedTitle.trim()} onClick={() => void confirmDialog()}>{dialog === "delete" ? "Delete chat" : "Rename"}</Button></>}>
+      {dialog === "delete" ? <p>This removes this conversation from this device. Courses created in it stay in your library.</p> : <TextField id="chat-title" label="Chat name" value={renamedTitle} maxLength={120} onChange={(event) => setRenamedTitle(event.target.value)} />}{dialogError && <Notice tone="error">{dialogError}</Notice>}
+    </Dialog>
+    <Dialog open={replaceScenario !== null} onOpenChange={(open) => { if (!open) setReplaceScenario(null); }} title="Replace your current message?" footer={<><Button variant="quiet" onClick={() => setReplaceScenario(null)}>Keep my message</Button><Button onClick={() => { if (replaceScenario) session.setComposer(replaceScenario.text); setReplaceScenario(null); inputRef.current?.focus(); }}>Use this idea</Button></>}><p>Your current message hasn’t been sent. This will replace it with an idea you can edit.</p></Dialog>
+  </AppShell>;
 }

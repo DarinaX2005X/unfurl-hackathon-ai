@@ -67,7 +67,7 @@ export class SampleController {
       }
       this.publish({ session, started: true, resumed: true, storageMessage: null, error: null });
     } catch {
-      this.publish({ ...this.snapshot, storageMessage: "Your saved practice could not be opened. You can start again here; your course drafts are unaffected." });
+      this.publish({ ...this.snapshot, storageMessage: "Your saved practice could not be opened. You can start again here; your chats and courses are unaffected." });
     }
   }
 

@@ -2,7 +2,7 @@ import { z } from "zod";
 import {
   ContentLanguageSchema, CourseSummarySchema, IdSchema, IsoDateTimeSchema,
   type ApiError, type ChatMessage, type ContentLanguage, type CourseDetailPublic,
-  type CourseSummary, type GenerationRun, type Id, type Page,
+  type CourseSummary, type AgentTurnRun, type Id, type Page,
 } from "../domain";
 
 export interface CapabilitySet {
@@ -19,21 +19,23 @@ export const CourseQuerySchema = z.object({
 export type CourseQuery = z.infer<typeof CourseQuerySchema>;
 export type ServiceResult<T> = { ok: true; data: T } | { ok: false; error: ApiError };
 
-export const StartGenerationInputSchema = z.object({
+export const SendMessageInputSchema = z.object({
   requestId: IdSchema,
-  draftId: IdSchema.nullable(),
+  conversationId: IdSchema,
+  messageId: IdSchema,
   text: z.string().trim().min(1).max(20_000),
-  contentLanguage: ContentLanguageSchema,
+  userLocale: ContentLanguageSchema.optional(),
 }).strict();
-export interface StartGenerationInput {
+export interface SendMessageInput {
   requestId: Id;
-  draftId: Id | null;
+  conversationId: Id;
+  messageId: Id;
   text: string;
-  contentLanguage: ContentLanguage;
+  userLocale?: ContentLanguage;
 }
-export interface StartGenerationResult {
+export interface SendMessageResult {
   message: ChatMessage;
-  run: GenerationRun;
+  run: AgentTurnRun;
 }
 
 export const LibraryItemSchema = z.discriminatedUnion("kind", [
@@ -50,5 +52,5 @@ export interface ApplicationPort {
   listPublic(query: CourseQuery, signal?: AbortSignal): Promise<ServiceResult<Page<CourseSummary>>>;
   getPublicCourse(slug: string, signal?: AbortSignal): Promise<ServiceResult<CourseDetailPublic>>;
   listLibrary(signal?: AbortSignal): Promise<ServiceResult<Page<LibraryItem>>>;
-  startGeneration(input: StartGenerationInput, signal?: AbortSignal): Promise<ServiceResult<StartGenerationResult>>;
+  sendMessage(input: SendMessageInput, signal?: AbortSignal): Promise<ServiceResult<SendMessageResult>>;
 }

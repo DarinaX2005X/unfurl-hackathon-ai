@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import type { ChatEvent, ChatMessage, GenerationRun, RunSnapshot } from "../../src/domain/generation";
+import { AgentTurnRunSchema, GenerationRunSchema, type ChatEvent, type ChatMessage, type AgentTurnRun, type RunSnapshot } from "../../src/domain/generation";
+import type { CourseArtifactRef } from "../../src/domain/chat";
 import { canApproveCurriculum, createStreamState, creatorStreamReducer, type CreatorStreamState } from "../../src/features/creator/stream";
 import { curriculum, ids, timestamp } from "../domain/fixtures";
 
@@ -9,11 +10,10 @@ const messageId = "20000000-0000-4000-8000-000000000003";
 const inputMessageId = "20000000-0000-4000-8000-000000000004";
 const invocationId = "20000000-0000-4000-8000-000000000005";
 
-function run(): GenerationRun {
+function run(): AgentTurnRun {
   return {
-    id: runId, ownerId: ids.actor, courseId: ids.course, conversationId: ids.conversation,
-    branchId, inputMessageId, sourceDraftRevision: null, approvalId: null,
-    phase: "briefing", status: "queued", lastSeq: 0, outputVersionId: null, error: null,
+    id: runId, ownerId: ids.actor, conversationId: ids.conversation,
+    branchId, inputMessageId, status: "queued", lastSeq: 0, error: null,
     createdAt: timestamp, updatedAt: timestamp,
   };
 }
@@ -43,7 +43,7 @@ function initial(): CreatorStreamState {
 
 function snapshot(state: CreatorStreamState, overrides: Partial<RunSnapshot> = {}): RunSnapshot {
   return {
-    run: state.run, messages: state.messages, draft: state.draft,
+    run: state.run, messages: state.messages, artifacts: state.artifacts,
     lastSeq: state.lastAppliedSeq, retainedActionEvents: state.actionEvents, ...overrides,
   };
 }
@@ -62,7 +62,7 @@ describe("creator stream order and recovery", () => {
     expect(state.lastAppliedSeq).toBe(0);
     expect(state.messages).toEqual([userMessage()]);
     expect(state.actionEvents).toEqual([]);
-    expect(state.draft).toBeNull();
+    expect(state.artifacts).toEqual([]);
   });
 
   it("buffers a gap, requests replay after the contiguous event, and drains in order", () => {
@@ -115,9 +115,9 @@ describe("creator stream order and recovery", () => {
     expect(text(state)).toBe("The useful partial answer");
     expect(state.messages.at(-1)?.status).toBe("failed");
     expect(state.run.status).toBe("failed");
-    expect(state.run.outputVersionId).toBeNull();
+    expect(state.artifacts).toEqual([]);
     expect(state.pending).toBe(false);
-    expect(apply(state, event(4, { type: "run.completed", courseVersionId: ids.course }))).toBe(state);
+    expect(apply(state, event(4, { type: "run.completed" }))).toBe(state);
   });
 
   it("stops only on confirmed cancellation, keeps partial text, and rejects late events", () => {
@@ -147,93 +147,124 @@ describe("creator stream order and recovery", () => {
   });
 });
 
-describe("creator snapshots and curriculum approval", () => {
-  it("restores retained action events and continues from the snapshot sequence on reopen", () => {
-    const working = apply(initial(),
-      event(1, { type: "action.started", invocationId, action: "read_source", labelKey: "actions.readSource" }),
-      event(2, { type: "action.completed", invocationId, resultSummary: "Read the source.", sourceIds: [ids.source] }),
-    );
+function artifact(courseId: string = ids.course, revision = 1): CourseArtifactRef {
+  const draft = { ...curriculum(), courseId, revision, id: courseId === ids.course ? ids.draft : ids.missing };
+  return { courseId, title: draft.title, summary: draft.goal, contentLanguage: draft.contentLanguage, revision,
+    curriculum: draft, approval: null, approvalRequestedRevision: revision, readyVersionId: null, updatedAt: timestamp };
+}
+
+function hydrate(state: CreatorStreamState, artifacts: CourseArtifactRef[]) {
+  return creatorStreamReducer(state, { type: "snapshot", snapshot: snapshot(state, { artifacts }) });
+}
+
+describe("conversation turns and independently versioned course artifacts", () => {
+  it("completes a text-only turn with zero courses", () => {
+    const state = apply(initial(), started(), event(2, { type: "message.delta", messageId, text: "A useful answer." }), event(3, { type: "run.completed" }));
+    expect(state.run.status).toBe("succeeded");
+    expect(AgentTurnRunSchema.safeParse(state.run).success).toBe(true);
+    expect(state.pending).toBe(false);
+    expect(text(state)).toBe("A useful answer.");
+    expect(state.artifacts).toEqual([]);
+  });
+
+  it("keeps generation job success strict even when chat turns need no course", () => {
+    const job = { ...run(), status: "succeeded", courseId: null, outputVersionId: null, sourceDraftRevision: null, approvalId: null, phase: "validating" };
+    expect(GenerationRunSchema.safeParse(job).success).toBe(false);
+    expect(GenerationRunSchema.safeParse({ ...job, courseId: ids.course }).success).toBe(false);
+    expect(GenerationRunSchema.safeParse({ ...job, outputVersionId: ids.source }).success).toBe(false);
+    expect(GenerationRunSchema.safeParse({ ...job, courseId: ids.course, outputVersionId: ids.source }).success).toBe(true);
+  });
+
+  it("updates A at revision 5 and B at revision 1 within the same turn", () => {
+    const courseB = ids.sample;
+    const awaiting = apply(initial(), event(1, { type: "artifact.updated", courseId: ids.course, revision: 5 }), event(2, { type: "artifact.updated", courseId: courseB, revision: 1 }));
+    expect(awaiting.artifacts).toEqual([]);
+    expect(awaiting.pendingSnapshotCourseIds).toEqual([ids.course, courseB]);
+    const resolved = hydrate(awaiting, [artifact(ids.course, 5), artifact(courseB, 1)]);
+    expect(resolved.artifacts.map((item) => [item.courseId, item.revision])).toEqual([[ids.course, 5], [courseB, 1]]);
+    expect(resolved.pendingSnapshotCourseIds).toEqual([]);
+    const next = apply(resolved, event(3, { type: "outline.updated", courseId: courseB, draftId: ids.missing, revision: 2 }));
+    const updated = hydrate(next, [artifact(courseB, 2), artifact(ids.course, 4)]);
+    expect(updated.artifacts.map((item) => item.revision)).toEqual([5, 2]);
+  });
+
+  it("an approval request for A does not pause work on B or mark a course ready", () => {
+    const courseB = ids.sample;
+    const waiting = apply(initial(), event(1, { type: "approval.required", courseId: ids.course, draftId: ids.draft, revision: 1 }));
+    expect(waiting.pending).toBe(true);
+    const state = hydrate(waiting, [artifact(), artifact(courseB)]);
+    const workingB = apply(state, event(2, { type: "outline.updated", courseId: courseB, draftId: ids.missing, revision: 2 }));
+    expect(workingB.pending).toBe(true);
+    expect(canApproveCurriculum(workingB, ids.course, ids.draft, 1)).toBe(true);
+    const completed = apply(workingB, event(3, { type: "run.completed" }));
+    expect(completed.artifacts.every((item) => item.readyVersionId === null)).toBe(true);
+    expect(completed.pending).toBe(false);
+  });
+
+  it("pauses the turn only on an explicit awaiting-user event", () => {
+    const paused = apply(initial(), event(1, { type: "run.awaiting_user" }));
+    expect(paused.pending).toBe(false);
+    expect(paused.run.status).toBe("awaiting_user");
+  });
+
+  it("requires actual current course data before approving and rejects stale snapshots", () => {
+    const awaiting = apply(initial(), event(1, { type: "approval.required", courseId: ids.course, draftId: ids.draft, revision: 1 }));
+    expect(canApproveCurriculum(awaiting, ids.course, ids.draft, 1)).toBe(false);
+    const v1 = hydrate(awaiting, [artifact()]);
+    expect(canApproveCurriculum(v1, ids.course, ids.draft, 1)).toBe(true);
+    const change = apply(v1, event(2, { type: "outline.updated", courseId: ids.course, draftId: ids.draft, revision: 2 }));
+    const stale = hydrate(change, [artifact()]);
+    expect(stale.needsSnapshot).toBe(true);
+    expect(canApproveCurriculum(stale, ids.course, ids.draft, 1)).toBe(false);
+    const v2 = hydrate(stale, [artifact(ids.course, 2)]);
+    expect(canApproveCurriculum(v2, ids.course, ids.draft, 2)).toBe(true);
+    expect(hydrate(v2, [artifact()]).artifacts[0]?.revision).toBe(2);
+    const acknowledged = hydrate(v2, [{ ...artifact(ids.course, 2), approvalRequestedRevision: null }]);
+    expect(canApproveCurriculum(acknowledged, ids.course, ids.draft, 2)).toBe(false);
+  });
+
+  it("does not approve a program with a blocking question", () => {
+    const item = artifact();
+    item.curriculum = { ...item.curriculum!, unresolvedQuestions: [{ id: ids.question, text: "Which project?", blocking: true }] };
+    const state = hydrate(initial(), [item]);
+    expect(canApproveCurriculum(state, ids.course, ids.draft, 1)).toBe(false);
+  });
+});
+
+describe("stream snapshot recovery", () => {
+  it("restores only retained action events in the current scope and continues in order", () => {
+    const working = apply(initial(), event(1, { type: "action.started", invocationId, action: "read_source", labelKey: "actions.readSource" }), event(2, { type: "action.completed", invocationId, resultSummary: "Read the source.", sourceIds: [ids.source] }));
     const foreign = { ...event(3, { type: "action.started", invocationId: ids.missing, action: "search", labelKey: "actions.search" }), branchId: ids.missing };
     const saved = snapshot(working, { retainedActionEvents: [...working.actionEvents, foreign, working.actionEvents[0]!] });
-    const reopened = creatorStreamReducer(createStreamState(saved.run), { type: "snapshot", snapshot: saved });
-    expect(reopened.actionEvents).toEqual(working.actionEvents);
-    expect(reopened.lastAppliedSeq).toBe(2);
-    expect(reopened.needsSnapshot).toBe(false);
-    const continued = apply(reopened, event(3, { type: "message.started", messageId }));
-    expect(continued.messages.at(-1)?.id).toBe(messageId);
+    const restored = creatorStreamReducer(createStreamState(saved.run), { type: "snapshot", snapshot: saved });
+    expect(restored.actionEvents).toEqual(working.actionEvents);
+    expect(restored.needsSnapshot).toBe(false);
+    expect(apply(restored, event(3, { type: "message.started", messageId })).messages.at(-1)?.id).toBe(messageId);
   });
 
-  it("hydrates from a snapshot then drains still-future buffered events", () => {
+  it("hydrates a sequence gap and drains still-future buffered events", () => {
     const waiting = apply(initial(), event(3, { type: "message.delta", messageId, text: "after snapshot" }));
     const covered = apply(initial(), started(), event(2, { type: "message.delta", messageId, text: "Before and " }));
-    const restored = creatorStreamReducer(waiting, { type: "snapshot", snapshot: snapshot(covered) });
-    expect(text(restored)).toBe("Before and after snapshot");
-    expect(restored.lastAppliedSeq).toBe(3);
-    expect(restored.replayAfterSeq).toBeNull();
+    const state = creatorStreamReducer(waiting, { type: "snapshot", snapshot: snapshot(covered) });
+    expect(text(state)).toBe("Before and after snapshot");
+    expect(state.replayAfterSeq).toBeNull();
   });
 
-  it("requires a snapshot for outline metadata and approval, never constructing a draft", () => {
-    const outlined = apply(initial(), event(1, { type: "outline.updated", draftId: ids.draft, revision: 1 }));
-    expect(outlined.draft).toBeNull();
-    expect(outlined.needsSnapshot).toBe(true);
-    const awaiting = apply(outlined, event(2, { type: "approval.required", draftId: ids.draft, revision: 1 }));
-    expect(awaiting.pending).toBe(false);
-    expect(canApproveCurriculum(awaiting, ids.draft, 1)).toBe(false);
-    const restored = creatorStreamReducer(awaiting, { type: "snapshot", snapshot: snapshot(awaiting, { draft: curriculum() }) });
-    expect(canApproveCurriculum(restored, ids.draft, 1)).toBe(true);
-    expect(canApproveCurriculum(restored, ids.draft, 2)).toBe(false);
-    expect(canApproveCurriculum(restored, ids.missing, 1)).toBe(false);
-  });
-
-  it("invalidates the shown approval when a newer revision arrives and resists an old snapshot", () => {
-    const waiting = apply(initial(), event(1, { type: "approval.required", draftId: ids.draft, revision: 1 }));
-    const v1 = creatorStreamReducer(waiting, { type: "snapshot", snapshot: snapshot(waiting, { draft: curriculum() }) });
-    const updated = apply(v1, event(2, { type: "outline.updated", draftId: ids.draft, revision: 2 }));
-    expect(canApproveCurriculum(updated, ids.draft, 1)).toBe(false);
-    const stale = creatorStreamReducer(updated, { type: "snapshot", snapshot: snapshot(updated, { draft: curriculum() }) });
-    expect(stale.needsSnapshot).toBe(true);
-    expect(stale.approvalRequired).toBeNull();
-    const v2 = creatorStreamReducer(stale, { type: "snapshot", snapshot: snapshot(stale, { draft: { ...curriculum(), revision: 2 } }) });
-    expect(v2.draft?.revision).toBe(2);
-    expect(canApproveCurriculum(v2, ids.draft, 1)).toBe(false);
-    expect(canApproveCurriculum(v2, ids.draft, 2)).toBe(true);
-    const outdatedDraft = creatorStreamReducer(v2, { type: "snapshot", snapshot: snapshot(v2, { draft: curriculum() }) });
-    expect(outdatedDraft.draft?.revision).toBe(2);
-  });
-
-  it("does not allow an older approval event to approve the current newer draft", () => {
-    const state = creatorStreamReducer(initial(), { type: "snapshot", snapshot: snapshot(initial(), { draft: { ...curriculum(), revision: 3 } }) });
-    const olderApproval = apply(state, event(1, { type: "approval.required", draftId: ids.draft, revision: 2 }));
-    expect(olderApproval.draft?.revision).toBe(3);
-    expect(olderApproval.approvalRequired).toBeNull();
-    expect(canApproveCurriculum(olderApproval, ids.draft, 2)).toBe(false);
-  });
-
-  it("rejects a snapshot from another branch or an older sequence", () => {
-    const current = apply(initial(), started(), event(2, { type: "message.delta", messageId, text: "Keep current" }));
+  it("rejects snapshots from other runs, branches and older sequences", () => {
+    const current = apply(initial(), started());
     expect(creatorStreamReducer(current, { type: "snapshot", snapshot: snapshot(initial()) })).toBe(current);
-    expect(creatorStreamReducer(current, { type: "snapshot", snapshot: snapshot(current, { run: { ...current.run, branchId: ids.missing } }) })).toBe(current);
+    for (const run of [{ ...current.run, id: ids.missing }, { ...current.run, branchId: ids.missing }]) {
+      expect(creatorStreamReducer(current, { type: "snapshot", snapshot: snapshot(current, { run }) })).toBe(current);
+    }
   });
 
-  it("cannot reopen a terminal run from a delayed active snapshot", () => {
-    const stopped = apply(initial(), event(1, { type: "run.cancelled", reason: "user" }));
-    const delayed = snapshot(stopped, { run: { ...stopped.run, status: "running" } });
-    expect(creatorStreamReducer(stopped, { type: "snapshot", snapshot: delayed })).toBe(stopped);
-  });
-
-  it("settles partial message state when reopening a cancelled run snapshot", () => {
+  it("keeps cancelled partial text and never reopens a terminal run from a late snapshot", () => {
     const partial = apply(initial(), started(), event(2, { type: "message.delta", messageId, text: "Saved partial text" }));
     const saved = snapshot(partial, { run: { ...partial.run, status: "cancelled" } });
     const reopened = creatorStreamReducer(createStreamState(saved.run), { type: "snapshot", snapshot: saved });
     expect(reopened.pending).toBe(false);
     expect(reopened.messages.at(-1)?.status).toBe("interrupted");
     expect(text(reopened)).toBe("Saved partial text");
-  });
-
-  it("does not approve a curriculum with a blocking question", () => {
-    const awaiting = apply(initial(), event(1, { type: "approval.required", draftId: ids.draft, revision: 1 }));
-    const draft = { ...curriculum(), unresolvedQuestions: [{ id: ids.question, text: "Which project will you build?", blocking: true }] };
-    const state = creatorStreamReducer(awaiting, { type: "snapshot", snapshot: snapshot(awaiting, { draft }) });
-    expect(canApproveCurriculum(state, ids.draft, 1)).toBe(false);
+    expect(creatorStreamReducer(reopened, { type: "snapshot", snapshot: { ...saved, run: { ...saved.run, status: "running" } } })).toBe(reopened);
   });
 });

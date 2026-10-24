@@ -20,7 +20,9 @@ A second entry is a learner opening a course shared by its creator. That learner
 
 ## The Core Loop
 
-The creator describes a goal in an ordinary agent chat, discusses the proposed curriculum, and approves its structure. The agent researches each part, prepares and checks activities, and saves the course to the creator's library. The learner studies, attempts meaningful tasks, receives useful feedback, and returns to the next appropriate part of the course. A creator can share access by link. Learners who reach the required level can submit a course to the public catalog.
+The creator describes a goal in an ordinary agent chat, discusses the proposed curriculum, and approves its structure. A conversation is independent of its results: one chat can create or edit several courses. A course exists only after the agent actually creates that artifact. The agent sets its title, summary, and content language from the conversation; the creator can then edit those details on the course. The agent researches each part, prepares and checks activities, and makes the course available in the library. The learner studies, attempts meaningful tasks, receives useful feedback, and returns to the next appropriate part of the course. A creator can share access by link. Learners who reach the required level can submit a course to the public catalog.
+
+Conversation history and unfinished writing are retained automatically within their stated storage scope. Chat history belongs in the chat; the library contains actual courses and enrollments. Deleting a conversation does not implicitly delete its courses.
 
 Adaptation may be a short explanation followed by continuation. It is not obliged to turn each error into a new exercise. Repeated practice or prerequisite work needs evidence and a clear route back to the common curriculum.
 
@@ -30,7 +32,7 @@ The desired experience is expressive, tactile, readable, and enjoyable, with cra
 
 The product is called Unfurl. Its brand slogan is "Learn what you've always wanted to". The hero pairs a fixed "Learn" with an automatically rotating, noninteractive topic pill; "everything" is one of many subjects. An unfolding study volume below the text gives the course a physical identity, with its pages becoming varied activities. Reduced motion keeps a readable static "Learn everything" and the scene's meaningful final state.
 
-The interface is English only, while the requested course language is independent. Public entry routes are `/`, `/explore`, `/library`, `/create`, and `/try`, without a language prefix. The visual system uses warm paper surfaces, dark text, and a vermilion action color. Actual rendered visual quality remains to be reviewed.
+The interface is English only, while course language follows the conversation and can be edited on the created course. The composer has no language selector or manual save action. Public entry routes are `/`, `/explore`, `/library`, `/chat`, and `/try`, without a language prefix; `/create` remains a compatibility entry. The visual system uses warm paper surfaces, dark text, and a vermilion action color. Actual rendered visual quality remains to be reviewed.
 
 ## Why This Matters to the Learner
 

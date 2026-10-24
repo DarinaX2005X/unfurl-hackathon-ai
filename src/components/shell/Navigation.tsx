@@ -4,7 +4,7 @@ import { LinkButton } from "@/components/ui";
 import { commonCopy } from "@/content/common";
 import { routes } from "@/lib/routes";
 
-export type ShellDestination = "explore" | "library" | "create" | "learn";
+export type ShellDestination = "explore" | "library" | "create" | "chat" | "learn";
 
 interface NavigationProps {
   active?: ShellDestination;
@@ -20,12 +20,12 @@ export function Navigation({ active, onNavigate }: NavigationProps) {
   return (
     <nav className="uf-shell-nav" aria-label={commonCopy.navigation.label}>
       <LinkButton
-        href={routes.create()}
+        href={routes.chat()}
         className="uf-shell-nav__create"
-        aria-current={active === "create" ? "page" : undefined}
+        aria-current={active === "create" || active === "chat" ? "page" : undefined}
         {...(onNavigate ? { onClick: onNavigate } : {})}
       >
-        {commonCopy.navigation.create}
+        {commonCopy.navigation.newChat}
       </LinkButton>
       <ul className="uf-shell-nav__list">
         {destinations.map(({ id, label, href, Icon }) => (

@@ -27,7 +27,7 @@ describe("program review", () => {
     const receipt: CurriculumApproval = { id: ids.approval, draftId: ids.draft, draftRevision: 1, contentDigest: await curriculumDigest(draft), approvedBy: ids.actor, approvedAt: timestamp };
     const approve = vi.fn(async () => { currentRevision = 2; return receipt; });
     await expect(approveDisplayedCurriculum(draft, () => ({ id: ids.draft, revision: currentRevision }), approve)).rejects.toThrow("program changed");
-    expect(approve).toHaveBeenCalledWith({ draftId: ids.draft, revision: 1, contentDigest: receipt.contentDigest });
+    expect(approve).toHaveBeenCalledWith({ courseId: ids.course, draftId: ids.draft, revision: 1, contentDigest: receipt.contentDigest });
     await expect(approveDisplayedCurriculum(draft, () => ({ id: ids.draft, revision: 1 }), async () => ({ ...receipt, contentDigest: "0".repeat(64) }))).rejects.toThrow();
   });
   it("accepts only a current matching acknowledgement", async () => {

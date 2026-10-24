@@ -3,23 +3,24 @@ import { languageName, readCourseQuery, readLibraryView, studyTime, updateCollec
 
 describe("collection URL state", () => {
   it("restores title/summary query and content language independently of the interface", () => {
-    const params = new URLSearchParams("q=++model+validation++&contentLanguage=ja&view=drafts");
+    const params = new URLSearchParams("q=++model+validation++&contentLanguage=ja&view=courses");
     expect(readCourseQuery(params)).toEqual({ q: "model validation", contentLanguage: "ja" });
-    expect(readLibraryView(params)).toBe("drafts");
+    expect(readLibraryView(params)).toBe("courses");
   });
   it("ignores malformed language and empty searches, and bounds a long query", () => {
     expect(readCourseQuery(new URLSearchParams("q=+++&contentLanguage=not_a_language"))).toEqual({});
     expect(readCourseQuery(new URLSearchParams({ q: "a".repeat(240) })).q).toHaveLength(200);
   });
   it("resets only query/filter/pagination while preserving the selected view and unrelated state", () => {
-    const reset = updateCollectionQuery("q=algebra&contentLanguage=fr&cursor=next&view=drafts&context=shared", { q: "", contentLanguage: "" });
-    expect(new URLSearchParams(reset)).toEqual(new URLSearchParams("view=drafts&context=shared"));
+    const reset = updateCollectionQuery("q=algebra&contentLanguage=fr&cursor=next&view=courses&context=shared", { q: "", contentLanguage: "" });
+    expect(new URLSearchParams(reset)).toEqual(new URLSearchParams("view=courses&context=shared"));
   });
   it("round-trips supported views and gives an unknown view the safe all default", () => {
-    for (const view of ["drafts", "courses", "in_progress"] as const) {
+    for (const view of ["courses", "in_progress"] as const) {
       expect(readLibraryView(new URLSearchParams(updateCollectionQuery("q=models", { view })))).toBe(view);
     }
     expect(readLibraryView(new URLSearchParams("view=unknown"))).toBe("all");
+    expect(readLibraryView(new URLSearchParams("view=drafts"))).toBe("all");
     expect(updateCollectionQuery("view=drafts", { view: "all" })).toBe("");
   });
   it("formats actual study durations and language names without fabricated depth labels", () => {

@@ -8,7 +8,7 @@ describe("public course card content", () => {
     const title = "Understanding how model capacity changes training fit, validation evidence, and the limits of claims about future results";
     const item = course({ title, moduleCount: 7, lessonCount: 23, estimatedStudyMinutes: 125, contentLanguage: "ja" });
     const html = renderToStaticMarkup(<CourseCard course={item} />);
-    expect(html).toContain(`<h3>${title}</h3>`);
+    expect(html).toContain(`<h2>${title}</h2>`);
     expect(html).toContain(`<p>${item.summary}</p>`);
     expect(html).toContain("<dt>Modules</dt><dd>7</dd>");
     expect(html).toContain("<dt>Lessons</dt><dd>23</dd>");

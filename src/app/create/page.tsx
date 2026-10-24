@@ -1,10 +1,8 @@
-import type { Metadata } from "next";
-import { CreatorWorkspace } from "@/features/creator/CreatorWorkspace";
-
-export const metadata: Metadata = { title: "Create a course | Unfurl", description: "Start a course with your own learning goal." };
+import { redirect } from "next/navigation";
+import { routes } from "@/lib/routes";
 
 export default async function CreatePage({ searchParams }: { searchParams: Promise<{ draft?: string | string[] }> }) {
   const query = await searchParams;
-  const draftId = Array.isArray(query.draft) ? "invalid" : query.draft ?? null;
-  return <CreatorWorkspace key={draftId ?? "new"} draftId={draftId} />;
+  const legacyId = Array.isArray(query.draft) ? "invalid" : query.draft;
+  redirect(legacyId !== undefined ? routes.chat(legacyId) : routes.chat());
 }

@@ -24,23 +24,23 @@ describe("routes", () => {
     });
   });
 
-  it("opens a new creator without an optional draft identifier", () => {
-    expect(routes.create()).toBe("/create");
-    expect(routes.create(undefined)).toBe("/create");
+  it("opens a new creator without an optional conversation identifier", () => {
+    expect(routes.create()).toBe("/chat");
+    expect(routes.chat(undefined)).toBe("/chat");
   });
 
-  it("keeps a draft identifier in exactly one query parameter", () => {
+  it("keeps a conversation identifier in exactly one query parameter", () => {
     const id = "draft/one ?mode=publish&next=/library#section +%";
-    const destination = new URL(routes.create(id), origin);
+    const destination = new URL(routes.chat(id), origin);
 
-    expect(destination.pathname).toBe("/create");
-    expect([...destination.searchParams.keys()]).toEqual(["draft"]);
-    expect(destination.searchParams.get("draft")).toBe(id);
+    expect(destination.pathname).toBe("/chat");
+    expect([...destination.searchParams.keys()]).toEqual(["conversation"]);
+    expect(destination.searchParams.get("conversation")).toBe(id);
     expect(destination.hash).toBe("");
   });
 
-  it("keeps a supplied empty draft distinct from a new creator", () => {
-    expect(routes.create("")).toBe("/create?draft=");
+  it("keeps a supplied empty conversation distinct from a new creator", () => {
+    expect(routes.chat("")).toBe("/chat?conversation=");
   });
 
   it.each([
@@ -67,7 +67,7 @@ describe("routes", () => {
   it("encodes international text without losing the original value", () => {
     const id = "日本語 fundamentals";
     expect(decodeURIComponent(routes.course(id).slice("/courses/".length))).toBe(id);
-    expect(new URL(routes.create(id), origin).searchParams.get("draft")).toBe(id);
+    expect(new URL(routes.chat(id), origin).searchParams.get("conversation")).toBe(id);
   });
 
   it.each(["", ".", ".."])("rejects a path segment that browsers normalize: %j", (id) => {
@@ -80,3 +80,4 @@ describe("routes", () => {
     expect(destination.pathname).toBe("/courses/%252e%252e%252fprivate");
   });
 });
+

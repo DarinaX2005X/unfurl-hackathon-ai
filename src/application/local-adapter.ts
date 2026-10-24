@@ -1,5 +1,5 @@
 import { IdSchema, type ApiError, type ApiErrorCode } from "../domain";
-import { CourseQuerySchema, StartGenerationInputSchema, type ApplicationPort, type ServiceResult } from "./ports";
+import { CourseQuerySchema, SendMessageInputSchema, type ApplicationPort, type ServiceResult } from "./ports";
 
 function failure<T>(code: ApiErrorCode, messageKey: string, retryable: boolean, requestId = crypto.randomUUID()): ServiceResult<T> {
   const error: ApiError = { error: { code, messageKey, retryable, requestId } };
@@ -23,10 +23,10 @@ export const localApplication: ApplicationPort = {
     signal?.throwIfAborted();
     return { ok: true, data: { items: [], nextCursor: null } };
   },
-  async startGeneration(input, signal) {
+  async sendMessage(input, signal) {
     signal?.throwIfAborted();
     const requestId = IdSchema.safeParse(input.requestId).success ? input.requestId : crypto.randomUUID();
-    if (!StartGenerationInputSchema.safeParse(input).success) {
+    if (!SendMessageInputSchema.safeParse(input).success) {
       return failure("invalid_input", "generation.invalidInput", false, requestId);
     }
     return failure("service_unavailable", "generation.unavailable", true, requestId);

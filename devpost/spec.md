@@ -6,13 +6,13 @@ status: draft
 
 ## How This Works, In Plain Language
 
-Unfurl has a familiar course-creation conversation and a learning workspace. The conversation helps a creator turn a goal into a curriculum they can inspect and approve. After approval, the service researches its modules, creates supported activities, checks their content and answers, and releases a course version. The learning workspace displays that version while keeping each learner's attempts, help, progress, and next steps separate.
+Unfurl has a familiar agent conversation and a learning workspace. A conversation is independent of its messages and course artifacts: one chat can create or edit several courses. A course exists only after a real agent operation creates that artifact with its initial title, summary, and content language. The creator can inspect and edit each course and approve its own curriculum. After approval, the service researches its modules, creates supported activities, checks their content and answers, and releases a course version. The learning workspace displays that version while keeping each learner's attempts, help, progress, and next steps separate.
 
 The application renders a defined set of activities. The model supplies validated learning content for them; it does not invent executable interface code. A task can be checked by a specific rule, by running a bounded artifact in an isolated environment, or by a rubric that can report uncertainty. Those methods have different limits.
 
 Released course content stays stable. A learner's route can change without rewriting the course or another learner's progress. Research and construction are saved as durable steps, so closing a browser does not erase accepted work. The chat reads those saved events and can reconnect to them.
 
-The currently authorized foundation runs without a model key. It can provide connected screens, genuine device-only request drafts, and an isolated activity with real local evaluation. It cannot claim that an AI-generated course, shared account, or cloud save exists before the corresponding service is connected.
+The currently authorized foundation runs without a model key. It can provide connected screens, genuine local conversations and unfinished writing, and an isolated activity with real local evaluation. It cannot claim that an AI-generated course, shared account, or cloud save exists before the corresponding service is connected.
 
 Implements `prd.md > Planning Status and Authorized Foundation`, `prd.md > The Core Journey`, and `prd.md > Generate a Substantial Course`.
 
@@ -25,11 +25,11 @@ The browser contracts below are the proposed integration boundary. Concrete data
 ## The Core Journey Through the System
 
 1. The landing routes to creation, exploration, or the isolated trial. It performs no hidden account, course, or enrollment creation.
-2. The creator writes a request. `DraftStore` saves its text, selected content language, and schema version in browser storage and acknowledges the actual result.
-3. With services configured, an authenticated message mutation validates input, revision, and capability before accepting work. It creates the message and run using an idempotent operation.
-4. A durable worker researches the goal and creates a curriculum draft. Saved events describe actual actions. The chat applies them in sequence, and the curriculum panel reads the resulting revision.
-5. An explicit approval records the current draft revision and content digest atomically. A stale approval fails; it cannot start a different version of the curriculum.
-6. Durable module research, task construction, and validation produce a course version tied to that approval. A failed validation prevents release. Only a ready version enters the study and sharing paths.
+2. The creator writes in a standalone chat. `ChatStore` automatically retains conversation history and unfinished writing in browser storage, using ordered writes and acknowledging only actual persistence. The empty view creates no record. The composer has no language selector or manual save control.
+3. Sending records a local user message whose delivery status is separate from server acceptance. With services configured, `sendMessage` validates input, revision, and capability before accepting an `AgentTurnRun` under stable request and message identities. An agent turn may finish with zero, one, or several course artifacts. If service capability is unavailable, the local message remains not sent or failed with retry; no assistant, run, or course is created.
+4. A durable worker researches the goal and creates a course artifact and its curriculum through real operations. It supplies initial metadata from the conversation. Saved events describe actual actions and identify the relevant artifact. The chat applies them in sequence and can select among several course artifacts and their curriculum revisions.
+5. An explicit approval records the selected course's current curriculum revision and content digest atomically. A stale approval fails; it cannot start another revision or another course's generation.
+6. A separate `GenerationRun` performs durable module research, task construction, and validation to produce a course version tied to that approval. A failed validation prevents release. Only a ready version enters the study and sharing paths. Finishing an agent reply does not imply a ready course.
 7. Enrollment creates or reuses the learner's record for that version. A session response returns public lesson and task data, the learner's route, and authoritative progress.
 8. An attempt is validated and evaluated on the server. Its saved evidence can change the learner's next action and create at most one qualifying XP award. Evaluation references and hidden answers stay on the server.
 9. Library and session reads restore the learner's own saved state. Sharing exposes a permitted course version and creates separate learning records for recipients.
@@ -49,7 +49,7 @@ PRD ref: `prd.md > The Core Journey`.
 | Lucide React | One icon set; exact release pinned in the lockfile | Consistent stroke and optical sizing. [Lucide React guide](https://lucide.dev/guide/packages/lucide-react) |
 | Radix Dialog and Dropdown Menu | Accessible interaction primitives; exact releases pinned in the lockfile | Use established focus, keyboard, dismissal, and menu behavior beneath the authored visual system. [Dialog](https://www.radix-ui.com/primitives/docs/components/dialog), [Dropdown Menu](https://www.radix-ui.com/primitives/docs/components/dropdown-menu) |
 | `@fontsource-variable/manrope` | Reproducible font dependency | Supply the selected family through the package installation, with a system sans fallback. Font binaries and font directories are not committed. [Manrope distribution](https://fontsource.org/fonts/manrope) |
-| IndexedDB | Device-only request drafts and isolated trial persistence | Local behavior with explicit scope, independent of the future cloud account. [IndexedDB documentation](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API) |
+| Browser storage | IndexedDB for local conversations and legacy request import; isolated trial state uses a separate namespace | Local behavior with explicit scope, independent of the future cloud account. [IndexedDB documentation](https://developer.mozilla.org/en-US/docs/Web/API/IndexedDB_API) |
 | Vercel | Target hosting platform | Next.js hosting with separately configured durable storage and execution. A production deployment is a separate release action. [Deployment documentation](https://vercel.com/docs/deployments) |
 
 Next.js and React version metadata were read during planning. This is not evidence that the project has installed, built, or deployed those versions. The foundation must produce the manifest, reproducible lockfile, and actual passing checks. Exact remaining dependency versions belong in that lockfile before feature handoff.
@@ -65,7 +65,7 @@ npm ci
 npm run dev
 ```
 
-Open `http://localhost:3000/`. Routes are unprefixed: `/`, `/explore`, `/library`, `/create`, and `/try`. The document uses `lang="en"`; there is no `/en` redirect, locale segment, or interface-language switch. Requested course language remains independent of the English interface.
+Open `http://127.0.0.1:3000/`. Routes are unprefixed: `/`, `/explore`, `/library`, `/chat`, and `/try`. `/create` remains a compatibility entry for existing links. The document uses `lang="en"`; there is no `/en` redirect, locale segment, or interface-language switch. Course language remains independent of the English interface and is set on an actual course artifact.
 
 The planned production-build check is:
 
@@ -77,7 +77,7 @@ npm run start
 
 `check` must run real type, lint, and relevant automated checks and return a nonzero exit code on failure. Scripts and startup paths are requirements for the foundation, not commands reported as tested by this draft.
 
-Without external services, the representative journey is landing, create a request, save it locally, reopen it from the library, and complete the isolated trial. A generation attempt must preserve its request and report unavailable capability. It must not emit a successful course or fabricated search events.
+Without external services, the representative journey is landing, write in a new chat, leave and reopen it from chat history, and complete the guided isolated trial. Sending must retain the user's actual message with truthful delivery feedback and retry. It must not emit an accepted run, assistant reply, course, or fabricated research event.
 
 For the integrated journey, configure the chosen identity, storage, model, research, and durable-execution services using a secret-free `.env.example` and the eventual README. Record exact names and required scopes there after provider selection. Real secret values remain server-side and outside committed files. No client environment variable may expose an API key.
 
@@ -124,13 +124,13 @@ Every interaction needs visible rest, hover where supported, immediate pressed r
 
 ### Domain Schemas and Application Ports
 
-`src/domain/` owns canonical runtime schemas and their derived types. It validates IDs, revisions, course graph references, activity configurations, public projections, and the legal state transitions. `src/application/ports.ts` defines operation-level boundaries for browser drafts, course access, learning, runs, and provider adapters. Features consume these exports and do not redefine competing Course or ChatEvent models.
+`src/domain/` owns canonical runtime schemas and their derived types. It validates IDs, revisions, course graph references, activity configurations, public projections, and the legal state transitions. Local conversations and messages are distinct from authenticated server records. `src/application/ports.ts` defines operation-level boundaries for browser conversations, course access, learning, runs, and provider adapters. Features consume these exports and do not redefine competing Course or ChatEvent models.
 
 Implements `prd.md > Generate a Substantial Course`, `prd.md > Adapt Support Within a Shared Course`, and `prd.md > States and Boundaries`.
 
 ### Shared Interface and Navigation
 
-`src/components/ui/`, `src/components/shell/`, `src/styles/`, and `src/content/common.ts` own common controls, shell, tokens, and English messages. Feature copy lives beside its feature. `src/lib/routes.ts` preserves the selected record, query, and local draft. Content language remains a domain field. `routes.course(slug)`, `routes.create(draftId?)`, and `routes.learn(enrollmentId)` produce unprefixed routes; a saved draft opens at `/create?draft=<UUID>`.
+`src/components/ui/`, `src/components/shell/`, `src/styles/`, and `src/content/common.ts` own common controls, shell, tokens, and English messages. Feature copy lives beside its feature. `src/lib/routes.ts` preserves the selected record and query. `routes.chat(id?)` uses `/chat?conversation=<UUID>` for an existing conversation, and `routes.create()` remains a compatibility alias. Older `/create?draft=<UUID>` links restore the imported conversation. `routes.course(slug)` and `routes.learn(enrollmentId)` produce unprefixed course and enrollment routes. Course language remains a field of the course artifact, not the composer.
 
 Shared UI exports are `Button`, `LinkButton`, `IconButton`, `TextField`, `Textarea`, `Select`, `Tabs`, `Dialog`, `Drawer`, `Menu`, `Notice`, `EmptyState`, and `Progress`. Shell exports are `Brand`, `PublicHeader`, and `AppShell`. Buttons preserve their content and width while pending and block repeat activation. Fields require IDs and labels, with described hint/error text. Controlled tabs retain hidden-panel state. Dialogs and drawers trap and return focus, and menus handle keyboard navigation and collision. A progress value is used only for measured progress. The shell uses one navigation area, with creator history nested within it rather than a second rail.
 
@@ -144,13 +144,15 @@ Implements `prd.md > Understand the Product and Try a Real Activity` and `prd.md
 
 ### Catalog and Library
 
-`src/features/catalog/` consumes `CourseSummary` and `CourseDetailPublic`. `src/features/library/` consumes authorized library items and `DraftStore`. Catalog queries return only public ready versions. The local draft group is labelled as on-device storage and never presented as a signed-in cloud library. An unavailable cloud capability differs from an empty signed-in collection. Views `all`, `drafts`, `courses`, and `in_progress` are kept in the URL. Query/filter reset does not delete records. Failed next-page loads retain existing rows; retry uses the same cursor, and stale search results are ignored or aborted.
+`src/features/catalog/` consumes `CourseSummary` and `CourseDetailPublic`. `src/features/library/` consumes only authorized course and enrollment items. Neither surface provides conversation or request-draft CRUD. Catalog queries return only public ready versions; content-language filtering is a search concern. An unavailable cloud capability differs from an empty signed-in collection. The current course or study filter remains in the URL. Query/filter reset does not delete records. Failed next-page loads retain existing rows; retry uses the same cursor, and stale search results are ignored or aborted.
 
 Implements `prd.md > Browse, Share, and Publish` and `prd.md > Save Progress and Earn XP`.
 
 ### Course Creator
 
-`src/features/creator/` owns the composer, conversation view, curriculum view, event reducer, and transport client. It accepts only validated application events. The reducer isolates active run and branch, deduplicates replay, detects missing sequence ranges, and restores from a snapshot before applying later dependent events. The local draft survives a rejected request. Curriculum approval is a separate action, never inferred from free-form conversation text.
+`src/features/creator/` owns chat history, the composer, conversation view, course-artifact selection, curriculum view, event reducer, and transport client. It accepts only validated application events. The reducer isolates active run and branch, deduplicates replay, detects missing sequence ranges, and restores from a snapshot before applying later dependent events. Conversation switching and delayed writes cannot replace newer unfinished writing. Retry preserves message and request identity; an edit creates a new identity. Curriculum approval belongs to the selected artifact and is never inferred from free-form conversation text.
+
+Scenario cards insert complete editable intentions without automatically sending them or silently replacing nonempty writing. Course metadata controls appear only for a real artifact and use an actual mutation callback or API. The local foundation must not synthesize a course to demonstrate those controls. Test fixtures may exercise several artifacts without claiming live creation.
 
 Implements `prd.md > Develop a Course Request in Chat` and `prd.md > Research and Approve the Curriculum`.
 
@@ -158,7 +160,7 @@ Implements `prd.md > Develop a Course Request in Chat` and `prd.md > Research an
 
 `src/features/learning/player/` displays public lesson and task data and submits typed responses. `src/features/learning/mechanics/` contains the registered activity families. `src/features/learning/registry.ts` resolves a validated mechanic ID and version to `configSchema`, `responseSchema`, `createInitialResponse`, `Renderer`, and `summarizeResponse`. Unsupported configurations fail explicitly; they do not render arbitrary JSON or generated HTML.
 
-`src/features/learning/sample/` supplies isolated trial content and a bounded deterministic evaluator. The trial uses the same interaction contract, but its state and local answers are not authoritative account evidence or XP.
+`src/features/learning/sample/` supplies isolated trial content and a bounded deterministic evaluator. Its short visual guide makes the goal, controls, and result interpretation explicit beside the activity. The trial uses the same interaction contract, but its state and local answers are not authoritative account evidence or XP.
 
 Implements `prd.md > Learn Through Varied Practice` and `prd.md > Understand the Product and Try a Real Activity`.
 
@@ -263,7 +265,11 @@ Curriculum IDs must be unique, referenced outcomes and modules must exist, and d
 
 Course summary counts come from the ready version's records. Cover motif IDs come from an allowed artwork registry. Public projections exclude owner contact details, unreleased tasks, private source packs, and evaluation secrets.
 
+Conversation creation, writing, and sending never create a `Course`. The agent supplies title, summary, and content language through an actual course-creation operation. Later metadata changes target that existing course with revision checks and a real persistence acknowledgement. A language or curriculum-affecting change invalidates any affected approval; released versions remain immutable. One conversation can refer to several courses, and deleting it does not delete those course records.
+
 ### Conversation, Run, and Typed Events
+
+`AgentTurnRun` represents an ordinary accepted turn in the conversation. It may succeed with zero, one, or several referenced course artifacts and has no `courseId` or `outputVersionId`. `GenerationRun` represents a separate course-building job; its successful result requires an actual course and ready version. The chat stream and snapshot follow the agent turn. Authoritative artifact state, especially `readyVersionId`, determines course readiness.
 
 ```ts
 interface Conversation {
@@ -282,8 +288,14 @@ type RunPhase = 'briefing' | 'researching' | 'outlining' |
   'awaiting_approval' | 'module_research' | 'building_tasks' | 'validating';
 type RunStatus = 'queued' | 'running' | 'awaiting_user' |
   'succeeded' | 'failed' | 'cancelled';
+interface AgentTurnRun {
+  id: Id; ownerId: Id; conversationId: Id; branchId: Id;
+  inputMessageId: Id; status: RunStatus; lastSeq: number;
+  error: ApiError['error'] | null;
+  createdAt: IsoDateTime; updatedAt: IsoDateTime;
+}
 interface GenerationRun {
-  id: Id; ownerId: Id; courseId: Id; conversationId: Id; branchId: Id;
+  id: Id; ownerId: Id; courseId: Id | null; conversationId: Id; branchId: Id;
   inputMessageId: Id; sourceDraftRevision: Revision | null;
   approvalId: Id | null; phase: RunPhase; status: RunStatus;
   lastSeq: number; outputVersionId: Id | null;
@@ -305,21 +317,22 @@ type ChatEvent = EventBase & (
   | { type: 'action.completed'; invocationId: Id;
       resultSummary: string; sourceIds: Id[] }
   | { type: 'action.failed'; invocationId: Id; error: ApiError['error'] }
-  | { type: 'outline.updated'; draftId: Id; revision: Revision }
-  | { type: 'approval.required'; draftId: Id; revision: Revision }
-  | { type: 'phase.changed'; phase: RunPhase }
-  | { type: 'run.completed'; courseVersionId: Id }
+  | { type: 'artifact.updated'; courseId: Id; revision: Revision }
+  | { type: 'outline.updated'; courseId: Id; draftId: Id; revision: Revision }
+  | { type: 'approval.required'; courseId: Id; draftId: Id; revision: Revision }
+  | { type: 'run.awaiting_user' }
+  | { type: 'run.completed' }
   | { type: 'run.failed'; error: ApiError['error'] }
   | { type: 'run.cancelled'; reason: 'user' | 'superseded' }
 );
 interface RunSnapshot {
-  run: GenerationRun; messages: ChatMessage[];
-  draft: CurriculumDraft | null; lastSeq: number;
+  run: AgentTurnRun; messages: ChatMessage[];
+  artifacts: CourseArtifactRef[]; lastSeq: number;
   retainedActionEvents: ChatEvent[];
 }
 ```
 
-The live transport exposes `loadRunSnapshot({runId,signal}): Promise<RunSnapshot>` and `subscribeRun({runId,branchId,after,signal}): AsyncIterable<ChatEvent>`. `RunSnapshot.retainedActionEvents` restores the action state alongside the saved messages and curriculum. `outline.updated` and `approval.required` trigger a snapshot read because those events contain no curriculum body. Message-start metadata derives from the run's conversation ID and the event's ID, branch, and timestamp.
+The live transport exposes `loadRunSnapshot({runId,signal}): Promise<RunSnapshot>` and `subscribeRun({runId,branchId,after,signal}): AsyncIterable<ChatEvent>`. `RunSnapshot.retainedActionEvents` restores the action state alongside saved messages and the artifact collection. Each `CourseArtifactRef` contains its own course metadata, curriculum, approval, and ready-version reference. `artifact.updated`, `outline.updated`, and `approval.required` identify their course and trigger a snapshot read because those events contain no updated artifact body. Message-start metadata derives from the run's conversation ID and the event's ID, branch, and timestamp.
 
 An action event exists only when the corresponding operation actually ran. `invocationId` distinguishes concurrent calls and retries. Visible events contain user-relevant actions and outcomes, never hidden reasoning, system instructions, or future task answers.
 
@@ -327,7 +340,7 @@ Server-sent events use `event: <type>`, `id: <runId>:<seq>`, and `data: <ChatEve
 
 Reconnection uses `Last-Event-ID`; a fetch stream may start with `?after=<seq>`. A cursor for another run is invalid. Reading an event stream observes a job and must not start it. Capability, authentication, input, and revision checks occur before headers. A later failure becomes a terminal `run.failed` event and clears pending state. Closing a stream is not cancellation. Explicit cancellation preserves received text as interrupted. Editing an earlier message creates a new branch linked by `parentMessageId`; late old-branch results cannot overwrite it.
 
-When the outline reaches the approval boundary, `approval.required` moves the run to `status: 'awaiting_user'` and releases the UI's pending state. The saved snapshot confirms that state and the current curriculum revision. `run.completed` is emitted only when a real course version is ready; waiting for approval neither emits completion nor fabricates a course version ID.
+When a course's outline reaches the approval boundary, `approval.required` moves the agent turn to `status: 'awaiting_user'` and releases the UI's pending state. `run.awaiting_user` also represents waiting for ordinary conversational input without requiring a course. The saved snapshot confirms that state and any identified artifact's current curriculum revision. Chat `run.completed` means that the agent turn has ended; it carries no course-version ID and can occur without any created course. Course readiness comes from an authoritative artifact's `readyVersionId`. The separate course-building `GenerationRun` may have a null `courseId` before creation, but success requires both a real `courseId` and `outputVersionId`. Waiting for approval does not fabricate either identity. Selecting or approving one artifact cannot change another artifact's curriculum or approval.
 
 ### Lesson, Task, Attempt, and Evaluation
 
@@ -433,29 +446,61 @@ interface Progress {
 
 A versioned domain policy owns XP and level thresholds. The server returns its authoritative result. A unique qualifying-evidence award key prevents duplication. Editing a course or repeating an isolated trial cannot bypass publication eligibility. Exact thresholds and anti-abuse behavior remain decisions for live learning integration.
 
-### Local Drafts and Persistence Boundaries
+### Local Conversations and Persistence Boundaries
+
+The local model separates `LocalConversation`, `LocalMessage`, and `CourseArtifactRef`. A local conversation has no fabricated owner or account. It contains its identity, title, unfinished writing, actual messages with delivery state, references to existing course artifacts, timestamps, and a schema version. A course reference is not a generated course body and is added only after actual creation or verified access. The authenticated production `Conversation` remains a separate server record.
 
 ```ts
-interface LocalDraft {
-  id: Id; kind: 'course_request'; title: string; text: string;
-  contentLanguage: ContentLanguage; updatedAt: IsoDateTime;
-  schemaVersion: 1; intendedConversationId: Id | null;
+interface CourseArtifactRef {
+  courseId: Id; title: string; summary: string;
+  contentLanguage: ContentLanguage; revision: Revision;
+  curriculum: CurriculumDraft | null; approval: CurriculumApproval | null;
+  approvalRequestedRevision: Revision | null;
+  readyVersionId: Id | null; updatedAt: IsoDateTime;
 }
-interface DraftStore {
-  list(): Promise<LocalDraft[]>;
-  get(id: Id): Promise<LocalDraft | null>;
-  put(draft: LocalDraft): Promise<void>;
+interface LocalMessage {
+  id: Id; conversationId: Id; role: 'user' | 'assistant'; text: string;
+  delivery: 'not_sent' | 'sending' | 'accepted' | 'failed';
+  status: 'complete' | 'streaming' | 'interrupted' | 'failed';
+  requestId: Id | null; runId: Id | null; branchId: Id | null;
+  userLocale: ContentLanguage | null;
+  createdAt: IsoDateTime; updatedAt: IsoDateTime;
+  error: ApiError['error'] | null;
+}
+interface LocalConversation {
+  id: Id; schemaVersion: 1; title: string;
+  titleSource: 'initial_text' | 'user' | 'legacy'; composerText: string;
+  messages: LocalMessage[]; artifacts: CourseArtifactRef[];
+  selectedCourseId: Id | null; revision: Revision;
+  createdAt: IsoDateTime; updatedAt: IsoDateTime;
+  legacySource: {
+    draftId: Id; contentLanguage: ContentLanguage;
+    updatedAt: IsoDateTime; intendedConversationId: Id | null;
+  } | null;
+}
+interface ChatStore {
+  list(): Promise<LocalConversation[]>;
+  get(id: Id): Promise<LocalConversation | null>;
+  put(conversation: LocalConversation): Promise<void>;
   remove(id: Id): Promise<void>;
+  wasDeleted(id: Id): Promise<boolean>;
+  migrateLegacy(): Promise<LegacyImportResult>;
 }
-interface StorageError {
-  code: 'unavailable' | 'quota_exceeded' | 'corrupt_record' | 'version_unsupported';
-  draftId?: Id;
+interface LegacyImportResult {
+  importedIds: Id[];
+  issues: Array<{draftId?: Id; code: 'corrupt_record' | 'version_unsupported'}>;
 }
 ```
 
-IndexedDB holds only explicitly device-local drafts, preferences, and isolated trial state. Do not store session secrets there. A server draft is saved only after server acknowledgement. Moving a local draft into an account is explicit, authenticated, and idempotent. Account changes must not restore another account's private text.
+Messages must belong to their conversation and have unique identities. User messages require a request ID; assistant messages must come from accepted responses. Course references are unique by course ID, selected IDs must name an existing reference, and each referenced curriculum must match its course and conversation. `approvalRequestedRevision` identifies the selected course's curriculum revision awaiting explicit approval; a pending snapshot must resolve before approval is offered for that revision. `EditCourseMetadata` accepts course ID, expected revision, title, summary, and content language and returns the actually updated `CourseArtifactRef`; an unavailable mutation cannot acknowledge success. Metadata and approval controls require their actual mutation callbacks.
 
-Draft titles contain 1 to 120 characters and request text 0 to 20,000 characters. Renaming updates the same ID's title and timestamp through `put`. A new record is created only through explicit saving, not by opening the creator. Subsequent edits show unsaved, saving, saved, or error state, with saved acknowledged only after persistence resolves. Corrupt or newer-version records must not be silently deleted. The storage implementation accepts an injectable `IDBFactory` for meaningful persistence tests.
+`ChatStore` owns local conversation list, read, write, and deletion. IndexedDB stores these records independently of the future cloud account. Trial state uses its own browser namespace. Session secrets never belong in either store. Moving local history into an account must be explicit, authenticated, and idempotent. Account changes cannot restore another account's private text.
+
+Typing and history changes persist automatically. Opening an untouched empty view creates no record. Writes are serialized per conversation so an older operation cannot replace newer text, and navigation or rapid conversation switching flushes the correct record. A save indicator acknowledges completion only after persistence resolves; failure keeps visible input and supports recovery. Storage errors distinguish unavailable storage, quota, corrupt records, and unsupported versions. Corrupt or newer-version data must not be silently deleted. There is no manual save action.
+
+The legacy `LocalDraft` IndexedDB format remains an import source. Migration preserves its ID, title, text, and timestamps; retains earlier language metadata as provenance; and confirms the new conversation before retiring any original data. Migration is idempotent and records imported or deleted identities so reopening a legacy link cannot resurrect a deliberately deleted imported chat. An older `/create?draft=<UUID>` URL resolves to the corresponding conversation. Language provenance never becomes a composer selection requirement.
+
+Local message persistence and server acceptance are different events. An unavailable send retains the actual user message with not-sent or failed delivery state and retry, with no assistant, run, or course. Retrying uses the same request and message IDs; editing creates a new identity. A late result cannot erase new composer input. Test stores and injected persistence failures must exercise these ordering and recovery guarantees.
 
 ### Foundation Application Boundary
 
@@ -467,10 +512,11 @@ type CourseQuery = {
   q?: string; contentLanguage?: string; cursor?: string; limit?: number;
 };
 type ServiceResult<T> = {ok: true; data: T} | {ok: false; error: ApiError};
-type StartGenerationInput = {
-  requestId: Id; draftId: Id | null; text: string; contentLanguage: ContentLanguage;
+type SendMessageInput = {
+  requestId: Id; conversationId: Id; messageId: Id; text: string;
+  userLocale?: ContentLanguage;
 };
-type StartGenerationResult = {message: ChatMessage; run: GenerationRun};
+type SendMessageResult = {message: ChatMessage; run: AgentTurnRun};
 type LibraryItem =
   | {kind: 'owned'; course: CourseSummary}
   | {kind: 'enrolled'; course: CourseSummary; enrollmentId: Id;
@@ -480,11 +526,11 @@ interface ApplicationPort {
   listPublic(query: CourseQuery, signal?: AbortSignal): Promise<ServiceResult<Page<CourseSummary>>>;
   getPublicCourse(slug: string, signal?: AbortSignal): Promise<ServiceResult<CourseDetailPublic>>;
   listLibrary(signal?: AbortSignal): Promise<ServiceResult<Page<LibraryItem>>>;
-  startGeneration(input: StartGenerationInput, signal?: AbortSignal): Promise<ServiceResult<StartGenerationResult>>;
+  sendMessage(input: SendMessageInput, signal?: AbortSignal): Promise<ServiceResult<SendMessageResult>>;
 }
 ```
 
-`src/application/local-adapter.ts` exports `localApplication`. All capabilities are false. Collection reads return genuinely empty pages, course lookup returns `not_found`, and generation returns `service_unavailable` with message key `generation.unavailable`, retryable true, and the same request ID before creating a message or run. There are no simulated delays or events. Feature services are injectable and default to this adapter, avoiding fetches to nonexistent APIs. `DraftStore` remains a separate real local capability. The library uses the capability result to describe cloud unavailability accurately.
+`src/application/local-adapter.ts` exports `localApplication`. All capabilities are false. Collection reads return genuinely empty pages, course lookup returns `not_found`, and `sendMessage` returns `service_unavailable` with message key `generation.unavailable`, retryable true, and the same request ID before accepting any server work. The creator retains its own actual local user message with failed delivery; the adapter creates no assistant, run, or artifact. There are no simulated delays or events. Feature services are injectable and default to this adapter, avoiding fetches to nonexistent APIs. `ChatStore` remains a separate real local capability. The library uses the capability result to describe cloud unavailability accurately.
 
 ### Real Numerical Trial
 
@@ -492,17 +538,18 @@ The isolated `model-capacity-v1` task uses explicitly synthetic data. Training x
 
 Controls offer polynomial degree `1`, `3`, or `7` and lambda `0`, `.1`, or `1`. Fit the polynomial by minimizing squared training error plus lambda times the squared non-intercept coefficients. Use a stable numerical solution and recompute coefficients, fitted line, training RMSE, and validation RMSE from the chosen configuration. Failure preserves the controls and displays a useful error instead of NaN.
 
-The task begins from degree 7 and lambda 0, asks for a prediction, allows a capacity/regularization change, and compares both errors. Success requires validation RMSE below `.21` and the explanation that zero training error alone does not guarantee performance beyond the training data. Accepted configurations include degree 3/lambda 0, degree 3/lambda .1, and degree 7/lambda .1. Because validation is used for selection, it is not independent proof of future generalization. Free reflection may be saved but is not falsely reported as AI-graded.
+The task begins from degree 7 and lambda 0. Card-based guidance explains the learning goal, names the controls where they appear, and demonstrates how to interpret the two errors. The learner can make an optional prediction, changes capacity or regularization, and compares both errors. Shape labels Straight, Curved, and Flexible correspond to degrees 1, 3, and 7; bending limits None, Gentle, and Strong correspond to lambda 0, .1, and 1. Success requires validation RMSE below `.21` and the explanation that zero training error alone does not guarantee performance beyond the training data. Accepted configurations include degree 3/lambda 0, degree 3/lambda .1, and degree 7/lambda .1. Because validation is used for selection, it is not independent proof of future generalization. Free reflection may be saved but is not falsely reported as AI-graded. Orientation is UI state: replaying or dismissing the guide changes neither responses nor hints, receipts, or XP. Actual hints remain recorded as assistance.
 
 Reference numerical targets for implementation checks, with tolerance `1e-6`, are training/validation RMSE: degree 1/lambda 0 `.5681228750/.4976179728`; degree 3/lambda 0 `.1106225068/.0532156483`; degree 7/lambda 0 approximately `0/.3719332272`; degree 7/lambda .1 `.1851313263/.1999833033`. These are supplied check targets, not test results produced by this document.
 
 The plot distinguishes training dots from validation marks with labels and shapes, fixes x to `[-1,1]`, and uses an honest stable y scale. A table/text equivalent supports the same comparison. The player owns submit, hint, reset, and navigation; a renderer changes only its typed response through `TaskRendererProps<C,R> = {task, response, onChange, disabled, status, evaluation}`, where status is `editing | submitting | evaluated | error`.
 
-`SampleSession` holds schema version 1, session ID, task ID/version, response, last attempt, evaluation, used hint IDs, and update time in a separate namespace after the first action. It uses `SampleAttempt`, not a fabricated enrollment, and always awards zero account XP. Same-key/same-body submission reuses the receipt; a changed body with that key conflicts. Editing and resubmitting uses a new key. Reset starts a new sample session and clears only sample state and hints, leaving drafts untouched.
+`SampleSession` holds schema version 1, session ID, task ID/version, response, last attempt, evaluation, used hint IDs, and update time in a separate namespace after the first action. It uses `SampleAttempt`, not a fabricated enrollment, and always awards zero account XP. Same-key/same-body submission reuses the receipt; a changed body with that key conflicts. Editing and resubmitting uses a new key. Reset starts a new sample session and clears only sample state and hints, leaving conversations and legacy data untouched.
 
 | Record | Origin and update | Durable location and return behavior |
 | --- | --- | --- |
-| Local request draft | User typing and explicit local save | Browser storage on that device; reload restores a successful save |
+| Local conversation and unfinished writing | Actual typing, message, rename, and delete operations | IndexedDB on that device; automatic ordered writes restore confirmed local state |
+| Legacy request draft | Idempotent import into a local conversation | Original retained until confirmed import; migration history prevents resurrection after deletion |
 | Trial state | Isolated task actions and reset | Separate browser namespace; never merged into account XP |
 | Conversation and messages | Authorized message and edit operations | Production database; authenticated return restores the saved branch |
 | Curriculum and approval | Research output, typed edit, explicit approval | Production database with revisions and digest-bound approval |
@@ -548,9 +595,9 @@ project/
       privacy/                 actual data and access explanation
       explore/                 public catalog
       courses/[slug]/          accessible ready-course detail
-      library/                 owned courses, enrollments, local drafts
-      create/                  request composer, including ?draft=<UUID>
-        [conversationId]/      saved conversation and curriculum
+      library/                 actual owned courses and enrollments
+      chat/                    conversation, including ?conversation=<UUID>
+      create/                  compatibility entry and legacy ?draft=<UUID>
       try/                     isolated playable activity
       learn/[enrollmentId]/    learner's own session
       s/[token]/               version-scoped shared course
@@ -562,7 +609,8 @@ project/
     domain/
       common.ts                IDs, revisions, language, and pagination
       course.ts                curriculum, approval, and course versions
-      generation.ts            conversations, runs, and typed events
+      chat.ts                  local conversations, messages, artifact references
+      generation.ts            conversations, agent turns, course jobs, typed events
       learning.ts              attempts, evidence, routes, and progress
       mechanics.ts             registered task contracts
       errors.ts                safe application errors
@@ -570,7 +618,8 @@ project/
     application/
       ports.ts                 operation-level interfaces
       local-adapter.ts         honest unavailable-service boundary
-    lib/drafts.ts              device-local draft storage
+    lib/chats.ts               local chat persistence and legacy migration
+    lib/drafts.ts              legacy request format retained for migration
     lib/routes.ts              unprefixed record-safe links
     components/
       ui/                      shared controls and feedback
@@ -580,8 +629,8 @@ project/
     features/
       landing/                 hero, explanation sections, and messages
       catalog/                 collection and detail UI
-      library/                 library and draft UI
-      creator/                 composer, curriculum, reducer, and transport
+      library/                 actual course and enrollment UI
+      creator/                 chat history, composer, artifacts, reducer, transport
       learning/
         player/                session and feedback surfaces
         sample/                isolated trial content and local evaluation
@@ -615,8 +664,8 @@ project/
   tests/
     domain/                    invariants, projections, and revisions
     ui-contracts/              common interactions and routing
-    catalog-ui/                collection states and local draft behavior
-    creator-ui/                stream reducer and creator states
+    catalog-ui/                actual course and enrollment collection states
+    creator-ui/                chat persistence, migration, artifacts, event reducer
     learning-player/           submission, help, and isolated trial
     integration/               actual services, HTTP, access, and recovery
 ```
@@ -642,17 +691,18 @@ Lists use opaque cursors, deterministic secondary ID ordering, a default limit o
 | `GET /courses?q=&cursor=&limit=` | Query parameters | `200 Page<CourseSummary>` for public ready versions |
 | `GET /courses/:id` | None | `200 CourseDetailPublic` after access check |
 | `GET /me/library?cursor=` | None | `200 Page<LibraryItem>` for the actor's owned courses and enrollments |
-| `POST /conversations` | `{title?, contentLanguage}` | `201 Conversation` |
+| `POST /conversations` | `{title?}` | `201 Conversation`; no course is created |
 | `PATCH /conversations/:id` | `{expectedRevision,title?,activeBranchId?}` | `200 Conversation` |
 | `DELETE /conversations/:id` | `{expectedRevision}` | `204`; active related runs cancel, courses are not implicitly deleted |
-| `POST /conversations/:id/messages` | `{expectedRevision,branchId,parentMessageId,text,attachmentIds,clientRequestId}` | `202 {message,run}` after capability validation |
-| `GET /conversations/:id` | None | `200 {conversation,messages,activeRun,draft}` |
+| `POST /conversations/:id/messages` | Stable request and message IDs, expected revision, branch/parent, text, supported attachments, optional user locale | `202 {message,run: AgentTurnRun}` only after capability validation; local delivery remains distinct |
+| `GET /conversations/:id` | None | Conversation, messages, current runs, and referenced course artifacts with their own curricula |
 | `GET /runs/:id` | None | `200 RunSnapshot`, including `retainedActionEvents` |
 | `GET /runs/:id/events?after=` | SSE cursor | `200` persisted event stream for an authorized run and branch |
 | `POST /runs/:id/cancel` | `{reason:'user'}` | `202 {run}`; idempotent |
 | `POST /runs/:id/retry` | `{failedInvocationId?,expectedDraftRevision?}` | `202 {run}` reusing completed effects |
 | `PATCH /curricula/:id` | `{expectedRevision,changes}` | `200 CurriculumDraft` with incremented revision and stale prior approval |
-| `POST /curricula/:id/approve` | `{expectedRevision,contentDigest}` | `202 {approval,run}` for the current revision only |
+| `POST /curricula/:id/approve` | `{expectedRevision,contentDigest}` | `202 {approval,run: GenerationRun}` for the selected course's current revision only |
+| `PATCH /courses/:id` | `{expectedRevision,title?,summary?,contentLanguage?}` | `200 Course` after an authorized metadata mutation; invalidates affected curriculum approval |
 | `POST /courses/:id/enrollments` | `{courseVersionId}` | `201 Enrollment` or the existing active enrollment |
 | `GET /enrollments/:id/session` | None | `200 {enrollment,route,lesson,task,progress}` in public projection |
 | `POST /enrollments/:id/attempts` | `{taskId,taskVersion,response,clientAttemptId}` | `201 {attemptId,evaluation,route,progress}` or `202` for pending evaluation |
@@ -681,7 +731,7 @@ Curriculum `changes` is a typed patch, not arbitrary JSON Patch:
 }
 ```
 
-The `title` patch edits the current CurriculumDraft and participates in its approval digest. Deletion/addition and specialization edits need explicit typed operations before those controls are exposed. Natural-language curriculum edits use the same mutation service, bind to draft ID and revision, and produce a new unapproved revision. Approval is never hidden inside a normal chat response.
+The `title` patch edits the current CurriculumDraft and participates in its approval digest. The course metadata operation and curriculum projection must remain consistent: a relevant title or language change produces a new unapproved curriculum revision rather than silently preserving stale approval. Summary edits target the actual course metadata. Deletion/addition and specialization edits need explicit typed operations before those controls are exposed. Natural-language curriculum edits use the same mutation service, bind to the selected course, draft ID, and revision, and produce a new unapproved revision. Approval is never hidden inside a normal chat response. These are planned HTTP operations; their live adapter and exact payload mapping require integration verification.
 
 The foundation `LibraryItem` projection and `getPublicCourse(slug)` operation are defined above. Live HTTP integration must give that slug lookup a matching endpoint or explicit server lookup; `GET /courses/:id` must not silently treat a slug as a UUID. Course access also needs an authoritative projection `{canView,canEnroll,canEdit,canShare,canPublish,reason}` before owner controls are enabled.
 
@@ -739,13 +789,16 @@ Vercel's documented Fluid compute Hobby maximum is 300 seconds per function invo
 
 | Failure | Required recovery and visible result |
 | --- | --- |
-| Provider absent, rate-limited, or unavailable before acceptance | Preserve the request, return the appropriate safe error, and provide an actionable retry without a fake run |
+| Provider absent, rate-limited, or unavailable before acceptance | Preserve the actual user message with failed or not-sent delivery, return the safe error, and retry with the same identity without a fabricated assistant, run, or course |
 | Connection fails after partial output | Keep received text, end pending state on a terminal failure, and restore by snapshot/replay; no duplicate message or course |
 | Worker stops or ownership expires | Recover persisted work through the durable runner; reject stale-worker writes and duplicate effects |
 | Creator approves an old revision | Return `409` with the current revision; show the changed curriculum and start no generation |
 | Generated task is ambiguous, unsupported, or invalid | Repair or withhold the version; do not turn a guessed answer into a validated course |
 | Evaluation is slow or uncertain | Return pending/uncertain/unavailable distinctly, retain the attempt, and avoid unsupported XP or route changes |
 | Browser storage fails | Preserve visible input and show failed local save rather than confirmed persistence |
+| An older write completes during rapid chat switching | Keep writes bound to their conversation and ordered; never replace newer writing or another chat's visible input |
+| A legacy import is retried or a deleted imported link is reopened | Reuse confirmed import state and respect deletion; never duplicate or resurrect the conversation |
+| Course selection changes while a curriculum update arrives | Apply the revision to its own artifact; do not approve or overwrite another selected course |
 | Access is absent or a share is revoked | Return the safe access result without private content; no client-only bypass |
 | A repeated request arrives | Reuse the prior result for the same idempotency key and body, or reject a changed body with `409` |
 
@@ -754,7 +807,7 @@ These are implementation and integration requirements, not results already verif
 ## What Was Simplified and Why
 
 - One Next.js/React application contains the interface and server boundaries. A second frontend framework or generic interface generator would not add the intended learning capability.
-- Foundation behavior uses explicitly local drafts and an isolated trial while service access is pending. This provides real behavior without pretending to implement shared accounts or course generation; the complete-service scope remains intact.
+- Foundation behavior uses local conversations and an isolated trial while service access is pending. This provides real behavior without pretending to implement shared accounts or course generation; the complete-service scope remains intact.
 - The interface is English only following the product owner's clarification. Course content language remains independent, preserving the general learning use case.
 - A registry of supported activities constrains generation. It allows each family to have a defensible interaction and evaluator instead of treating arbitrary generated code as safe learning content.
 - Released content is immutable and learner adaptation is separate. This avoids silently changing the course while different people are studying it.
@@ -762,7 +815,7 @@ These are implementation and integration requirements, not results already verif
 
 ## Verification Approach
 
-Mechanical checks establish behavior at the correct boundary. Domain checks cover graph validity, public projections, revision-bound approval, evidence isolation, route coverage, and idempotent awards. Draft-store checks cover save/read/delete, neighboring-record safety, schema compatibility, and failed-write feedback. Reducer checks cover delayed first output, duplicate events, gaps and replay, partial failure, cancellation, and late old-branch output.
+Mechanical checks establish behavior at the correct boundary. Domain checks cover graph validity, public projections, artifact-specific revision-bound approval, evidence isolation, route coverage, and idempotent awards. Chat-store checks cover automatic persistence, rapid switching and write ordering, reload, rename/delete, neighboring-record safety, failed writes, schema compatibility, preserved legacy metadata, repeat migration, and prevention of deleted-chat resurrection. Unavailable-send checks prove that an actual user message remains recoverable while no assistant, run, or course is created. Retry retains identity and edit creates a new identity. Fixtures exercise successful agent turns with zero, one, and several course artifacts; they verify that finishing a reply does not mark a course ready. Separate course-generation checks preserve the strong requirement for an actual course and saved version on success. Reducer checks cover delayed first output, duplicate events, gaps and replay, partial failure, cancellation, and late old-branch output. None of these fixtures establishes live creation.
 
 Learning checks exercise valid alternatives, plausible wrong responses, unsupported configurations, help tracking, repeated submission, and uncertainty. For each activated mechanic, evaluation needs positive and negative cases appropriate to that learning action; merely checking the component renders is insufficient.
 
@@ -774,7 +827,7 @@ The first deep course for integrated verification begins with AI foundations and
 
 ## Decisions and Open Issues
 
-The product owner selected the broad course service, individual experiences within a common course, deep AI with both continuation branches as the first course, Vercel as the hosting target, and an English-only interface. Foundation and design can proceed before model access. The retained slogan and cycling-topic hero follow the latest product direction.
+The product owner selected the broad course service, individual experiences within a common course, deep AI with both continuation branches as the first course, Vercel as the hosting target, and an English-only interface. Foundation and design can proceed before model access. The retained slogan, cycling-topic hero, standalone chat with multiple course artifacts, automatic course metadata, and guidance at the trial controls follow the latest product direction.
 
 The implementation proposes Next.js 16.4.3, React 19.3.1, Node 22, the Unfurl visual system, a typed activity registry, immutable released content, and enrollment-specific evidence. These choices organize the requested behavior; this draft does not attribute every implementation detail to the product owner.
 

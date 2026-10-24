@@ -29,13 +29,13 @@ export function evaluateSampleAttempt(input: SampleAttempt, receipts: ReadonlyAr
   const reasonMet = response.explanation === "noise";
   const correct = modelMet && reasonMet;
   const modelExplanation = modelMet
-    ? `Your validation error is ${fit.validationRmse.toFixed(3)}, below the 0.210 target.`
-    : `Your validation error is ${fit.validationRmse.toFixed(3)}. Try a less flexible model or a small regularization penalty to get below 0.210.`;
+    ? `Your error on new points is ${fit.validationRmse.toFixed(3)}, below the 0.210 target.`
+    : `Your error on new points is ${fit.validationRmse.toFixed(3)}. Try a less flexible shape or a Gentle bending limit to get below 0.210.`;
   const reasonExplanation = reasonMet
-    ? "A model can memorize noise in training data. The separate validation points help reveal that mismatch."
+    ? "A model can memorize noise in its learning examples. Checking it on new points helps reveal that mismatch."
     : response.explanation === null
-      ? "Choose an explanation for why zero training error is not enough."
-      : "Zero training error describes only the points the model saw. It cannot guarantee predictions on new points.";
+      ? "Choose an explanation below the experiment before checking again."
+      : "Zero error on the learning examples describes only the points the model saw. It cannot guarantee predictions on new points.";
   const evaluation = SampleEvaluationSchema.parse({
     id: crypto.randomUUID(), attemptId: attempt.id, status: "evaluated",
     outcome: correct ? "correct" : modelMet || reasonMet ? "partial" : "incorrect",
@@ -45,7 +45,7 @@ export function evaluateSampleAttempt(input: SampleAttempt, receipts: ReadonlyAr
     ],
     feedback: {
       explanation: correct
-        ? "You found a better balance. Because you used validation data to choose this model, a fresh test set is still needed for an independent estimate of performance. No finite test guarantees every future prediction."
+        ? "Your model predicts the new points well, and your explanation recognizes the limits of copying its examples. These points helped you choose the model, so a fresh test set is still needed for an independent check. No finite test guarantees every future prediction."
         : `${modelExplanation} ${reasonExplanation}`,
       nextAction: correct ? "continue" : "revise",
     },

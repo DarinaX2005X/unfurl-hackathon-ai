@@ -33,12 +33,11 @@ export function SamplePlayer() {
   return <div className={styles.player}>
     <div className={styles.introduction}>
       <div>
-        <h1>When a perfect fit goes wrong</h1>
-        <p>A model has memorized eight noisy points. Help it find the pattern.</p>
+        <h1>Teach a model to find the pattern</h1>
+        <p>Change the curve to help it predict points it hasn’t learned from.</p>
       </div>
-      <p className={styles.sampleContext}>A short practice in machine learning<br /><span>Just this device. No account progress.</span></p>
+      <p className={styles.sampleContext}>Machine learning practice<br /><span>Try it with synthetic data</span></p>
     </div>
-    <p className={styles.instruction}>{sampleTask.instruction}</p>
     {snapshot.resumed && <div className={styles.topNotice}><Notice tone="info">Your practice is back where you left it. {evaluation ? "Your last checked answer is shown below." : "Continue with your saved settings."}</Notice></div>}
     {snapshot.storageMessage && <div className={styles.topNotice}><Notice tone="warning">{snapshot.storageMessage}</Notice></div>}
     <Renderer task={sampleTask} response={snapshotSession.response} onChange={(response) => controller.edit(response)} disabled={false} status={snapshot.error ? "error" : evaluation ? "evaluated" : "editing"} evaluation={evaluation} />
@@ -59,8 +58,8 @@ export function SamplePlayer() {
         </div>}
       </Notice>}
     </div>
-    <p className={styles.selectionNote}>Validation points help you choose a model here. A fresh test set would still be needed to estimate its performance independently.</p>
-    <Dialog open={resetOpen} onOpenChange={setResetOpen} title="Start this practice again?" description="Your model settings, notes, hints and checked answers from this practice will be cleared. Your course drafts stay saved.">
+    <p className={styles.selectionNote}>This practice stays on this device and does not add account XP. The new points help you choose a model here; another test set would be needed to estimate how well it predicts independently.</p>
+    <Dialog open={resetOpen} onOpenChange={setResetOpen} title="Start this practice again?" description="This clears the model settings, notes, hints and checked answers from this practice. Your chats and courses are unaffected.">
       <div className={styles.resetActions}><Button variant="secondary" onClick={() => setResetOpen(false)}>Keep practicing</Button><Button variant="danger" onClick={() => { controller.reset(); setResetOpen(false); }}>Reset practice</Button></div>
     </Dialog>
   </div>;

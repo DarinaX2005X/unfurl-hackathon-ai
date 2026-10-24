@@ -32,7 +32,7 @@ export const sampleTask = serializePublicTask({
   mechanicId: "constrained_optimization",
   mechanicVersion: 1,
   outcomeIds: ["ceec78af-427c-471b-8377-c13a4fe9d016"],
-  instruction: "Find a model with validation error below 0.210, then explain why a perfect fit to the training points can be misleading.",
+  instruction: "Change the curve to bring its error on new points below 0.210, then explain why fitting the learning examples perfectly may not be enough.",
   contentLanguage: "en",
   config: { dataset: "model-capacity-v1", degrees: [1, 3, 7], regularizations: [0, 0.1, 1], validationTarget: 0.21 },
   availableHints: 1,
@@ -40,9 +40,9 @@ export const sampleTask = serializePublicTask({
 }, CapacityConfigSchema);
 
 export const explanationOptions = [
-  { value: "noise", label: "A flexible model can fit noise. We need evidence from points it did not train on." },
-  { value: "guarantee", label: "Zero training error guarantees accurate predictions on future data." },
-  { value: "training_only", label: "Only training error matters when choosing a model." },
+  { value: "noise", label: "A model that also works on new points. A perfect fit to the examples might just be copying their noise." },
+  { value: "guarantee", label: "A model with zero error on its learning examples. That guarantees every future prediction." },
+  { value: "training_only", label: "Whichever model fits its learning examples best. The new points don’t matter." },
 ] as const;
 
-export const sampleHint = "Try degree 3, or keep degree 7 and add a little regularization. Watch both errors: a small increase in training error can accompany a large drop in validation error.";
+export const sampleHint = "Try the Curved shape, or keep Flexible and add a Gentle bending limit. Watch both errors: a small increase on the learning examples can accompany a large drop on new points.";

@@ -6,7 +6,7 @@ import { Button, Notice } from "@/components/ui";
 import { assertCurrentApproval, curriculumDigest, validateCurriculum, type CurriculumApproval, type CurriculumDraft } from "@/domain/course";
 import { languageLabel } from "./languages";
 
-export interface ApproveCurriculumInput { draftId: string; revision: number; contentDigest: string }
+export interface ApproveCurriculumInput { courseId: string; draftId: string; revision: number; contentDigest: string }
 export type ApproveCurriculum = (input: ApproveCurriculumInput) => Promise<CurriculumApproval>;
 
 export async function approveDisplayedCurriculum(
@@ -20,7 +20,7 @@ export async function approveDisplayedCurriculum(
   }
   const contentDigest = await curriculumDigest(draft);
   if (!matches()) throw new Error("The program changed. Review the latest version.");
-  const receipt = await approve({ draftId: draft.id, revision: draft.revision, contentDigest });
+  const receipt = await approve({ courseId: draft.courseId, draftId: draft.id, revision: draft.revision, contentDigest });
   if (!matches()) throw new Error("The program changed. Review the latest version.");
   await assertCurrentApproval(draft, receipt);
   return receipt;
@@ -32,9 +32,10 @@ export interface CurriculumPanelProps {
   onApprove?: ApproveCurriculum;
   approval?: CurriculumApproval | null;
   awaitingApproval?: boolean;
+  showTitle?: boolean;
 }
 
-export function CurriculumPanel({ draft, currentRevision, onApprove, approval = null, awaitingApproval = false }: CurriculumPanelProps) {
+export function CurriculumPanel({ draft, currentRevision, onApprove, approval = null, awaitingApproval = false, showTitle = true }: CurriculumPanelProps) {
   const [pending, setPending] = useState(false);
   const [receipt, setReceipt] = useState<CurriculumApproval | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -65,7 +66,7 @@ export function CurriculumPanel({ draft, currentRevision, onApprove, approval = 
       <p>Version {draft.revision} in {languageLabel(draft.contentLanguage)}</p>
     </header>
     <div className="creator-program__body">
-      <h3 className="creator-program__title">{draft.title}</h3>
+      {showTitle && <h3 className="creator-program__title">{draft.title}</h3>}
       <p className="creator-program__goal">{draft.goal}</p>
       <p className="creator-program__estimate">{draft.modules.length} {draft.modules.length === 1 ? "section" : "sections"}, about {formatStudyTime(minutes)}</p>
       <section className="creator-program__section"><h3>Who this is for</h3><p>{draft.audience}</p></section>

@@ -4,116 +4,20 @@ import { routes } from "@/lib/routes";
 import { InfoLayout } from "./InfoLayout";
 
 export function PrivacyPage() {
-  return (
-    <InfoLayout>
-      <header className="uf-info__intro uf-info__intro--reading">
-        <h1>Your work and your privacy</h1>
-        <p className="uf-info__lead">
-          The saved work currently available in Unfurl lives in your browser.
-          Here is what the app stores, why it stores it, and how you can remove it.
-        </p>
-      </header>
-
-      <div className="uf-privacy-document">
-        <section className="uf-info-section" aria-labelledby="stored-work">
-          <h2 id="stored-work">What is saved on this device</h2>
-          <dl className="uf-privacy-records">
-            <div>
-              <dt>Unsaved course requests</dt>
-              <dd>
-                <p>
-                  While you edit a request, its text and course language are kept in this tab’s session storage
-                  so they can be recovered after a reload or a visit to another Unfurl page. Edits to an existing
-                  draft also keep the draft’s saved update time to check that the recovered text belongs to that version.
-                </p>
-                <p>
-                  This temporary recovery copy does not create a record in your library or mean that your draft
-                  has been saved. If session storage is unavailable, the app can only keep this recovery copy in memory
-                  while the page remains open. Use Save draft and check its confirmation to keep the request for a later visit.
-                </p>
-              </dd>
-            </div>
-            <div>
-              <dt>Course request drafts</dt>
-              <dd>
-                <p>
-                  Saving a draft stores its title, request text, course language, update time, and record identifiers
-                  in IndexedDB, a storage area provided by your browser. These details let the library find the
-                  request and reopen it for editing.
-                </p>
-                <p>
-                  The draft belongs to this site in this browser profile. It is not a finished course, a public
-                  catalog entry, or a copy synced to another device.
-                </p>
-              </dd>
-            </div>
-            <div>
-              <dt>Practice activity</dt>
-              <dd>
-                <p>
-                  Once you interact with the sample, its responses, submitted attempts and feedback, hints used,
-                  and session details are saved separately in this browser’s local storage. This lets the activity resume when you return.
-                </p>
-                <p>
-                  The sample has its own saved state. It does not create a course in your library or add account XP.
-                </p>
-              </dd>
-            </div>
-          </dl>
-        </section>
-
-        <section className="uf-info-section" aria-labelledby="removing-work">
-          <h2 id="removing-work">Removing saved work</h2>
-          <p>
-            To remove one course request, open My library and delete that draft. Confirming deletion removes the
-            selected record from this browser’s draft storage. Other drafts remain in place.
-          </p>
-          <p>
-            The temporary request recovery copy belongs to the current tab session. Saving the current changes
-            clears the matching recovery copy when the browser allows it. Closing the tab normally ends its session
-            storage, though a browser’s session restore may bring it back. It is separate from the saved draft in your library.
-          </p>
-          <p>
-            To start the practice activity again, use Reset in the sample. Reset clears the saved sample attempt
-            and hints while leaving course drafts intact.
-          </p>
-          <p>
-            If the browser cannot remove a saved record, the app reports that failure. A sample can reset on the
-            open page while its previous saved copy remains in browser storage, so check any message shown after resetting.
-          </p>
-          <p>
-            You can also clear this site’s data in your browser settings. That is a broader action: it can remove
-            local drafts, temporary request recovery copies, and sample progress for this site. It does not remove copies of text you have saved elsewhere.
-          </p>
-          <LinkButton href={routes.library} variant="secondary">Manage my drafts</LinkButton>
-        </section>
-
-        <section className="uf-info-section" aria-labelledby="storage-limits">
-          <h2 id="storage-limits">Local storage has limits</h2>
-          <p>
-            Browser storage is not a backup. Clearing site data, using a different browser profile, or your browser
-            removing stored data can make local work unavailable. Private browsing may discard its data when that session ends.
-          </p>
-          <p>
-            Saving can also fail if storage is full or unavailable. Check the save confirmation, and keep a separate
-            copy of text you need to retain. Unfurl cannot restore a deleted local draft from a cloud copy.
-          </p>
-        </section>
-
-        <section className="uf-info-section" aria-labelledby="generation-data">
-          <h2 id="generation-data">Course generation and cloud libraries</h2>
-          <p>
-            Course generation, cloud accounts, and cloud saving are currently unavailable. An unavailable
-            message means course creation has not started. Your request remains available
-            in the composer, where you can save it locally or retry.
-          </p>
-          <p>
-            Saving a local draft does not publish it or make it visible to other learners in the catalog.
-            Your local requests remain separate from finished courses.
-          </p>
-          <Link href={`${routes.help}#storage`} className="uf-info-link">Get help with saved work</Link>
-        </section>
-      </div>
-    </InfoLayout>
-  );
+  return <InfoLayout>
+    <header className="uf-info__intro uf-info__intro--reading"><h1>Your work and your privacy</h1><p className="uf-info__lead">Unfurl keeps your chat history and sample activity in your browser. This page explains those local records, message delivery, and what deletion removes.</p></header>
+    <div className="uf-privacy-document">
+      <section className="uf-info-section" aria-labelledby="stored-work"><h2 id="stored-work">What is saved on this device</h2>
+        <dl className="uf-privacy-records">
+          <div><dt>Conversations and messages</dt><dd><p>As you write, Unfurl automatically saves the conversation in IndexedDB, a storage area provided by your browser. The record includes its title, composer text, messages, delivery status, timestamps, and identifiers used to keep updates in order. An empty visit does not create a conversation.</p><p>When a course is created in a conversation, the local record can also hold its course reference, title, summary, content language, program and approval details, and the selected course. These references keep the conversation connected to its courses.</p><p>A message may include a browser language hint used when it is sent. The app interface stays in English; course content can have its own language.</p></dd></div>
+          <div><dt>Temporary recovery copies</dt><dd><p>While an automatic save is pending, a copy of the conversation is kept in this tab’s session storage. The matching copy is cleared after the database confirms that the latest changes were saved.</p><p>If session storage is unavailable, this recovery copy can only remain in memory while the app is open. Closing a tab normally ends its session storage, though browser session restore may bring it back. A temporary copy does not mean a database save succeeded.</p></dd></div>
+          <div><dt>Practice activity</dt><dd><p>Once you interact with the sample, its responses, attempts, feedback, hints, and session details are saved separately in local storage. This lets you resume the activity. The sample does not create a course in your library.</p></dd></div>
+          <div><dt>Requests saved with an earlier version</dt><dd><p>Older local course drafts are imported into chat history. Their original identifiers, text, timestamps, and course language are retained as part of that transition. The original draft records also remain in browser storage; importing them does not erase the source copy.</p></dd></div>
+        </dl>
+      </section>
+      <section className="uf-info-section" aria-labelledby="removing-work"><h2 id="removing-work">Removing saved work</h2><p>Delete a chat from the chat history to remove that conversation. Unfurl also clears its matching recovery copy when the browser allows it and keeps a deletion marker so an older imported record cannot recreate the deleted chat.</p><p>Deleting a chat does not delete courses created through it. It also does not erase the original draft record retained from an earlier version. To remove all local records, including those older copies and deletion markers, clear this site’s data in your browser settings.</p><p>Reset in the sample clears its saved activity and hints without deleting chats. If storage cannot be changed, the app reports that failure. A reset can take effect on the open page while an older saved copy remains, so check any message shown after resetting.</p><p>Clearing site data is a broader action: it removes local chats, recovery copies, older draft records, and sample progress for this site. It does not remove courses held by a service or copies of text you have kept elsewhere.</p><LinkButton href={routes.chat()} variant="secondary">Open chat history</LinkButton></section>
+      <section className="uf-info-section" aria-labelledby="message-delivery"><h2 id="message-delivery">Saving a chat and sending a message</h2><p>Typing saves your work locally. Choosing Send submits the message text and the conversation, message, and request identifiers to the application’s chat service, along with a language hint when available.</p><p>The saved status of a chat does not mean the service received a message. Each message has its own delivery status. If the service is unavailable or delivery fails, the message remains in local history and can be retried. No agent reply or created course is shown without a corresponding service response.</p><p>Local conversations are not currently synced to a cloud account. A course created by a service is a separate record from the local conversation that led to it.</p></section>
+      <section className="uf-info-section" aria-labelledby="storage-limits"><h2 id="storage-limits">Local storage has limits</h2><p>Browser storage is not a backup. Using a different device or browser profile, clearing site data, or the browser removing stored data can make local work unavailable. Private browsing may discard its records when the session ends.</p><p>Saving can fail if storage is full or blocked. Check the saving status and keep a separate copy of text you need to retain. Unfurl cannot restore deleted local history from a cloud backup.</p><Link href={`${routes.help}#storage`} className="uf-info-link">Get help with saved work</Link></section>
+    </div>
+  </InfoLayout>;
 }

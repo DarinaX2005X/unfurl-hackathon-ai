@@ -1,7 +1,7 @@
 import { ContentLanguageSchema } from "@/domain";
 import type { CourseQuery } from "@/application/ports";
 
-export type LibraryView = "all" | "drafts" | "courses" | "in_progress";
+export type LibraryView = "all" | "courses" | "in_progress";
 export function readCourseQuery(params: Pick<URLSearchParams, "get">): CourseQuery {
   const q = params.get("q")?.trim().slice(0, 200);
   const language = params.get("contentLanguage");
@@ -9,7 +9,7 @@ export function readCourseQuery(params: Pick<URLSearchParams, "get">): CourseQue
 }
 export function readLibraryView(params: Pick<URLSearchParams, "get">): LibraryView {
   const view = params.get("view");
-  return view === "drafts" || view === "courses" || view === "in_progress" ? view : "all";
+  return view === "courses" || view === "in_progress" ? view : "all";
 }
 export function updateCollectionQuery(current: string, values: { q?: string; contentLanguage?: string; view?: LibraryView }): string {
   const params = new URLSearchParams(current);

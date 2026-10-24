@@ -15,7 +15,8 @@ export const routes = {
   help: "/help",
   privacy: "/privacy",
   course: (slug: string): string => `/courses/${pathSegment(slug)}`,
-  create: (draftId?: string): string =>
-    draftId === undefined ? "/create" : `/create?draft=${encodeURIComponent(draftId)}`,
+  chat: (conversationId?: string): string =>
+    conversationId === undefined ? "/chat" : `/chat?conversation=${encodeURIComponent(conversationId)}`,
+  create: (): string => "/chat",
   learn: (enrollmentId: string): string => `/learn/${pathSegment(enrollmentId)}`,
 } as const;
