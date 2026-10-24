@@ -1,0 +1,6 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "incremental": false },
+  "include": ["../../next-env.d.ts", "../../src/features/learning/**/*.ts", "../../src/features/learning/**/*.tsx", "../../src/app/try/**/*.tsx", "../../src/app/learn/**/*.tsx", "./*.ts", "./*.tsx"],
+  "exclude": ["../../node_modules"]
+}

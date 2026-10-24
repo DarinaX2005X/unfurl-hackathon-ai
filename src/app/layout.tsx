@@ -6,6 +6,7 @@ import "@/styles/globals.css";
 export const metadata: Metadata = {
   title: "Unfurl",
   description: "Learn what you’ve always wanted to.",
+  icons: { icon: "/brand/mark.svg" },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
