@@ -1,0 +1,10 @@
+/devpost/learner-profile.md
+.env
+.env.*
+!.env.example
+node_modules/
+.next/
+.vercel/
+coverage/
+.cache/
+*.tsbuildinfo

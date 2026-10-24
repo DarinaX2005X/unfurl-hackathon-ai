@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="80" height="80" viewBox="6 1 80 80" role="img" aria-labelledby="title">
+  <title id="title">Unfurl</title>
+  <g fill="#BA432D">
+    <path d="M14 14h16v29c0 10 6 17 16 17s16-7 16-17V29l16 7v7c0 19-13 32-32 32S14 62 14 43Z"/>
+    <path d="M44 7 78 22v16L44 23Z"/>
+  </g>
+</svg>

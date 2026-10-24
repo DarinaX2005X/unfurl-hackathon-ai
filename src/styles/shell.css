@@ -1,0 +1,355 @@
+.uf-brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: fit-content;
+  min-height: 2.75rem;
+  flex: 0 0 auto;
+  border-radius: var(--radius-control);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  text-decoration: none;
+  transition: color var(--motion-hover) var(--ease-out);
+}
+
+.uf-brand__mark {
+  display: block;
+  width: 2.125rem;
+  height: 2.125rem;
+  flex: 0 0 auto;
+  fill: currentColor;
+  color: var(--color-action);
+  transition: color var(--motion-hover) var(--ease-out), transform var(--motion-press) var(--ease-out);
+}
+
+.uf-brand__wordmark {
+  font-size: 1.375rem;
+  font-weight: 800;
+  line-height: 1.25;
+  letter-spacing: -0.045em;
+}
+
+.uf-brand:active .uf-brand__mark {
+  transform: scale(0.94);
+}
+
+.uf-brand:focus-visible,
+.uf-public-header__link:focus-visible,
+.uf-shell-nav__link:focus-visible,
+.uf-shell-skip:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: 4px;
+}
+
+.uf-shell-skip {
+  position: fixed;
+  top: 0.75rem;
+  left: 1rem;
+  z-index: 100;
+  display: inline-flex;
+  align-items: center;
+  min-height: 2.75rem;
+  max-width: calc(100vw - 2rem);
+  padding: 0.5rem 1rem;
+  border-radius: var(--radius-control);
+  background: var(--color-surface);
+  color: var(--color-ink);
+  font-weight: 650;
+  text-decoration: none;
+  box-shadow: var(--shadow-overlay);
+  transform: translateY(calc(-100% - 2rem));
+}
+
+.uf-shell-skip:focus {
+  transform: none;
+}
+
+.uf-public-header {
+  position: relative;
+  z-index: 10;
+  background: var(--color-canvas);
+}
+
+.uf-public-header__inner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.5rem;
+  min-height: 4.25rem;
+  max-width: 80rem;
+  margin-inline: auto;
+  padding: 0.5rem clamp(1rem, 3vw, 2rem);
+}
+
+.uf-public-header__links {
+  display: none;
+  align-items: center;
+  gap: 0.5rem;
+  margin-left: auto;
+}
+
+.uf-public-header__link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.75rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: var(--radius-control);
+  color: var(--color-ink);
+  font-size: 0.9375rem;
+  font-weight: 600;
+  line-height: 1.5;
+  text-decoration: none;
+  transition: background-color var(--motion-hover) var(--ease-out), color var(--motion-hover) var(--ease-out);
+}
+
+.uf-public-header__link:active {
+  background: var(--color-selected);
+}
+
+.uf-public-header__action {
+  display: none;
+  flex: 0 0 auto;
+}
+
+.uf-public-header__menu {
+  margin-left: auto;
+}
+
+.uf-shell {
+  min-width: 0;
+  min-height: 100dvh;
+  background: var(--color-canvas);
+  color: var(--color-ink);
+}
+
+.uf-shell__mobile-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  min-height: 4.25rem;
+  padding: 0.5rem 1rem;
+  border-bottom: 1px solid var(--color-line-soft);
+  background: var(--color-canvas);
+}
+
+.uf-shell__layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-height: calc(100dvh - 4.25rem);
+}
+
+.uf-shell__sidebar {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 2rem;
+  min-width: 0;
+  padding: 1.5rem 1rem;
+  background: var(--color-surface-inset);
+}
+
+.uf-shell__sidebar > .uf-brand {
+  margin-inline: 0.5rem;
+}
+
+.uf-shell-nav {
+  min-width: 0;
+  flex: 0 0 auto;
+}
+
+.uf-shell-nav__create {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  white-space: normal;
+  text-align: center;
+}
+
+.uf-shell-nav__create[aria-current="page"] {
+  box-shadow: inset 0 0 0 2px var(--color-action-hover);
+}
+
+.uf-shell-nav__list {
+  display: grid;
+  gap: 0.25rem;
+  margin: 1rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.uf-shell-nav__link {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 2.75rem;
+  min-width: 0;
+  padding: 0.625rem 0.75rem;
+  border-radius: var(--radius-control);
+  color: var(--color-ink);
+  font-size: 0.9375rem;
+  font-weight: 550;
+  line-height: 1.5;
+  text-decoration: none;
+  transition: background-color var(--motion-hover) var(--ease-out), box-shadow var(--motion-press) var(--ease-out);
+}
+
+.uf-shell-nav__link svg {
+  flex: 0 0 auto;
+}
+
+.uf-shell-nav__link span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.uf-shell-nav__link[aria-current="page"] {
+  background: var(--color-selected);
+  font-weight: 750;
+}
+
+.uf-shell-nav__link:active {
+  background: var(--color-selected);
+  box-shadow: inset 0 0 0 1px var(--color-border);
+}
+
+.uf-shell__history {
+  min-width: 0;
+  min-height: 0;
+  overflow-wrap: anywhere;
+}
+
+.uf-shell__drawer-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+  min-width: 0;
+}
+
+.uf-shell__workspace {
+  min-width: 0;
+}
+
+.uf-shell__main {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.uf-shell__main:focus {
+  outline: none;
+}
+
+.uf-shell__main:focus-visible {
+  outline: 3px solid var(--color-focus);
+  outline-offset: -3px;
+}
+
+.uf-shell__context {
+  min-width: 0;
+  border-top: 1px solid var(--color-line-soft);
+  background: var(--color-surface);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .uf-brand:hover,
+  .uf-brand:hover .uf-brand__mark {
+    color: var(--color-action-hover);
+  }
+
+  .uf-public-header__link:hover {
+    background: var(--color-surface-inset);
+  }
+
+  .uf-shell-nav__link:hover {
+    background: var(--color-surface);
+  }
+
+  .uf-shell-nav__link[aria-current="page"]:hover {
+    background: var(--color-selected);
+    box-shadow: inset 0 0 0 1px var(--color-action);
+  }
+}
+
+@media (min-width: 960px) {
+  .uf-public-header__links {
+    display: flex;
+  }
+
+  .uf-public-header__action {
+    display: block;
+  }
+
+  .uf-public-header__menu,
+  .uf-shell__mobile-header {
+    display: none;
+  }
+
+  .uf-shell__layout {
+    grid-template-columns: 15rem minmax(0, 1fr);
+    min-height: 100dvh;
+  }
+
+  .uf-shell__sidebar {
+    position: sticky;
+    top: 0;
+    align-self: start;
+    grid-column: 1;
+    height: 100dvh;
+    max-height: 100dvh;
+  }
+
+  .uf-shell__sidebar .uf-shell__history {
+    flex: 1 1 auto;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+  }
+
+  .uf-shell__workspace {
+    grid-column: 2;
+    width: 100%;
+    max-width: 90rem;
+    margin-inline: auto;
+  }
+}
+
+@media (min-width: 1280px) {
+  .uf-shell__workspace--context {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(18rem, 22rem);
+    align-items: start;
+  }
+
+  .uf-shell__context {
+    position: sticky;
+    top: 0;
+    max-height: 100dvh;
+    overflow-y: auto;
+    border-top: 0;
+    border-left: 1px solid var(--color-line-soft);
+    overscroll-behavior: contain;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .uf-brand,
+  .uf-brand__mark,
+  .uf-public-header__link,
+  .uf-shell-nav__link {
+    transition-duration: 0s;
+  }
+
+  .uf-brand:active .uf-brand__mark {
+    transform: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .uf-shell-nav__link[aria-current="page"],
+  .uf-shell-nav__create[aria-current="page"] {
+    outline: 2px solid Highlight;
+    outline-offset: -2px;
+  }
+}
