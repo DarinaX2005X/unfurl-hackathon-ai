@@ -49,7 +49,7 @@ export function Conversation({ messages, actionEvents = [], pending, transmittin
         {message.role === "user" && message.delivery !== "accepted" && <div className="creator-message__delivery">
           <p>{message.delivery === "sending" ? "Sending…" : message.error?.messageKey === "chat.deliveryUnknown" ? "Delivery wasn’t confirmed" : "Not sent"}</p>
           {(message.delivery === "failed" || message.delivery === "not_sent") && <>
-            <p className="creator-message__failure-detail">{message.error?.messageKey === "chat.deliveryUnknown" ? "Retry to check this same message." : "Unfurl couldn’t receive this message. Try again when you’re ready."}</p>
+            <p className="creator-message__failure-detail">{message.error?.messageKey === "chat.deliveryUnknown" ? "Retry to check this same message." : message.error?.messageKey === "generation.unavailable" ? "The AI agent is unavailable right now. You can retry this message later." : "Unfurl couldn’t receive this message. Please try again."}</p>
             <div className="creator-message__delivery-actions"><Button variant="quiet" size="compact" onClick={() => onRetry(message.id)} pending={transmittingId === message.id} disabled={pending}><RotateCcw size={16} aria-hidden="true" />Retry</Button><Button variant="quiet" size="compact" onClick={() => onEdit(message.id)} disabled={pending}><Pencil size={16} aria-hidden="true" />Edit</Button></div>
           </>}
         </div>}

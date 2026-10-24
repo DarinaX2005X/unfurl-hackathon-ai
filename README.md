@@ -6,9 +6,11 @@ Unfurl is a learning workspace for turning a personal goal into a substantial co
 
 This checkout currently provides a standalone local chat and a guided numerical learning activity. Live research and course generation are not connected yet. You can prepare a learning goal, return to your conversations, and use the activity without an account or API key.
 
-[Run locally](#run-locally) · [Try the learning activity](#try-the-learning-activity) · [Repository](https://github.com/DarinaX2005X/hackathon-ai)
+[Run locally](#run-locally), [try the learning activity](#try-the-learning-activity), [repository](https://github.com/DarinaX2005X/hackathon-ai)
 
-Next.js **16.4.3** · React **19.3.1** · TypeScript **6.0.3** · Node.js **22.x**
+Next.js **16.4.3**, React **19.3.1**, TypeScript **6.0.3**, Node.js **22.x**
+
+![Unfurl home with the Learn everything heading and unfolded course book](docs/images/unfurl-home.jpg)
 
 ## Contents
 

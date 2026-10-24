@@ -9,10 +9,10 @@ import { SiteFooter } from "./info";
 import "./landing.css";
 
 const chapters = [
-  { title: "Find your foundations", detail: "Connect the essential ideas in data, probability, and Python. Begin with what you know and give unfamiliar ideas time to settle.", topics: "Data · Probability · Python" },
-  { title: "Understand how models learn", detail: "Train a small model, investigate what it learns, and test how well that understanding travels to new examples.", topics: "Training · Evaluation · Generalization" },
-  { title: "Build an AI system", detail: "Bring models, instructions, tools, and useful information together. Follow a request through the system and see where each decision belongs.", topics: "Models · Tools · Retrieval" },
-  { title: "Make something of your own", detail: "Choose a problem you care about. Build a working project, explain its limitations, and decide what you would improve next.", topics: "A project · A reasoned explanation" },
+  { title: "Find your foundations", detail: "Connect the essential ideas in data, probability, and Python. Begin with what you know and give unfamiliar ideas time to settle.", topics: "Data, probability, Python" },
+  { title: "Understand how models learn", detail: "Train a small model, investigate what it learns, and test how well that understanding travels to new examples.", topics: "Training, evaluation, generalization" },
+  { title: "Build an AI system", detail: "Bring models, instructions, tools, and useful information together. Follow a request through the system and see where each decision belongs.", topics: "Models, tools, retrieval" },
+  { title: "Make something of your own", detail: "Choose a problem you care about. Build a working project, explain its limitations, and decide what you would improve next.", topics: "A project and a reasoned explanation" },
 ] as const;
 
 export function LandingPage() {
