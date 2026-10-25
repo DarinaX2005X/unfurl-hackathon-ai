@@ -8,7 +8,7 @@ import { IdSchema } from "../../domain/common";
 import { safeReturnTo } from "../../lib/auth-return-to";
 import { createRequestAuth } from "./client";
 import { isDatabaseConfigured, readAuthConfiguration, requireAccountConfiguration } from "./config";
-import { providerFault, ServiceFault } from "./errors";
+import { providerFault, ServiceFault, unavailable } from "./errors";
 import { assertSameOrigin, failure, readInput, success } from "./http";
 import { accountSession, updateProfile } from "./profile";
 import { getVerifiedIdentity, requireVerifiedIdentity } from "./session";
@@ -24,6 +24,7 @@ function callbackUrl(origin: string, returnTo: unknown): string {
 
 export async function handleAuthMutation(request: NextRequest, operation: AuthOperation): Promise<NextResponse> {
   let auth: RequestAuth | undefined;
+  let unacknowledgedSession = false;
   try {
     assertSameOrigin(request);
     const config = requireAccountConfiguration();
@@ -33,6 +34,8 @@ export async function handleAuthMutation(request: NextRequest, operation: AuthOp
       const input = await readInput(request, SignInInputSchema);
       const result = await auth.client.auth.signInWithPassword({ email: input.email, password: input.password });
       if (result.error) throw providerFault(result.error);
+      if (!result.data.session) throw unavailable();
+      unacknowledgedSession = true;
       const verified = await requireVerifiedIdentity(auth.client);
       response = success({ status: "authenticated", session: await accountSession(verified), redirectTo: safeReturnTo(input.returnTo) });
     } else if (operation === "sign-up") {
@@ -49,6 +52,7 @@ export async function handleAuthMutation(request: NextRequest, operation: AuthOp
         if (!["user_already_exists", "email_exists"].includes(result.error.code ?? "")) throw providerFault(result.error);
       }
       if (result.data.session) {
+        unacknowledgedSession = true;
         const verified = await requireVerifiedIdentity(auth.client);
         response = success({ status: "authenticated", session: await accountSession(verified), redirectTo: safeReturnTo(input.returnTo) });
       } else {
@@ -74,6 +78,13 @@ export async function handleAuthMutation(request: NextRequest, operation: AuthOp
     return auth.apply(response);
   } catch (error) {
     const response = failure(error, request);
+    if (unacknowledgedSession && auth) {
+      // Do not switch the browser's actor when its durable account load failed.
+      // Revoke only the new provider session; do not forward its cookie removals
+      // over the browser's previous, still-valid session.
+      try { await auth.client.auth.signOut({ scope: "local" }); } catch { /* Best effort; no new token is exposed. */ }
+      return response;
+    }
     return auth ? auth.apply(response) : response;
   }
 }
