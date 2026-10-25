@@ -99,7 +99,7 @@ export async function readArtifact(tx: DbTransaction, ownerId: string, courseId:
     revision: course.revision, curriculum: draft, approval: row ? approvalFromRow(row) : null, approvalRequestedRevision: request?.approval_requested_revision ?? null,
     readyVersionId: course.currentReadyVersionId, updatedAt: course.updatedAt > draft.updatedAt ? course.updatedAt : draft.updatedAt });
 }
-export async function readCurrentRuns(tx: DbTransaction, ownerId: string, artifact: CourseArtifactRef): Promise<{ generationRun: GenerationRun | null; languageRun: AgentTurnRun | null }> {
+export async function readCurrentRuns(tx: DbTransaction, ownerId: string, artifact: CourseArtifactRef): Promise<{ generationRun: GenerationRun | null; languageRun: AgentTurnRun | null; authoringRun: AgentTurnRun | null }> {
   const draft = artifact.curriculum;
   let generationRun: GenerationRun | null = null;
   if (draft && artifact.approval) {
@@ -111,7 +111,10 @@ export async function readCurrentRuns(tx: DbTransaction, ownerId: string, artifa
   const language = (await tx.query<TurnRow>(`SELECT r.* FROM unfurl.course_language_revision_intents intent
     JOIN unfurl.agent_turn_runs r ON r.id=intent.run_id AND r.owner_id=intent.owner_id
     WHERE intent.owner_id=$1 AND intent.course_id=$2 ORDER BY intent.created_at DESC,intent.run_id DESC LIMIT 1`, [ownerId, artifact.courseId])).rows[0];
-  return { generationRun, languageRun: language ? turnFromRow(language) : null };
+  const authoring = (await tx.query<TurnRow>(`SELECT r.* FROM unfurl.curriculum_patch_intents intent
+    JOIN unfurl.agent_turn_runs r ON r.id=intent.run_id AND r.owner_id=intent.owner_id
+    WHERE intent.owner_id=$1 AND intent.draft_id=$2 ORDER BY intent.created_at DESC,intent.run_id DESC LIMIT 1`, [ownerId, draft?.id ?? null])).rows[0];
+  return { generationRun, languageRun: language ? turnFromRow(language) : null, authoringRun: authoring ? turnFromRow(authoring) : null };
 }
 
 export async function mutationResult(tx: DbTransaction, ownerId: string, courseId: string): Promise<CurriculumMutationResult> {
@@ -175,8 +178,15 @@ export async function createResearchedCourse(tx: DbTransaction, input: {
   return mutationResult(tx, input.ownerId, course.id);
 }
 
+export async function assertNoPendingPatch(tx: DbTransaction, ownerId: string, draftId: string) {
+  const pending = (await tx.query(`SELECT intent.run_id FROM unfurl.curriculum_patch_intents intent
+    JOIN unfurl.agent_turn_runs r ON r.id=intent.run_id AND r.owner_id=intent.owner_id
+    WHERE intent.owner_id=$1 AND intent.draft_id=$2 AND r.status IN ('queued','running') LIMIT 1`, [ownerId, draftId])).rows[0];
+  if (pending) throw new ServiceFault(409, "revision_conflict", "curriculum.reviewInProgress");
+}
 export async function approveInTransaction(tx: DbTransaction, input: { ownerId: string; draftId: string; expectedRevision: number; contentDigest: string }) {
   const { course, draft } = await requireDraft(tx, input.ownerId, input.draftId, true);
+  await assertNoPendingPatch(tx, input.ownerId, draft.id);
   const digest = await curriculumDigest(draft);
   if (draft.revision !== input.expectedRevision || digest !== input.contentDigest) throw curriculumConflict(draft.revision);
   if (validateCurriculumOrder(draft).length) throw invalidCurriculum();

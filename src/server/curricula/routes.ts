@@ -22,7 +22,7 @@ export async function patchCurriculumRoute(request: NextRequest, id: string) {
     assertSameOrigin(request);
     const actor = await requireActor();
     const input = await readInput(request, PatchCurriculumInputSchema, { maxBytes: 2_000_000 });
-    const receipt = await curriculumService.patch(actor, identity(id), input, key(request), request.signal);
+    const receipt = await curriculumService.patch(actor, identity(id), input, key(request));
     return success(receipt.data, receipt.status);
   } catch (error) { return failure(error, request); }
 }

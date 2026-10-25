@@ -1,9 +1,23 @@
 import "server-only";
 import { z } from "zod";
 import { validateCurriculum, type CurriculumDraft } from "@/domain/course";
-import { OutcomeCoverageSchema, PreparedModuleSchema, type GenerationValidationIssue, type PreparedModule } from "@/server/course-generation/contracts";
+import { OutcomeCoverageSchema, PreparedModuleSchema, type GenerationValidationIssue, type PreparedModule, type OutcomeCoverage } from "@/server/course-generation/contracts";
 import { taskDigest } from "@/server/mechanics/digest";
 import { prepareTaskCandidate } from "@/server/mechanics/materialization";
+
+/** One outcome may be taught by several modules. Retain every reference; validation still rejects duplicates or invalid provenance. */
+export function mergeOutcomeCoverage(moduleCoverage: readonly OutcomeCoverage[]): OutcomeCoverage[] {
+  const merged = new Map<string, OutcomeCoverage>();
+  for (const raw of moduleCoverage) {
+    const entry = OutcomeCoverageSchema.parse(raw), prior = merged.get(entry.outcomeId);
+    if (prior) {
+      prior.introducedAt.push(...entry.introducedAt);
+      prior.practicedTaskIds.push(...entry.practicedTaskIds);
+      prior.demonstratedTaskIds.push(...entry.demonstratedTaskIds);
+    } else merged.set(entry.outcomeId, { outcomeId: entry.outcomeId, introducedAt: [...entry.introducedAt], practicedTaskIds: [...entry.practicedTaskIds], demonstratedTaskIds: [...entry.demonstratedTaskIds] });
+  }
+  return [...merged.values()];
+}
 
 /** Reference/order checks are necessary evidence, never a semantic quality certificate. */
 export function validateCourseCoverage(input: {
@@ -67,7 +81,7 @@ export function validateCourseCoverage(input: {
   for (const id of tasks.keys()) if (!positions.has(`task:${id}`)) add("unknown_reference", ["tasks", id], "Every prepared task needs a real lesson position");
   const outcomeIds = input.draft.outcomes.map((outcome) => outcome.id);
   if (new Set(coverage.map((entry) => entry.outcomeId)).size !== coverage.length || coverage.length !== outcomeIds.length || outcomeIds.some((id) => !coverage.some((entry) => entry.outcomeId === id))) add("missing_outcome", ["coverage"], "Every approved outcome, including specialization, needs complete coverage");
-  const introductionPosition = new Map<string, number>(), demonstrationPosition = new Map<string, number>();
+  const introductionPosition = new Map<string, number>(), firstDemonstrationPosition = new Map<string, number>(), competencePosition = new Map<string, number>();
   for (const entry of coverage) {
     const path = ["coverage", entry.outcomeId];
     if (!outcomeIds.includes(entry.outcomeId)) add("unknown_reference", path, "Coverage references an unapproved outcome");
@@ -83,6 +97,7 @@ export function validateCourseCoverage(input: {
     const firstIntroduction = Math.min(...introductions);
     introductionPosition.set(entry.outcomeId, firstIntroduction);
     const requiredCriteria = new Set<string>(), practiceCriteria = new Set<string>(), demonstratedCriteria = new Set<string>();
+    const firstCriterionDemonstration = new Map<string, number>();
     for (const [purpose, references] of [["practice", entry.practicedTaskIds], ["demonstration", entry.demonstratedTaskIds]] as const) {
       for (const id of references) {
         const task = tasks.get(id), at = positions.get(`task:${id}`);
@@ -94,9 +109,10 @@ export function validateCourseCoverage(input: {
         for (const criterion of assessment.outcomes.find((outcome) => outcome.outcomeId === entry.outcomeId)?.dimensions ?? []) {
           (purpose === "practice" ? practiceCriteria : demonstratedCriteria).add(criterion.dimensionId);
           if (assessment.role === "required") requiredCriteria.add(criterion.dimensionId);
+          if (purpose === "demonstration") firstCriterionDemonstration.set(criterion.dimensionId, Math.min(firstCriterionDemonstration.get(criterion.dimensionId) ?? Infinity, at));
         }
         if (purpose === "demonstration") {
-          demonstrationPosition.set(entry.outcomeId, Math.max(demonstrationPosition.get(entry.outcomeId) ?? -1, at));
+          firstDemonstrationPosition.set(entry.outcomeId, Math.min(firstDemonstrationPosition.get(entry.outcomeId) ?? Infinity, at));
           const transfer = task.design.transfer;
           if (!transfer || transfer.fromTaskIds.some((practiceId) => !entry.practicedTaskIds.includes(practiceId))) { add("invalid_transfer", path, "Demonstration must transfer from this outcome's practice"); continue; }
           for (const practiceId of transfer.fromTaskIds) {
@@ -113,11 +129,13 @@ export function validateCourseCoverage(input: {
     const expected = criteria.get(entry.outcomeId);
     if (!expected?.size || [...expected.keys()].some((id) => !practiceCriteria.has(id) || !demonstratedCriteria.has(id) || !requiredCriteria.has(id))) add("criterion_mismatch", path, "Every researched criterion needs practice, demonstration and required assessment");
     if ([...practiceCriteria, ...demonstratedCriteria].some((id) => !expected?.has(id))) add("criterion_mismatch", path, "Coverage cannot invent canonical criteria");
+    // Later reinforcement does not undo established prerequisite competence. Newly added criteria still have to be demonstrated.
+    if (expected?.size) competencePosition.set(entry.outcomeId, Math.max(...[...expected.keys()].map((id) => firstCriterionDemonstration.get(id) ?? Infinity)));
   }
   for (const outcome of input.draft.outcomes) {
     for (const prerequisite of outcome.prerequisiteOutcomeIds) {
-      const introduced = introductionPosition.get(prerequisite), demonstrated = demonstrationPosition.get(prerequisite);
-      if (introduced === undefined || demonstrated === undefined || introduced >= (introductionPosition.get(outcome.id) ?? -1) || demonstrated >= (demonstrationPosition.get(outcome.id) ?? -1)) add("prerequisite_order", ["coverage", outcome.id], "Prerequisite outcomes must be introduced and demonstrated before dependent outcomes");
+      const introduced = introductionPosition.get(prerequisite), demonstrated = competencePosition.get(prerequisite);
+      if (introduced === undefined || demonstrated === undefined || introduced >= (introductionPosition.get(outcome.id) ?? -1) || demonstrated >= (firstDemonstrationPosition.get(outcome.id) ?? -1)) add("prerequisite_order", ["coverage", outcome.id], "Prerequisite outcomes must be introduced and their criteria demonstrated before dependent outcomes");
     }
   }
   return issues;

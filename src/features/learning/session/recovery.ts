@@ -22,6 +22,7 @@ export const RecoveryRecordSchema = z.object({
     z.object({ kind: z.literal("hint"), key: IdSchema, body: HintInputSchema }).strict(),
     z.object({ kind: z.literal("reveal"), key: IdSchema, body: StartActivityInputSchema }).strict(),
     z.object({ kind: z.literal("revisit"), key: IdSchema, body: RevisitInputSchema }).strict(),
+    z.object({ kind: z.literal("fresh_assessment"), key: IdSchema, body: RouteRevisionInputSchema }).strict(),
     z.object({ kind: z.literal("support"), key: IdSchema, body: SupportRequestSchema }).strict(),
     z.object({ kind: z.literal("support_response"), key: IdSchema, target: IdSchema, body: SupportResponseInputSchema }).strict(),
     z.object({ kind: z.literal("support_return"), key: IdSchema, target: IdSchema, body: RouteRevisionInputSchema }).strict(),

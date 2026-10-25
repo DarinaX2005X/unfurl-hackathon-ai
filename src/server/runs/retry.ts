@@ -30,6 +30,9 @@ export async function retryRunInTransaction(tx:DbTransaction,actor:Actor,id:stri
     const latest=(await tx.query<{id:string}>("SELECT id FROM unfurl.agent_turn_runs WHERE conversation_id=$1 AND branch_id=$2 ORDER BY created_at DESC,id DESC LIMIT 1",[run.conversation_id,run.branch_id])).rows[0];
     if(latest?.id!==id)throw conflict();
     const intent=(await tx.query<{course_id:string;expected_course_revision:number;draft_id:string;expected_draft_revision:number;target_language:string}>("SELECT * FROM unfurl.course_language_revision_intents WHERE run_id=$1 AND owner_id=$2",[id,actor.id])).rows[0];
+    const patch=(await tx.query<{draft_id:string;expected_draft_revision:number;changes:unknown}>("SELECT * FROM unfurl.curriculum_patch_intents WHERE run_id=$1 AND owner_id=$2",[id,actor.id])).rows[0];
+    if(patch){const valid=(await tx.query(`SELECT d.id FROM unfurl.curriculum_drafts d JOIN unfurl.courses c ON c.id=d.course_id
+      WHERE d.id=$1 AND d.revision=$2 AND d.conversation_id=$3 AND c.owner_id=$4 FOR UPDATE OF d`,[patch.draft_id,patch.expected_draft_revision,run.conversation_id,actor.id])).rowCount;if(valid!==1)throw conflict();}
     if(intent){
       const valid=(await tx.query(`SELECT c.id FROM unfurl.courses c JOIN unfurl.curriculum_drafts d ON d.course_id=c.id
         WHERE c.id=$1 AND c.owner_id=$2 AND c.revision=$3 AND d.id=$4 AND d.revision=$5`,[intent.course_id,actor.id,intent.expected_course_revision,intent.draft_id,intent.expected_draft_revision])).rowCount;
@@ -38,6 +41,7 @@ export async function retryRunInTransaction(tx:DbTransaction,actor:Actor,id:stri
     await tx.query("INSERT INTO unfurl.agent_turn_runs(id,owner_id,conversation_id,branch_id,input_message_id,status,retry_of_run_id) VALUES($1,$2,$3,$4,$5,'queued',$6)",[next,actor.id,run.conversation_id,run.branch_id,run.input_message_id,id]);
     if(intent)await tx.query(`INSERT INTO unfurl.course_language_revision_intents(run_id,owner_id,course_id,expected_course_revision,draft_id,expected_draft_revision,target_language)
       VALUES($1,$2,$3,$4,$5,$6,$7)`,[next,actor.id,intent.course_id,intent.expected_course_revision,intent.draft_id,intent.expected_draft_revision,intent.target_language]);
+    if(patch)await tx.query("INSERT INTO unfurl.curriculum_patch_intents(run_id,owner_id,draft_id,expected_draft_revision,changes) VALUES($1,$2,$3,$4,$5)",[next,actor.id,patch.draft_id,patch.expected_draft_revision,JSON.stringify(patch.changes)]);
   }else{
     const approved=(await tx.query<{document:unknown;content_digest:string;summary:string}>(`SELECT revision.document,a.content_digest,c.summary
       FROM unfurl.curriculum_approvals a JOIN unfurl.curriculum_drafts d ON d.id=a.draft_id AND d.revision=a.draft_revision

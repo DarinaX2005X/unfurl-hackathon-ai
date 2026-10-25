@@ -20,8 +20,8 @@ describe("budget admission policy (pure logic, not a durable concurrency test)",
   });
 
   it("applies the probe envelope inside the same campaign ceiling", () => {
-    expect(canReserve({ ...empty, probeSettled: 700_000n }, 50_000n, true)).toEqual({ allowed: true });
-    expect(canReserve({ ...empty, probeSettled: 700_000n, probeReserved: 49_999n }, 2n, true)).toEqual({ allowed: false, reason: "probe_limit" });
+    expect(canReserve({ ...empty, probeSettled: 950_000n }, 50_000n, true)).toEqual({ allowed: true });
+    expect(canReserve({ ...empty, probeSettled: 950_000n, probeReserved: 49_999n }, 2n, true)).toEqual({ allowed: false, reason: "probe_limit" });
     expect(canReserve({ ...empty, settled: 9_499_999n }, 2n, true)).toEqual({ allowed: false, reason: "campaign_limit" });
   });
 

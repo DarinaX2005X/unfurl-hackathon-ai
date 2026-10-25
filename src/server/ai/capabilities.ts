@@ -8,6 +8,7 @@ import { MODEL_ID, MODEL_POLICY_VERSION, PROVIDER_PRICE_CAP, PROVIDER_TAG, SEARC
 import { ProviderFailure } from "./failure";
 import { canonicalJson, jsonDigest } from "./json";
 import type { ModelCapabilities, ProviderCapability, ProviderCapabilityGate } from "./ports";
+import { WIRE_SCHEMA_VERSION } from "./wire-schema";
 
 export type ExecutionCapability = ProviderCapability | "budget_accounting" | "run_recovery" | "dispatcher";
 export type RuntimeWorld = "local" | "vercel";
@@ -15,7 +16,7 @@ export const CAPABILITY_TEST_VERSION = "runtime-capabilities-v1";
 export function runtimeConfigurationDigest(world: RuntimeWorld): string {
   return jsonDigest({ world, model: MODEL_ID, provider: PROVIDER_TAG, modelPolicy: MODEL_POLICY_VERSION,
     priceCaps: { ...PROVIDER_PRICE_CAP }, search: { ...SEARCH_POLICY, maxToolCalls: 1 }, runtime: "fenced-workflow-v1",
-    sourceExtractor: "html-text-v1", receiptSchema: "provider-receipt-v1", validationPolicy: CAPABILITY_TEST_VERSION });
+    sourceExtractor: "html-text-v1", receiptSchema: "provider-receipt-v2", wireSchema: WIRE_SCHEMA_VERSION, validationPolicy: CAPABILITY_TEST_VERSION });
 }
 export type CapabilityTransaction = <T>(work: (tx: DbTransaction) => Promise<T>) => Promise<T>;
 interface CapabilityRow { capability: ExecutionCapability; passed: boolean; fresh: boolean; evidence: JsonObject }

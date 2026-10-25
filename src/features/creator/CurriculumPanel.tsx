@@ -46,10 +46,16 @@ export interface CurriculumPanelProps {
   retryPending?: boolean;
   retryError?: boolean;
   onRetryBuild?: () => void;
+  authoringRun?: AgentTurnRun | null;
+  authoringConnectionError?: boolean;
+  authoringCommandPending?: boolean;
+  authoringCommandError?: boolean;
+  onCancelAuthoring?: () => void;
+  onRetryAuthoring?: () => void;
   onEdit?: () => void;
 }
 
-export function CurriculumPanel({ draft, currentRevision, onApprove, approval = null, awaitingApproval = false, showTitle = true, evidence, generationRun = null, languageRun = null, generation, generationConnectionError = false, cancelPending = false, onCancelBuild, retryPending = false, retryError = false, onRetryBuild, onEdit }: CurriculumPanelProps) {
+export function CurriculumPanel({ draft, currentRevision, onApprove, approval = null, awaitingApproval = false, showTitle = true, evidence, generationRun = null, languageRun = null, generation, generationConnectionError = false, cancelPending = false, onCancelBuild, retryPending = false, retryError = false, onRetryBuild, authoringRun = null, authoringConnectionError = false, authoringCommandPending = false, authoringCommandError = false, onCancelAuthoring, onRetryAuthoring, onEdit }: CurriculumPanelProps) {
   const [pending, setPending] = useState(false);
   const [receipt, setReceipt] = useState<CurriculumApproval | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -60,6 +66,7 @@ export function CurriculumPanel({ draft, currentRevision, onApprove, approval = 
   const blockers = draft.unresolvedQuestions.some((question) => question.blocking);
   const valid = validateCurriculum(draft).length === 0;
   const researchReady = evidence === undefined || evidence.status === "verified";
+  const authoringActive = Boolean(authoringRun && !["succeeded", "failed", "cancelled"].includes(authoringRun.status));
   const minutes = draft.modules.reduce((total, module) => total + module.estimatedStudyMinutes, 0);
   const moduleNames = new Map(draft.modules.map((module) => [module.id, module.title]));
 
@@ -118,11 +125,18 @@ export function CurriculumPanel({ draft, currentRevision, onApprove, approval = 
       </Notice>}
       {generationConnectionError && generationRun && !["succeeded", "failed", "cancelled"].includes(generationRun.status) && <Notice tone="warning">Live build updates were interrupted. The approved program is safe; reconnecting…</Notice>}
       {retryError && <Notice tone="error">The build could not be retried. Your approved program is still safe; try again.</Notice>}
+      {authoringRun && <Notice tone={authoringRun.status === "failed" ? "error" : authoringRun.status === "succeeded" ? "success" : "info"}
+        action={onCancelAuthoring ? <Button variant="quiet" size="compact" pending={authoringCommandPending} onClick={onCancelAuthoring}>Cancel answer check</Button>
+          : onRetryAuthoring ? <Button variant="quiet" size="compact" pending={authoringCommandPending} onClick={onRetryAuthoring}>Retry answer check</Button> : undefined}>
+        {authoringStatus(authoringRun)}
+      </Notice>}
+      {authoringConnectionError && authoringActive && <Notice tone="warning">Live answer-check updates were interrupted. Your exact edits are safe; reconnecting…</Notice>}
+      {authoringCommandError && <Notice tone="error">That answer-check action could not be confirmed. Your edits are still safe; try again.</Notice>}
       {languageRun && <Notice tone={languageRun.status === "failed" ? "error" : languageRun.status === "succeeded" ? "success" : "info"}>{languageStatus(languageRun)}</Notice>}
       {error && <Notice tone="error">{error}</Notice>}
       {approved && isCurrent ? <p className="creator-program__approved" role="status"><Check size={18} aria-hidden="true" /> Version {draft.revision} approved</p> : <>
         <p>{blockers ? "Answer the open questions in the conversation before approving." : "Check the scope and sequence before lessons are created."}</p>
-        {onApprove && awaitingApproval && <Button onClick={() => void handleApprove()} pending={pending} disabled={!isCurrent || blockers || !valid || !researchReady}>Approve version {draft.revision}</Button>}
+        {onApprove && awaitingApproval && <Button onClick={() => void handleApprove()} pending={pending} disabled={!isCurrent || blockers || !valid || !researchReady || authoringActive}>Approve version {draft.revision}</Button>}
       </>}
     </footer>
   </section>;
@@ -153,6 +167,14 @@ function languageStatus(run: AgentTurnRun): string {
   if (run.status === "failed") return "The language version could not be created. Your current course is unchanged.";
   if (run.status === "cancelled") return "The language request was cancelled. Your current course is unchanged.";
   return "Creating the requested language version. Your current course remains available.";
+}
+
+function authoringStatus(run: AgentTurnRun): string {
+  if (run.status === "succeeded") return "The checked answers and edits were applied to the program.";
+  if (run.status === "failed") return "The answer check stopped before applying your edits. Your local changes are still available.";
+  if (run.status === "cancelled") return "The answer check was cancelled. Your local changes are still available.";
+  if (run.status === "awaiting_user") return "The answer check needs more information before it can apply your edits.";
+  return "Checking your answers before applying this program update. Your exact edits are saved.";
 }
 
 function formatStudyTime(minutes: number): string {

@@ -37,6 +37,7 @@ export function AuthScreen({ mode, returnTo = "/", callbackError = null }: { mod
 
   const newPassword = mode === "signup" || mode === "reset-password";
   const unavailable = account.status === "ready" && !account.capabilities.cloudIdentity;
+  const resolvingSession = account.status === "loading" && (mode === "login" || mode === "signup");
   const missingRecovery = mode === "reset-password" && account.status === "ready" && account.capabilities.cloudIdentity && !account.session;
   const signedIn = account.status === "ready" && account.session && (mode === "login" || mode === "signup");
 
@@ -51,7 +52,7 @@ export function AuthScreen({ mode, returnTo = "/", callbackError = null }: { mod
   }
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (requestRef.current) return;
+    if (requestRef.current || resolvingSession) return;
     const invalid = validateAuthForm(mode, values);
     setFields(invalid);
     setError(null);
@@ -117,7 +118,7 @@ export function AuthScreen({ mode, returnTo = "/", callbackError = null }: { mod
           value={values.confirmPassword} maxLength={128} required readOnly={pending} onChange={(event) => change("confirmPassword", event.target.value)} onBlur={() => blur("confirmPassword")}
           {...(fields.confirmPassword ? { error: fields.confirmPassword } : {})} />}
         {error && <Notice tone="error">{error}</Notice>}
-        <Button type="submit" className="uf-account-form__submit" pending={pending} disabled={unavailable || (mode === "reset-password" && account.status === "loading")}>
+        <Button type="submit" className="uf-account-form__submit" pending={pending} disabled={unavailable || resolvingSession || (mode === "reset-password" && account.status === "loading")}>
           {pending ? actions[mode][1] : actions[mode][0]}
         </Button>
       </form>

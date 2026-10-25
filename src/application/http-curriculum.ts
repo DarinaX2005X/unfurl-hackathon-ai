@@ -6,7 +6,7 @@ import {
   CourseLanguageRequestResultSchema,
   CurriculumApprovalResultSchema,
   CurriculumAuthoringSnapshotSchema,
-  CurriculumMutationResultSchema,
+  CurriculumPatchResultSchema,
   EditCourseMetadataInputSchema,
   PatchCurriculumInputSchema,
   RequestCourseLanguageInputSchema,
@@ -98,12 +98,12 @@ export function createHttpCurriculum(fetcher: typeof fetch = (...args) => fetch(
         { ...(signal ? { signal } : {}) }, (data) => data.draft.id === draftId);
     },
     patchCurriculum(draftId, input, options) {
-      return request([draftId], `/api/v1/curricula/${segment(draftId)}`, "PATCH", CurriculumMutationResultSchema, {
+      return request([draftId], `/api/v1/curricula/${segment(draftId)}`, "PATCH", CurriculumPatchResultSchema, {
         inputSchema: PatchCurriculumInputSchema,
         body: input,
         key: options.idempotencyKey,
         ...(options.signal ? { signal: options.signal } : {}),
-      }, (data) => data.draft.id === draftId);
+      }, (data) => "status" in data ? data.artifact.curriculum?.id === draftId : data.draft.id === draftId);
     },
     approveCurriculum(draftId, input, options) {
       return mutation([draftId], `/api/v1/curricula/${segment(draftId)}/approve`, ApproveCurriculumInputSchema,

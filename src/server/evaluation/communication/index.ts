@@ -15,7 +15,7 @@ import {
   type FamilyDescriptor, type SubmissionIssue,
 } from "../../../domain/mechanic-families/v2/shared";
 import {
-  RubricRequestSchema, evaluateRubric, receiptInputFor, type AuthoritativeActivity, type EvaluatorRegistration,
+  ActivityContextSessionSchema, RubricRequestSchema, evaluateRubric, receiptInputFor, type AuthoritativeActivity, type EvaluatorRegistration,
   type GradeDecision, type ResponsePath, type RubricRequest,
 } from "../contracts";
 
@@ -100,7 +100,9 @@ type VerifiedDialogue = { turns: ActivityEventPublic[]; revealedFactIds: string[
 export async function validateCommunicationActivity<C extends JsonValue, R extends JsonValue>(
   task: TaskPublic<C>, response: R & DialogueResponse, activity: AuthoritativeActivity,
 ): Promise<VerifiedDialogue> {
-  const session = ActivitySessionPublicSchema.parse(activity.session);
+  // Learner enrollment is authorized by its service; stored authoring cases use
+  // the same bounded history invariants without fabricating an enrollment.
+  const session = z.union([ActivitySessionPublicSchema, ActivityContextSessionSchema]).parse(activity.session);
   const snapshot = await validateInputSnapshot(activity.input);
   if (session.taskId !== task.id || session.taskVersion !== task.taskVersion || snapshot.activitySessionId !== session.id ||
       snapshot.inputRevision !== session.inputRevision || canonicalResponseJson(snapshot.response) !== canonicalResponseJson(response)) {

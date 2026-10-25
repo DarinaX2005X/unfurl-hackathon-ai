@@ -3,9 +3,11 @@ import { randomUUID } from "node:crypto";
 import type { DbTransaction } from "../db";
 import { withSystemTransaction } from "../db";
 import { ProviderFailure } from "../ai/failure";
+import { ServiceFault } from "../auth/errors";
 import { jsonDigest } from "../ai/json";
 import type { ExecutionTarget, JobClaim, RunHandler } from "./ports";
 import type { RunHandlerRegistry } from "./registry";
+import { cancelGenerationInTransaction, cancelTurnInTransaction } from "./enqueue";
 
 export const JOB_LEASE_SECONDS = 120;
 export interface JobRow { id: string; agent_turn_run_id: string | null; generation_run_id: string | null;
@@ -58,13 +60,25 @@ export async function guardClaim(tx: DbTransaction, claim: JobClaim, handler: Ru
   if (!current || current.status !== "running" || !current.live || current.lease_owner !== claim.leaseOwner ||
     current.fencing_token !== claim.fencingToken || current.retry_epoch !== claim.retryEpoch || jsonDigest(target) !== jsonDigest(claim.target)) throw lost();
 }
-export async function claimJob(tx: DbTransaction, jobId: string, registry: RunHandlerRegistry): Promise<{ kind: "claimed"; claim: JobClaim } | { kind: "busy" | "finished" }> {
+export async function claimJob(tx: DbTransaction, jobId: string, registry: RunHandlerRegistry): Promise<{ kind: "claimed"; claim: JobClaim; authorityFailure?:ServiceFault|ProviderFailure } | { kind: "busy" | "finished" }> {
   const before = await job(tx, jobId);
   if (!before || !["queued", "running"].includes(before.status)) return { kind: "finished" };
   if (before.status === "running" && before.live) return { kind: "busy" };
-  const target = await resolveTarget(tx, before);
+  let target:ExecutionTarget;
+  try{target=await resolveTarget(tx,before);}catch(error){
+    if(!(error instanceof ProviderFailure)||error.code!=="cancelled")throw error;
+    const runId=before.agent_turn_run_id??before.generation_run_id;
+    if(runId){
+      const table=before.agent_turn_run_id?"agent_turn_runs":"generation_runs";
+      const run=(await tx.query<{owner_id:string}>(`SELECT owner_id FROM unfurl.${table} WHERE id=$1`,[runId])).rows[0];
+      if(run){const cancel=before.agent_turn_run_id?cancelTurnInTransaction:cancelGenerationInTransaction;await cancel(tx,{runId,ownerId:run.owner_id,reason:"superseded"});}
+    }
+    await tx.query("UPDATE unfurl.execution_jobs SET status='cancelled',lease_owner=NULL,lease_expires_at=NULL,fencing_token=fencing_token+1,updated_at=now() WHERE id=$1 AND status IN ('queued','running') AND (lease_expires_at IS NULL OR lease_expires_at<=now())",[jobId]);
+    return{kind:"finished"};
+  }
   const handler = registry.require(target.kind);
-  await handler.assertAuthority(tx, target);
+  let authorityFailure:ServiceFault|ProviderFailure|undefined;
+  try{await handler.assertAuthority(tx, target);}catch(error){if(error instanceof ServiceFault||error instanceof ProviderFailure)authorityFailure=error;else throw error;}
   const current = await job(tx, jobId, true);
   if (!current || !["queued", "running"].includes(current.status)) return { kind: "finished" };
   if (current.status === "running" && current.live) return { kind: "busy" };
@@ -73,5 +87,5 @@ export async function claimJob(tx: DbTransaction, jobId: string, registry: RunHa
     lease_expires_at=now()+make_interval(secs=>$3),fencing_token=fencing_token+1,attempt_count=attempt_count+1,updated_at=now()
     WHERE id=$1 RETURNING fencing_token::text,retry_epoch`, [jobId, leaseOwner, JOB_LEASE_SECONDS])).rows[0]!;
   if (target.kind === "agent_turn" || target.kind === "generation") await tx.query(`UPDATE unfurl.${target.kind === "agent_turn" ? "agent_turn_runs" : "generation_runs"} SET status='running',updated_at=now() WHERE id=$1`, [target.runId]);
-  return { kind: "claimed", claim: { jobId, leaseOwner, fencingToken: saved.fencing_token, retryEpoch: saved.retry_epoch, target } };
+  return { kind: "claimed", claim: { jobId, leaseOwner, fencingToken: saved.fencing_token, retryEpoch: saved.retry_epoch, target },...(authorityFailure?{authorityFailure}:{}) };
 }

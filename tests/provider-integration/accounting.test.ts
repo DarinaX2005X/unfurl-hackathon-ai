@@ -43,4 +43,22 @@ describe("authenticated generation accounting", () => {
     expect(await h.accounting.reconcile("op", new AbortController().signal)).toEqual({ settled: false, searchFeeVerified: false, evidence: null });
     expect(h.budget.reconcile).not.toHaveBeenCalled();
   });
+  it("accepts only the exact native dated endpoint from its saved rate card",async()=>{
+    const h=harness();const target=await h.budget.reconciliationTarget("op");
+    vi.mocked(h.budget.reconciliationTarget).mockResolvedValue({...target!,rateCard:{...(target!.rateCard as object),endpointName:"DigitalOcean | moonshotai/kimi-k2.6-20260420"}});
+    const response=await h.fetcher("https://unused.invalid");const original=await response.json();
+    h.fetcher.mockImplementation(async()=>Response.json({...original,data:{...original.data,model:"moonshotai/kimi-k2.6-20260420"}}));
+    expect(await h.accounting.reconcile("op",new AbortController().signal)).toMatchObject({settled:true});
+    h.fetcher.mockImplementation(async()=>Response.json({...original,data:{...original.data,model:"moonshotai/kimi-k2.6-20260101"}}));
+    await expect(h.accounting.reconcile("op",new AbortController().signal)).rejects.toThrow("provider.unavailable");
+  });
+  it("verifies the composite native search charge without accepting the empty GET envelope as zero cost",async()=>{
+    const h=harness();const target=(await h.budget.reconciliationTarget("op"))!;
+    const native={prompt_tokens:4561,completion_tokens:1086,total_tokens:5647,cost:"0.009855962",prompt_tokens_details:{cached_tokens:768},completion_tokens_details:{reasoning_tokens:668},
+      cost_details:{upstream_inference_cost:"0.004855962"},server_tool_use_details:{web_search_requests:1,tool_calls_requested:1,tool_calls_executed:1}};
+    vi.mocked(h.budget.reconciliationTarget).mockResolvedValue({...target,rateCard:{contextTokens:262144,pricing:{prompt:"0.00000057",completion:"0.0000024",input_cache_read:"0.000000114"},search:{engine:"parallel",mode:"advanced",max_uses:1,maxToolCalls:1,inferencePasses:2}},
+      receipt:{...target.receipt!,reportedCostUsd:native.cost,nativeUsage:native,result:{finishReason:"stop",failure:null,annotations:[{}]}}});
+    expect(await h.accounting.reconcile("op",new AbortController().signal)).toMatchObject({settled:true,searchFeeVerified:true});
+    expect(h.fetcher).not.toHaveBeenCalled();expect(h.budget.reconcile).toHaveBeenCalledWith(expect.anything(),expect.objectContaining({finalCostMicroUsd:"9856"}));
+  });
 });

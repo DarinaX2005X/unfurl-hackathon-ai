@@ -1,8 +1,10 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
+import { ZodError } from "zod";
 import type { JsonValue } from "../../domain/common";
 import type { DbTransaction } from "../db";
 import { ProviderFailure, publicProviderFault } from "../ai/failure";
+import { ServiceFault } from "../auth/errors";
 import { canonicalJson, jsonDigest } from "../ai/json";
 import { stableExecutionId } from "./identity";
 import { appendChatEvent, appendGenerationEvent, completeGenerationInTransaction, completeTurnInTransaction } from "./events";
@@ -19,9 +21,9 @@ export class DurableRunExecutor {
     const claimed = await this.transaction(tx => claimJob(tx, jobId, this.registry));
     if (claimed.kind !== "claimed") return { status: claimed.kind };
     const claim = claimed.claim; const handler = this.registry.require(claim.target.kind);
+    if(claimed.authorityFailure){await this.fail(claim,handler,claimed.authorityFailure);return{status:"finished"};}
     const abort = new AbortController();
-    const deadlineAt = Date.now() + 100000;
-    const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(100000)]);
+    const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(270000)]);
     let commitTx: DbTransaction | null = null; let effects = 0;
     let polling = false;
     const timer = setInterval(() => {
@@ -29,11 +31,21 @@ export class DurableRunExecutor {
       void this.transaction(tx => guardClaim(tx, claim, handler)).catch(() => abort.abort()).finally(() => { polling = false; });
     }, 5000);
     const requireCommit = (tx: DbTransaction) => { if (commitTx !== tx) throw new ProviderFailure("invalid_output"); };
+    const effectContextFor=(stepId:string,owner:string,fence:string,stepSignal:AbortSignal,deadlineAt:number):StepEffectContext=>({stepId,signal:stepSignal,deadlineAt,
+      stepFence:{jobId,jobLeaseOwner:claim.leaseOwner,jobFencingToken:claim.fencingToken,retryEpoch:claim.retryEpoch,stepId,stepLeaseOwner:owner,stepFencingToken:fence},
+      budgetOperation(name,attempt=1){if(!/^[a-zA-Z0-9:._/-]{1,160}$/.test(name)||attempt!==1)throw new ProviderFailure("invalid_output");
+        const logicalOperationId=stableExecutionId(stepId,name);return{logicalOperationId,reservationId:stableExecutionId(logicalOperationId,"attempt:1"),attempt:1,runStepId:stepId,probe:false};},
+    });
     const context: RunContext = {
       claim, signal,
       read: reader => this.transaction(async tx => { await guardClaim(tx, claim, handler); return reader(tx, claim.target); }),
       step: async <I extends JsonValue, O extends JsonValue, R extends JsonValue>(spec: DurableStep<I, O, R>) => {
         if (!/^[a-zA-Z0-9:._/-]{1,240}$/.test(spec.key)) throw new ProviderFailure("invalid_output");
+        const longform=spec.executionProfile==="longform_curriculum"||spec.executionProfile==="longform_content";
+        if((spec.executionProfile!==undefined&&!longform)||(spec.executionProfile==="longform_curriculum"&&claim.target.kind!=="agent_turn")||
+          (spec.executionProfile==="longform_content"&&claim.target.kind!=="generation"))throw new ProviderFailure("invalid_output");
+        const duration=longform?270000:100000,deadlineAt=Date.now()+duration;
+        const stepSignal=AbortSignal.any([signal,AbortSignal.timeout(duration)]);
         const inputDigest = jsonDigest(spec.input);
         const begun = await this.transaction(async tx => {
           await guardClaim(tx, claim, handler);
@@ -47,31 +59,27 @@ export class DurableRunExecutor {
           if (row?.status === "cancelled" || row?.status === "failed") throw new ProviderFailure("cancelled");
           const stepId = row?.id ?? stableExecutionId(jobId, spec.key);
           const owner = randomUUID();
+          if(longform)await tx.query("UPDATE unfurl.execution_jobs SET lease_expires_at=now()+interval '295 seconds',updated_at=now() WHERE id=$1",[jobId]);
           const saved = (await tx.query<{ fencing_token: string }>(`INSERT INTO unfurl.run_steps
             (id,job_id,step_key,input_digest,approval_digest,schema_digest,capability_digest,validation_policy_digest,status,attempt_count,lease_owner,lease_expires_at,fencing_token)
-            VALUES($1,$2,$3,$4,$5,$6,$7,$8,'running',1,$9,now()+interval '110s',1)
+            VALUES($1,$2,$3,$4,$5,$6,$7,$8,'running',1,$9,now()+make_interval(secs=>$10),1)
             ON CONFLICT(id) DO UPDATE SET status='running',attempt_count=run_steps.attempt_count+1,lease_owner=$9,
-            lease_expires_at=now()+interval '110s',fencing_token=run_steps.fencing_token+1,updated_at=now() RETURNING fencing_token::text`,
-          [stepId, jobId, spec.key, inputDigest, spec.digests.approval, spec.digests.schema, spec.digests.capability, spec.digests.validationPolicy, owner])).rows[0]!;
+            lease_expires_at=now()+make_interval(secs=>$10),fencing_token=run_steps.fencing_token+1,updated_at=now() RETURNING fencing_token::text`,
+          [stepId, jobId, spec.key, inputDigest, spec.digests.approval, spec.digests.schema, spec.digests.capability, spec.digests.validationPolicy, owner,longform?285:110])).rows[0]!;
+          if(spec.prepare)await spec.prepare(tx,effectContextFor(stepId,owner,saved.fencing_token,stepSignal,deadlineAt),spec.input);
+          const prepared=(await tx.query("SELECT id FROM unfurl.run_steps WHERE id=$1 AND status='running' AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>now()",[stepId,owner,saved.fencing_token])).rows[0];
+          if(!prepared)throw new ProviderFailure("cancelled");
           return { replay: false as const, stepId, owner, fence: saved.fencing_token };
         });
         if (begun.replay) return begun.result;
         effects++;
-        const effectContext: StepEffectContext = { stepId: begun.stepId, signal, deadlineAt,
-          stepFence: { jobId, jobLeaseOwner: claim.leaseOwner, jobFencingToken: claim.fencingToken, retryEpoch: claim.retryEpoch,
-            stepId: begun.stepId, stepLeaseOwner: begun.owner, stepFencingToken: begun.fence },
-          budgetOperation(name, attempt = 1) {
-            if (!/^[a-zA-Z0-9:._/-]{1,160}$/.test(name) || attempt !== 1) throw new ProviderFailure("invalid_output");
-            const logicalOperationId = stableExecutionId(begun.stepId, name);
-            return { logicalOperationId, reservationId: stableExecutionId(logicalOperationId, "attempt:1"), attempt: 1, runStepId: begun.stepId, probe: false };
-          },
-        };
+        const effectContext=effectContextFor(begun.stepId,begun.owner,begun.fence,stepSignal,deadlineAt);
         const output = spec.outputSchema.parse(await spec.effect(effectContext, spec.input));
         return this.transaction(async tx => {
           await guardClaim(tx, claim, handler);
           const step = (await tx.query<{ id: string }>(`SELECT id FROM unfurl.run_steps WHERE id=$1 AND status='running'
             AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>now() FOR UPDATE`, [begun.stepId, begun.owner, begun.fence])).rows[0];
-          if (!step || signal.aborted) throw new ProviderFailure("cancelled");
+          if (!step || stepSignal.aborted) throw new ProviderFailure("cancelled");
           commitTx = tx;
           try {
             const result = spec.resultSchema.parse(await spec.commit(tx, output));
@@ -98,15 +106,15 @@ export class DurableRunExecutor {
       });
       return { status: status === "continue" ? "continue" : "finished" };
     } catch (error) {
-      if (error instanceof ProviderFailure) { await this.fail(claim, handler, error); return { status: "finished" }; }
+      if (error instanceof ProviderFailure||error instanceof ServiceFault||error instanceof ZodError) { await this.fail(claim, handler, error instanceof ZodError?new ProviderFailure("invalid_output"):error); return { status: "finished" }; }
       // Infrastructure interruption is left leased for the durable workflow to recover after expiry.
       throw error;
     } finally { clearInterval(timer); abort.abort(); }
   }
-  private async fail(claim: JobClaim, handler: RunHandler, error: ProviderFailure) {
+  private async fail(claim: JobClaim, handler: RunHandler, error: ProviderFailure|ServiceFault) {
     await this.transaction(async tx => {
-      try { await guardClaim(tx, claim, handler); } catch (failure) { if (failure instanceof ProviderFailure && failure.code === "cancelled") return; throw failure; }
-      const fault = publicProviderFault(error);
+      try { await guardClaim(tx, claim, {...handler,assertAuthority:async()=>undefined}); } catch (failure) { if (failure instanceof ProviderFailure && failure.code === "cancelled") return; throw failure; }
+      const fault = error instanceof ServiceFault?error:publicProviderFault(error);
       const safe = fault ? fault.toApiError(randomUUID()).error : null;
       const status = safe ? "failed" : "cancelled";
       if (claim.target.kind === "agent_turn") {

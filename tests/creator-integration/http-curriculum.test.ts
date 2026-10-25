@@ -61,7 +61,7 @@ function response(data: unknown, status = 200): Response {
 
 describe("curriculum HTTP consumer", () => {
   it("reads the strict authoritative authoring snapshot without caching", async () => {
-    const data: CurriculumAuthoringSnapshot = { ...await mutation(), evidence: evidence(), generationRun: null, languageRun: null };
+    const data: CurriculumAuthoringSnapshot = { ...await mutation(), evidence: evidence(), generationRun: null, languageRun: null, authoringRun: null };
     const fetcher = vi.fn(async () => response({ data }));
     const result = await createHttpCurriculum(fetcher).getCurriculum(ids.draft);
     expect(result).toEqual({ ok: true, data });
@@ -70,7 +70,7 @@ describe("curriculum HTTP consumer", () => {
     }));
   });
 
-  it("restores independent build and language-run identities from the canonical snapshot", async () => {
+  it("restores independent build, language, and authoring-run identities from the canonical snapshot", async () => {
     const draft = curriculum();
     const contentDigest = await curriculumDigest(draft);
     const approval = { id: ids.approval, draftId: ids.draft, draftRevision: 1, contentDigest, approvedBy: ids.actor, approvedAt: timestamp };
@@ -80,11 +80,12 @@ describe("curriculum HTTP consumer", () => {
     const languageRun: AgentTurnRun = { id: languageRunId, ownerId: ids.actor, conversationId: ids.conversation,
       branchId, inputMessageId: messageId, status: "running", lastSeq: 2, error: null, createdAt: timestamp, updatedAt: timestamp };
     const data: CurriculumAuthoringSnapshot = { draft, contentDigest, artifact: { ...artifact(), approval, approvalRequestedRevision: null },
-      evidence: evidence(), generationRun, languageRun };
+      evidence: evidence(), generationRun, languageRun, authoringRun: languageRun };
     const result = await createHttpCurriculum(async () => response({ data })).getCurriculum(ids.draft);
     expect(result).toMatchObject({ ok: true, data: {
       generationRun: { id: generationRunId, lastSeq: 3 },
       languageRun: { id: languageRunId, lastSeq: 2 },
+      authoringRun: { id: languageRunId, lastSeq: 2 },
     } });
   });
 
@@ -99,6 +100,17 @@ describe("curriculum HTTP consumer", () => {
       body: JSON.stringify(input),
       headers: expect.objectContaining({ "Idempotency-Key": key, "X-Request-Id": key }),
     }));
+  });
+
+  it("accepts an asynchronous answer intent without inventing a canonical draft", async () => {
+    const run: AgentTurnRun = { id: languageRunId, ownerId: ids.actor, conversationId: ids.conversation,
+      branchId, inputMessageId: messageId, status: "queued", lastSeq: 0, error: null, createdAt: timestamp, updatedAt: timestamp };
+    const data = { status: "pending" as const, run, artifact: artifact() };
+    const fetcher = vi.fn(async () => response({ data }, 202));
+    const input = { expectedRevision: 1, changes: [{ op: "answer_question" as const, id: ids.question, answer: "Use Python." }] };
+    const result = await createHttpCurriculum(fetcher).patchCurriculum(ids.draft, input, { idempotencyKey: key });
+    expect(result).toEqual({ ok: true, data });
+    expect(result.ok && "status" in result.data ? result.data.run.id : null).toBe(languageRunId);
   });
 
   it("keeps approval separate and accepts only the matching build identity", async () => {

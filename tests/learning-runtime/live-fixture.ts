@@ -2,12 +2,12 @@ import { Client, type QueryResultRow } from "pg";
 import type { Actor } from "@/server/auth/actor";
 import type { DbTransaction } from "@/server/db";
 import { createInitialLearningRoute } from "@/server/learning/initial-route";
-import { createLearningService } from "@/server/learning/service";
+import { createLearningService, type LearningTransactions } from "@/server/learning/service";
 import { prediction, tracing } from "../mechanics/investigation/fixtures";
 import { program } from "./fixtures";
 
 /** All material remains inside one rolled-back transaction. No generation/model or public catalog write. */
-export async function withLiveLearningFixture(work: (value: Awaited<ReturnType<typeof fixture>>) => Promise<void>) {
+export async function withLiveLearningFixture(work: (value: Awaited<ReturnType<typeof fixture>>) => Promise<void>, options: { predictionTask?: boolean } = {}) {
   const ref = process.env.SUPABASE_PROJECT_REF;
   if (!ref || !/^[a-z]{20}$/.test(ref)) throw new Error("Explicit configured QA project required");
   const api = new URL(process.env.NEXT_PUBLIC_SUPABASE_URL ?? "");
@@ -25,7 +25,7 @@ export async function withLiveLearningFixture(work: (value: Awaited<ReturnType<t
     await client.query("BEGIN");
     await client.query("SET LOCAL statement_timeout='15s'");
     await client.query("SET LOCAL lock_timeout='5s'");
-    const value = await fixture(client);
+    const value = await fixture(client, options);
     courseId = value.program.version.courseId;
     await work(value);
   } finally {
@@ -35,16 +35,16 @@ export async function withLiveLearningFixture(work: (value: Awaited<ReturnType<t
   }
 }
 
-async function fixture(client: Client) {
+async function fixture(client: Client, options: { predictionTask?: boolean }) {
   const owner = (await client.query<{ id: string }>("SELECT id FROM auth.users ORDER BY created_at LIMIT 1")).rows[0]?.id;
   if (!owner) throw new Error("Existing QA identity required");
   const actor: Actor = { id: owner, sessionId: crypto.randomUUID(), email: null };
   const data = program();
   data.tasks.forEach((entry, index) => {
-    entry.task.mechanicId = index === 2 ? "outcome_prediction" : "state_tracing";
-    entry.task.config = index === 2 ? prediction : tracing;
+    entry.task.mechanicId = index === 2 && options.predictionTask !== false ? "outcome_prediction" : "state_tracing";
+    entry.task.config = index === 2 && options.predictionTask !== false ? prediction : tracing;
     entry.task.availableHints = 1;
-    entry.assessment.outcomes[0]!.dimensions[0]!.evaluationDimensionIds = index === 2 ? ["prediction"] : ["step.1", "step.2"];
+    entry.assessment.outcomes[0]!.dimensions[0]!.evaluationDimensionIds = index === 2 && options.predictionTask !== false ? ["prediction"] : ["step.1", "step.2"];
   });
   const ids = { conversation: crypto.randomUUID(), branch: crypto.randomUUID(), message: crypto.randomUUID(), draft: crypto.randomUUID() };
   const version = data.version;
@@ -85,11 +85,17 @@ async function fixture(client: Client) {
   await tx.query("SET CONSTRAINTS ALL IMMEDIATE");
   await tx.query("SET LOCAL ROLE service_role");
   let sequence = 0;
-  const service = createLearningService({ transactions: { async run<T>(work: (transaction: DbTransaction) => Promise<T>): Promise<T> {
-    const savepoint = `learning_operation_${++sequence}`;
-    await tx.query(`SAVEPOINT ${savepoint}`);
-    try { const result = await work(tx); await tx.query(`RELEASE SAVEPOINT ${savepoint}`); return result; }
-    catch (error) { await tx.query(`ROLLBACK TO SAVEPOINT ${savepoint}`); await tx.query(`RELEASE SAVEPOINT ${savepoint}`); throw error; }
-  } } });
-  return { tx, actor, program: data, service };
+  let queue: Promise<unknown> = Promise.resolve();
+  const transactions: LearningTransactions = { run<T>(work: (transaction: DbTransaction) => Promise<T>): Promise<T> {
+    const operation = queue.then(async () => {
+      const savepoint = `learning_operation_${++sequence}`;
+      await tx.query(`SAVEPOINT ${savepoint}`);
+      try { const result = await work(tx); await tx.query(`RELEASE SAVEPOINT ${savepoint}`); return result; }
+      catch (error) { await tx.query(`ROLLBACK TO SAVEPOINT ${savepoint}`); await tx.query(`RELEASE SAVEPOINT ${savepoint}`); throw error; }
+    });
+    queue = operation.catch(() => undefined);
+    return operation;
+  } };
+  const service = createLearningService({ transactions });
+  return { tx, transactions, actor, program: data, service };
 }

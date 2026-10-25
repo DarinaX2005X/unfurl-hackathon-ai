@@ -26,4 +26,12 @@ describe("bounded validated support selection", () => {
     expect(selectSupportMaterial({ ...value, reasonCode: "prerequisite_support" })).toBeNull();
     expect(selectSupportMaterial({ ...value, targetOutcomeId: crypto.randomUUID() })).toBeNull();
   });
+  it("targets the available criterion subset rather than demanding a whole-outcome omnibus task", () => {
+    const value = input();
+    value.tasks[0]!.assessment.outcomes[0]!.dimensions.push({ dimensionId: "later_transfer", evaluationDimensionIds: ["step.2"] });
+    const selected = selectSupportMaterial(value)!;
+    expect(selected.target.dimensionIds).toEqual(["state"]);
+    expect(selected.completionCheck?.dimensionIds).toEqual(["state"]);
+    expect(selectSupportMaterial({ ...value, dimensionIds: ["state", "later_transfer"] })).toBeNull();
+  });
 });

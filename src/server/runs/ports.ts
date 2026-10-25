@@ -30,9 +30,12 @@ export interface StepEffectContext {
 export interface DurableStep<Input extends JsonValue, Output extends JsonValue, Result extends JsonValue> {
   key: string;
   input: Input;
+  executionProfile?: "longform_curriculum" | "longform_content";
   digests: StepDigests;
   outputSchema: z.ZodType<Output>;
   resultSchema: z.ZodType<Result>;
+  /** Idempotent DB-only preparation after the current running step/fences exist. No external calls or public content. */
+  prepare?(tx: DbTransaction, context: StepEffectContext, input: Input): Promise<void>;
   /** Bounded external work only. Never retain a DB transaction while awaiting a provider/source. */
   effect(context: StepEffectContext, input: Input): Promise<Output>;
   /** Runs after authority/fence/lease validation. Domain changes, result and events commit together. */

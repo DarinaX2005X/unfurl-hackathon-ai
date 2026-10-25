@@ -36,6 +36,9 @@ export interface ProviderResponseReceipt {
   reportedCostUsd: string | null;
   usage: JsonObject;
   result: JsonValue | null;
+  /** Append-only normalization evidence; the original persisted response remains unchanged. */
+  nativeUsage?: JsonObject;
+  normalizationEvidenceDigest?: string;
 }
 
 export type DispatchDecision = { kind: "dispatch" } | { kind: "replay"; receipt: ProviderResponseReceipt };

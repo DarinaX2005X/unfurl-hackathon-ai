@@ -8,10 +8,10 @@ const sql = migrations.join("\n");
 
 describe("migration static guardrails (live PostgreSQL proof still required)", () => {
   it("keeps the application schema outside anonymous grants and protects all tables with RLS", () => {
-    const tables = [...sql.matchAll(/create table unfurl\.([a-z_]+)/g)].map((match) => match[1]!);
-    const directRls = [...sql.matchAll(/alter table unfurl\.([a-z_]+) enable row level security/g)].map((match) => match[1]!);
+    const tables = [...sql.matchAll(/create table unfurl\.([a-z_][a-z0-9_]*)\b/g)].map((match) => match[1]!);
+    const directRls = [...sql.matchAll(/alter table unfurl\.([a-z_][a-z0-9_]*) enable row level security/g)].map((match) => match[1]!);
     const loopRls = [...sql.matchAll(/foreach table_name in array array\[([\s\S]*?)\] loop/g)]
-      .flatMap((match) => [...match[1]!.matchAll(/'([a-z_]+)'/g)].map((item) => item[1]!));
+      .flatMap((match) => [...match[1]!.matchAll(/'([a-z_][a-z0-9_]*)'/g)].map((item) => item[1]!));
     expect(tables.length).toBeGreaterThan(25);
     expect(new Set([...directRls, ...loopRls])).toEqual(new Set(tables));
     expect(sql).not.toMatch(/grant[^;]+to anon/i);

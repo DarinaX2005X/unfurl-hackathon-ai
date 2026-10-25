@@ -27,6 +27,11 @@ export const AssessmentReviewInputSchema = EvaluationRevisionInputSchema.extend(
   reason: z.enum(["valid_alternative", "unclear_prompt", "other"]), comment: z.string().trim().min(1).max(2_000),
 }).strict();
 export const LearningContextQuerySchema = z.object({ cursor: z.string().min(1).max(512).optional(), limit: z.number().int().min(1).max(100).optional() }).strict();
+export const FreshAssessmentAvailabilitySchema = z.object({
+  availability: z.enum(["available", "not_needed", "no_unseen_assessment", "blocked"]),
+  blockedReason: z.enum(["support_active", "review_active", "archived"]).nullable(),
+  outcomeIds: z.array(IdSchema),
+}).strict();
 export const LearningContextSchema = z.object({
   enrollmentId: IdSchema, routeRevision: RevisionSchema,
   course: z.object({ id: IdSchema, versionId: IdSchema, versionNumber: RevisionSchema, title: z.string().trim().min(1).max(120), contentLanguage: ContentLanguageSchema }).strict(),
@@ -43,6 +48,7 @@ export const LearningContextSchema = z.object({
     workedExample: z.object({ content: z.string().min(1).max(12_000), usedAt: IsoDateTimeSchema }).strict().nullable(),
   }).strict().nullable(),
   revisitBlockedReason: z.enum(["support_active", "review_active", "archived"]).nullable(),
+  freshAssessment: FreshAssessmentAvailabilitySchema,
 }).strict().superRefine((value, context) => {
   if (new TextEncoder().encode(JSON.stringify(value)).byteLength > 2 * 1024 * 1024) context.addIssue({ code: "custom", message: "Learning context exceeds 2 MiB" });
   if (new Set(value.outline.map(({ lessonId }) => lessonId)).size !== value.outline.length || new Set(value.outcomes.map(({ id }) => id)).size !== value.outcomes.length ||
@@ -118,6 +124,7 @@ export interface LearningPort {
   acknowledgeFeedback(attemptId: Id, input: { expectedEvaluationRevision: Revision }, options: MutationOptions): Promise<ServiceResult<FeedbackAcknowledgement>>;
   advance(enrollmentId: Id, input: { expectedRouteRevision: Revision }, options: MutationOptions): Promise<ServiceResult<LearningSession>>;
   revisit(enrollmentId: Id, input: z.infer<typeof RevisitInputSchema>, options: MutationOptions): Promise<ServiceResult<LearningSession>>;
+  requestFreshAssessment(enrollmentId: Id, input: z.infer<typeof RouteRevisionInputSchema>, options: MutationOptions): Promise<ServiceResult<LearningSession>>;
   requestSupport(enrollmentId: Id, input: SupportRequest, options: MutationOptions): Promise<ServiceResult<z.infer<typeof SupportProposalSchema>>>;
   respondToSupport(enrollmentId: Id, offerId: Id, input: z.infer<typeof SupportResponseInputSchema>, options: MutationOptions): Promise<ServiceResult<SupportResult>>;
   returnFromSupport(enrollmentId: Id, offerId: Id, input: { expectedRouteRevision: Revision }, options: MutationOptions): Promise<ServiceResult<SupportResult>>;

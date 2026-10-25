@@ -10,8 +10,8 @@ import { SourceClaimSchema } from "@/server/curriculum-research/contracts";
 import { PassageSchema } from "@/server/research/ports";
 import { ContentReviewSchema } from "@/server/course-validation/content-review";
 
-export const COURSE_GENERATION_SCHEMA_DIGEST = jsonDigest({ courseGeneration: 1, knowledge: 1, candidate: 1, validation: 1 });
-export const COURSE_VALIDATION_POLICY_DIGEST = jsonDigest({ courseValidation: 1, independentContentReview: 1, requiredOutcomeCoverage: 1, immutableEvidence: 1 });
+export const COURSE_GENERATION_SCHEMA_DIGEST = jsonDigest({ courseGeneration: 3, knowledge: 1, candidate: 1, validation: 1, readingPieces: 1, moduleReviewPages: 1, plannedAssessmentRoles: 1, planPages: 1 });
+export const COURSE_VALIDATION_POLICY_DIGEST = jsonDigest({ courseValidation: 2, independentContentReview: 1, requiredOutcomeCoverage: 1, immutableEvidence: 1, adaptiveMaterial: 1 });
 export const AuthoredTaskSchema = AuthoredModuleSchema.shape.tasks.element;
 export type AuthoredTask = z.infer<typeof AuthoredTaskSchema>;
 

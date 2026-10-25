@@ -176,7 +176,7 @@ describe("source-grounded curriculum composition", () => {
     expect(result.passages[0]!.quote).toBe(proposal.research.claims[0]!.passages[0]!.quote);
     expect(result.claims[0]!.ownerId).toBe(ids.actor);
     expect(result.claims[0]!.runStepId).toBe(context.step.stepId);
-    expect(calls[0]).toMatchObject({ model: MODEL_ID, purpose: "curriculum", maxOutputTokens: 8192,
+    expect(calls[0]).toMatchObject({ model: MODEL_ID, purpose: "curriculum", maxOutputTokens: 16384, executionProfile: "longform_curriculum",
       budget: { runStepId: context.step.stepId, probe: false } });
     expect(calls[0]!.trustedInstructions).toContain("number and depth of modules needed for the goal");
   });

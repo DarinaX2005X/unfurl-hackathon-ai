@@ -10,10 +10,16 @@ import type { StepEffectContext } from "@/server/runs/ports";
 import { ProviderFailure } from "@/server/ai/failure";
 import { prepareTaskCandidate } from "@/server/mechanics/materialization";
 import { taskDigest } from "@/server/mechanics/digest";
+import { ActivityActionSchema } from "@/domain/activity";
+
+export const ProposedActivityPlanSchema = z.object({ actions: z.array(z.object({
+  key: z.string().min(1).max(80).regex(/^[a-zA-Z0-9_-]+$/), action: ActivityActionSchema, response: JsonValueSchema,
+}).strict()).min(1).max(24) }).strict();
 
 export const ProposedResponseCaseSchema = z.object({
   key: z.string().min(1).max(80).regex(/^[a-zA-Z0-9_-]+$/),
   category: z.enum(["valid", "alternative", "invalid"]), response: JsonValueSchema,
+  activityPlan: ProposedActivityPlanSchema.optional(),
 }).strict();
 export const ResponseCaseSchema = ProposedResponseCaseSchema.extend({ caseId: IdSchema }).strict();
 export type ResponseCase = z.infer<typeof ResponseCaseSchema>;

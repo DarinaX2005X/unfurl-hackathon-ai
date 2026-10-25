@@ -22,7 +22,7 @@ export function approveEndpoint(payload: unknown, observedAt = Date.now()): Appr
   const result = endpointSchema.safeParse(selected[0]);
   if (!result.success) throw new ProviderFailure("unavailable");
   const endpoint = result.data;
-  for (const key of ["max_tokens", "structured_outputs", "response_format", "tools", "tool_choice"]) {
+  for (const key of ["max_tokens", "tools", "tool_choice"]) {
     if (!endpoint.supported_parameters.includes(key)) throw new ProviderFailure("unavailable");
   }
   const pricing: Record<string, string> = {};

@@ -20,6 +20,8 @@ import { editExistingCourseMetadata } from "./artifact-mutations";
 import { languageLabel, languageOptions } from "./languages";
 import { createGenerationStreamState, generationStreamReducer, type GenerationStreamState } from "./generation-stream";
 import { cancelGenerationRun, getGenerationSnapshot, readGenerationEvents, retryGenerationRun } from "./generation-observer-client";
+import { createStreamState, creatorStreamReducer, type CreatorStreamState } from "./stream";
+import { cancelRun, getRunSnapshot, readRunEvents, retryRun } from "./run-observer-client";
 
 interface Props {
   actorId?: string;
@@ -70,6 +72,11 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
   const [retryPending, setRetryPending] = useState(false);
   const [retryError, setRetryError] = useState<Record<string, boolean>>({});
   const [retryKeys, setRetryKeys] = useState<Record<string, string>>({});
+  const [authoringStreams, setAuthoringStreams] = useState<Record<string, CreatorStreamState>>({});
+  const [authoringConnectionError, setAuthoringConnectionError] = useState<Record<string, boolean>>({});
+  const [authoringCommandError, setAuthoringCommandError] = useState<Record<string, boolean>>({});
+  const [authoringCommandPending, setAuthoringCommandPending] = useState(false);
+  const [authoringRetryKeys, setAuthoringRetryKeys] = useState<Record<string, string>>({});
   const [approvalKeys, setApprovalKeys] = useState<Record<string, string>>({});
 
   async function fetchAuthoring(courseId: string, draftId: string, force = false): Promise<CurriculumAuthoringSnapshot | null> {
@@ -212,6 +219,85 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [actorId, observableRun?.id, selected?.courseId, selected?.curriculum?.id, selected?.curriculum?.revision, selected?.approval?.id]);
 
+  const observableAuthoringRun = selectedSnapshot && selected?.curriculum
+    && selectedSnapshot.draft.id === selected.curriculum.id && selectedSnapshot.draft.revision === selected.curriculum.revision
+    ? selectedSnapshot.authoringRun : null;
+  useEffect(() => {
+    if (!actorId || !selected || !selected.curriculum || !observableAuthoringRun) return;
+    const courseId = selected.courseId;
+    const draftId = selected.curriculum.id;
+    const conversationId = selected.curriculum.conversationId;
+    const runId = observableAuthoringRun.id;
+    const request = accountScope.request(actorId);
+    void (async () => {
+      const retryPause = () => new Promise<void>((resolve) => setTimeout(resolve, 1000));
+      const loadSnapshot = async () => {
+        while (request.isCurrent()) {
+          try {
+            const value = await getRunSnapshot(runId, request.signal);
+            setAuthoringConnectionError((current) => ({ ...current, [courseId]: false }));
+            return value;
+          } catch (error) {
+            if (!request.isCurrent() || (error instanceof Error && error.name === "AbortError")) throw error;
+            setAuthoringConnectionError((current) => ({ ...current, [courseId]: true }));
+            await retryPause();
+          }
+        }
+        throw new DOMException("Aborted", "AbortError");
+      };
+      const initial = await loadSnapshot();
+      if (initial.run.ownerId !== actorId || initial.run.conversationId !== conversationId) throw new Error("authoring_scope_invalid");
+      let stream = creatorStreamReducer(createStreamState({ ...initial.run, lastSeq: 0 }), { type: "snapshot", snapshot: initial });
+      setAuthoringStreams((current) => ({ ...current, [courseId]: stream }));
+      while (request.isCurrent() && ["queued", "running"].includes(stream.run.status)) {
+        let snapshotRequired = false;
+        try {
+          await readRunEvents(runId, stream.lastAppliedSeq, request.signal, {
+            onEvent(event) {
+              const next = creatorStreamReducer(stream, { type: "event", event });
+              if (next === stream && event.seq > stream.lastAppliedSeq) snapshotRequired = true;
+              else stream = next;
+              setAuthoringStreams((current) => ({ ...current, [courseId]: stream }));
+            },
+            onSnapshotRequired() { snapshotRequired = true; },
+          });
+          setAuthoringConnectionError((current) => ({ ...current, [courseId]: false }));
+        } catch (error) {
+          if (!request.isCurrent() || (error instanceof Error && error.name === "AbortError")) throw error;
+          setAuthoringConnectionError((current) => ({ ...current, [courseId]: true }));
+          await retryPause(); continue;
+        }
+        if (!request.isCurrent() || !["queued", "running"].includes(stream.run.status)) break;
+        if (snapshotRequired || stream.needsSnapshot || stream.replayAfterSeq !== null) {
+          stream = creatorStreamReducer(stream, { type: "snapshot", snapshot: await loadSnapshot() });
+          setAuthoringStreams((current) => ({ ...current, [courseId]: stream }));
+        }
+      }
+      if (!request.isCurrent()) return;
+      const result = await curriculumPort.getCurriculum(draftId, request.signal);
+      if (!request.isCurrent() || !result.ok || result.data.artifact.courseId !== courseId) return;
+      setAuthoring((current) => ({ ...current, [courseId]: { status: "ready", snapshot: result.data } }));
+      await onArtifactChange(result.data.artifact);
+      if (stream.run.status === "succeeded") {
+        setEdits((current) => { const next = { ...current }; delete next[courseId]; return next; });
+        setProgramCourseId((current) => current === courseId ? null : current);
+      } else if (stream.run.status === "failed") {
+        setEdits((current) => {
+          const edit = current[courseId];
+          if (!edit) return current;
+          const conflict = result.data.draft.revision !== edit.buffer.base.revision ? result.data : edit.conflict;
+          return { ...current, [courseId]: { ...edit, pending: false, key: conflict ? crypto.randomUUID() : edit.key, conflict,
+            error: conflict ? errorMessage("revision_conflict") : "The answer check stopped before applying your changes. Your edits are still here." } };
+        });
+      }
+    })().catch((error) => {
+      if (request.isCurrent() && !(error instanceof Error && error.name === "AbortError")) setAuthoringConnectionError((current) => ({ ...current, [courseId]: true }));
+    }).finally(request.release);
+    return request.abort;
+    // The immutable authoring intent owns this observer lifetime.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [actorId, observableAuthoringRun?.id, selected?.courseId, selected?.curriculum?.id, selected?.curriculum?.conversationId]);
+
   if (!selected) return null;
   const selectedAuthoring = authoring[selected.courseId];
   const snapshotCandidate = selectedAuthoring?.snapshot;
@@ -224,6 +310,12 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
   const readyEntry = ready[selected.courseId];
   const readyDetail = readyEntry?.result?.kind === "ready" ? readyEntry.result.detail : null;
   const generation = generationStreams[selected.courseId]?.run.id === snapshot?.generationRun?.id ? generationStreams[selected.courseId] : undefined;
+  const selectedAuthoringStream = authoringStreams[selected.courseId]?.run.id === snapshot?.authoringRun?.id ? authoringStreams[selected.courseId] : undefined;
+  const selectedAuthoringRun = selectedAuthoringStream?.run ?? snapshot?.authoringRun ?? null;
+  const editingSnapshot = programCourseId ? authoring[programCourseId]?.snapshot : null;
+  const editingAuthoringStream = programCourseId && authoringStreams[programCourseId]?.run.id === editingSnapshot?.authoringRun?.id ? authoringStreams[programCourseId] : undefined;
+  const editingAuthoringRun = editingAuthoringStream?.run ?? editingSnapshot?.authoringRun ?? null;
+  const editingAuthoringActive = Boolean(editingAuthoringRun && !["succeeded", "failed", "cancelled"].includes(editingAuthoringRun.status));
 
   function openProgram() {
     if (!curriculum) return;
@@ -254,6 +346,17 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
           const latest = await fetchAuthoring(courseId, draftId, true);
           setEdits((current) => ({ ...current, [courseId]: { ...current[courseId]!, pending: false, key: crypto.randomUUID(), error: errorMessage("revision_conflict"), conflict: latest } }));
         } else setEdits((current) => ({ ...current, [courseId]: { ...current[courseId]!, pending: false, error: errorMessage(result.error.error.code) } }));
+        return;
+      }
+      if ("status" in result.data) {
+        const pendingResult = result.data;
+        if (pendingResult.run.ownerId !== actorId || pendingResult.run.conversationId !== programEdit.buffer.base.conversationId
+          || pendingResult.artifact.courseId !== courseId) throw new Error("authoring_scope_invalid");
+        if (!await onArtifactChange(pendingResult.artifact)) throw new Error("artifact changed");
+        setAuthoring((current) => current[courseId]?.snapshot ? { ...current, [courseId]: { status: "ready", snapshot: {
+          ...current[courseId]!.snapshot!, artifact: pendingResult.artifact, authoringRun: pendingResult.run,
+        } } } : current);
+        setEdits((current) => ({ ...current, [courseId]: { ...current[courseId]!, pending: false, error: null } }));
         return;
       }
       if (!await onArtifactChange(result.data.artifact)) throw new Error("artifact changed");
@@ -366,6 +469,44 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
     finally { if (request.isCurrent()) setRetryPending(false); request.release(); }
   }
 
+  async function cancelAuthoring() {
+    const run = selectedAuthoringRun;
+    if (!actorId || !run || authoringCommandPending || !["queued", "running"].includes(run.status)) return;
+    const courseId = selected!.courseId;
+    setAuthoringCommandPending(true);
+    setAuthoringCommandError((current) => ({ ...current, [courseId]: false }));
+    const request = accountScope.request(actorId);
+    try {
+      const cancelled = await cancelRun(run.id, request.signal);
+      if (!request.isCurrent() || cancelled.run.ownerId !== actorId || cancelled.run.conversationId !== run.conversationId) throw new Error("authoring_cancel_scope");
+      const stream = creatorStreamReducer(createStreamState({ ...cancelled.run, lastSeq: 0 }), { type: "snapshot", snapshot: cancelled });
+      setAuthoringStreams((current) => ({ ...current, [courseId]: stream }));
+      setAuthoring((current) => current[courseId]?.snapshot ? { ...current, [courseId]: { status: "ready", snapshot: { ...current[courseId]!.snapshot!, authoringRun: cancelled.run } } } : current);
+    } catch { if (request.isCurrent()) setAuthoringCommandError((current) => ({ ...current, [courseId]: true })); }
+    finally { if (request.isCurrent()) setAuthoringCommandPending(false); request.release(); }
+  }
+
+  async function retryAuthoring() {
+    const run = selectedAuthoringRun;
+    if (!actorId || !run || authoringCommandPending || !["failed", "cancelled"].includes(run.status)) return;
+    const courseId = selected!.courseId;
+    const key = authoringRetryKeys[run.id] ?? crypto.randomUUID();
+    if (!authoringRetryKeys[run.id]) setAuthoringRetryKeys((current) => ({ ...current, [run.id]: key }));
+    setAuthoringCommandPending(true);
+    setAuthoringCommandError((current) => ({ ...current, [courseId]: false }));
+    setEdits((current) => current[courseId] ? { ...current, [courseId]: { ...current[courseId]!, error: null } } : current);
+    const request = accountScope.request(actorId);
+    try {
+      const retried = await retryRun(run.id, key, request.signal);
+      if (!request.isCurrent() || retried.run.ownerId !== actorId || retried.run.conversationId !== run.conversationId) throw new Error("authoring_retry_scope");
+      const stream = creatorStreamReducer(createStreamState({ ...retried.run, lastSeq: 0 }), { type: "snapshot", snapshot: retried });
+      setAuthoringStreams((current) => ({ ...current, [courseId]: stream }));
+      setAuthoring((current) => current[courseId]?.snapshot ? { ...current, [courseId]: { status: "ready", snapshot: { ...current[courseId]!.snapshot!, authoringRun: retried.run } } } : current);
+      setAuthoringRetryKeys((current) => { const next = { ...current }; delete next[run.id]; return next; });
+    } catch { if (request.isCurrent()) setAuthoringCommandError((current) => ({ ...current, [courseId]: true })); }
+    finally { if (request.isCurrent()) setAuthoringCommandPending(false); request.release(); }
+  }
+
   return <section className="creator-artifacts" aria-label="Courses in this chat">
     <div className="creator-artifacts__selection"><Select id="chat-course" label="Courses in this chat" value={selected.courseId} options={artifacts.map((artifact) => ({ value: artifact.courseId, label: artifact.title }))} onChange={(event) => onSelect(event.target.value)} /></div>
     <header className="creator-artifacts__heading"><h2>{selected.title}</h2><p>{selected.summary}</p><div className="creator-artifacts__metadata"><span>{languageLabel(selected.contentLanguage)}</span><div>{(actorId || onEditMetadata) && <Button variant="quiet" size="compact" onClick={() => { setMetadataCourseId(selected.courseId); setMetadata({ title: selected.title, summary: selected.summary }); setMetadataKey(crypto.randomUUID()); setMetadataError(null); }}><Pencil size={16} aria-hidden="true" />Edit details</Button>}{actorId && curriculum && <Button variant="quiet" size="compact" onClick={() => { setLanguageCourseId(selected.courseId); setLanguage(selected.contentLanguage); setLanguageKey(crypto.randomUUID()); setLanguageError(null); }}><Languages size={16} aria-hidden="true" />Change language</Button>}</div></div></header>
@@ -378,6 +519,10 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
       {...((generation?.pending ?? ["queued", "running"].includes(snapshot?.generationRun?.status ?? "")) ? { onCancelBuild: cancelBuild } : {})}
       retryPending={retryPending} retryError={Boolean(retryError[selected.courseId])}
       {...(["failed", "cancelled"].includes((generation?.run ?? snapshot?.generationRun)?.status ?? "") ? { onRetryBuild: retryBuild } : {})}
+      authoringRun={selectedAuthoringRun} authoringConnectionError={Boolean(authoringConnectionError[selected.courseId])}
+      authoringCommandPending={authoringCommandPending} authoringCommandError={Boolean(authoringCommandError[selected.courseId])}
+      {...(selectedAuthoringRun && ["queued", "running"].includes(selectedAuthoringRun.status) ? { onCancelAuthoring: cancelAuthoring } : {})}
+      {...(selectedAuthoringRun && ["failed", "cancelled"].includes(selectedAuthoringRun.status) && selectedAuthoringRun.error?.code !== "revision_conflict" ? { onRetryAuthoring: retryAuthoring } : {})}
       {...(actorId ? { onEdit: openProgram } : {})}
       {...(approveAndRetain ? { onApprove: approveAndRetain } : {})} /> : <p className="creator-artifacts__no-program">This course doesn’t have a program to review yet.</p>}
     {selected.readyVersionId && <section className="creator-ready"><h3>Your course is ready</h3>{readyDetail ? <><p>Open the course to review it, or start learning now.</p><div><LinkButton href={routes.course(readyDetail.course.slug)} variant="secondary">View course</LinkButton><Button pending={startPending} onClick={() => void startCourse()}>Start course</Button></div></> : readyEntry?.status === "error" ? <><p>The course is ready, but its link could not be loaded.</p><Button variant="quiet" size="compact" onClick={() => void fetchReady(selected.courseId, selected.readyVersionId!)}>Try again</Button></> : <p>Loading the course link…</p>}{startError && <Notice tone="error">{startError}</Notice>}</section>}
@@ -388,8 +533,8 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
     <Dialog open={languageCourseId !== null} onOpenChange={(open) => { if (!open && !languagePending) setLanguageCourseId(null); }} title="Create another language version" description="Your current course stays available while the new version is prepared." footer={<><Button variant="quiet" onClick={() => setLanguageCourseId(null)} disabled={languagePending}>Cancel</Button><Button pending={languagePending} disabled={!languageArtifact?.curriculum || language === languageArtifact?.contentLanguage} onClick={() => void requestLanguage()}>Create version</Button></>}>
       <div className="creator-metadata-form"><Select id="course-content-language" label="New course language" value={language} options={languageOptions(languageArtifact?.contentLanguage ?? language)} disabled={languagePending} onChange={(event) => { setLanguage(event.target.value); setLanguageKey(crypto.randomUUID()); }} />{languageError && <Notice tone="error">{languageError}</Notice>}</div>
     </Dialog>
-    <Dialog open={programCourseId !== null} onOpenChange={(open) => { if (!open && !programEdit?.pending) setProgramCourseId(null); }} title="Edit course program" description="Changes are checked against the latest saved version before they are applied." footer={programEdit && <>{programEdit.conflict && <Button variant="secondary" disabled={programEdit.pending} onClick={() => setEdits((current) => ({ ...current, [programCourseId!]: { ...current[programCourseId!]!, buffer: createCurriculumEditBuffer(programEdit.conflict!.draft), conflict: null, error: null, key: crypto.randomUUID() } }))}>Reload current</Button>}<Button variant="quiet" disabled={programEdit.pending} onClick={() => setProgramCourseId(null)}>Cancel</Button><Button pending={programEdit.pending} onClick={() => void saveProgram()}>{programEdit.conflict ? "Apply my changes" : "Save program"}</Button></>}>
-      {programEdit && <><CurriculumEditor buffer={programEdit.buffer} disabled={programEdit.pending} onChange={changeProgram} />{programEdit.conflict && <Notice tone="warning" title="A newer version is available">Reload it, or apply your edits to the newer version. Nothing has been discarded.</Notice>}{programEdit.error && <Notice tone="error">{programEdit.error}</Notice>}</>}
+    <Dialog open={programCourseId !== null} onOpenChange={(open) => { if (!open && !programEdit?.pending) setProgramCourseId(null); }} title="Edit course program" description="Changes are checked against the latest saved version before they are applied." footer={programEdit && <>{programEdit.conflict && <Button variant="secondary" disabled={programEdit.pending || authoringCommandPending} onClick={() => setEdits((current) => ({ ...current, [programCourseId!]: { ...current[programCourseId!]!, buffer: createCurriculumEditBuffer(programEdit.conflict!.draft), conflict: null, error: null, key: crypto.randomUUID() } }))}>Reload current</Button>}<Button variant="quiet" disabled={programEdit.pending || authoringCommandPending} onClick={() => setProgramCourseId(null)}>Close</Button><Button pending={programEdit.pending || authoringCommandPending} disabled={editingAuthoringActive} onClick={() => void (editingAuthoringRun && ["failed", "cancelled"].includes(editingAuthoringRun.status) && !programEdit.conflict ? retryAuthoring() : saveProgram())}>{editingAuthoringActive ? "Checking answers…" : editingAuthoringRun && ["failed", "cancelled"].includes(editingAuthoringRun.status) && !programEdit.conflict ? "Retry check" : programEdit.conflict ? "Apply my changes" : "Save program"}</Button></>}>
+      {programEdit && <><CurriculumEditor buffer={programEdit.buffer} disabled={programEdit.pending || editingAuthoringActive} onChange={changeProgram} />{editingAuthoringActive && <Notice tone="info">Your exact edits are saved while the answers are checked. You can close this dialog and come back without interrupting the check.</Notice>}{programEdit.conflict && <Notice tone="warning" title="A newer version is available">Reload it, or apply your edits to the newer version. Nothing has been discarded.</Notice>}{programEdit.error && <Notice tone="error">{programEdit.error}</Notice>}</>}
     </Dialog>
   </section>;
 }

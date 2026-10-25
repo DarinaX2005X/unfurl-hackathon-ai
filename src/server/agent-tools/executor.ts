@@ -12,9 +12,9 @@ import { PostgresResearchRepository } from "../research/repository";
 import { SearchResultSchema, SourceBlockSchema, SourceDocumentSchema, type ResearchPort } from "../research/ports";
 import { stableExecutionId } from "../runs/identity";
 import type { RunContext, StepEffectContext } from "../runs/ports";
-import { composeResearchedCourse, preparedCurriculumOutput, PreparedCurriculumOutputSchema, researchCurriculumLanguage,
-  researchCurriculumRevision, type SelectedSource } from "../curriculum-research/composer";
-import { commitResearchedRevision, persistPreparedResearch } from "../curriculum-research/persistence";
+import { preparedCurriculumOutput, PreparedCurriculumOutputSchema, type SelectedSource } from "../curriculum-research/composer";
+import { composeDurableCurriculum } from "../curriculum-research/durable-composer";
+import { commitResearchedRevision } from "../curriculum-research/persistence";
 import { createResearchedCourse, curriculumConflict, readArtifact, requireCourseDraft, requireDraft } from "../curricula/repository";
 import { editMetadataInTransaction, readAuthoringSnapshot } from "../curricula/service";
 import { asAgentTarget, jsonSchema, jsonValue, journalKey, loadToolAuthority, type ContextSnapshot } from "../agent-turns/repository";
@@ -86,6 +86,22 @@ function observation(tool: string, ok: boolean, summary: string, data: unknown =
   return ToolObservationSchema.parse({ tool, ok, summary, data: jsonValue(data), sourceIds, artifactIds });
 }
 function blockOverview(blocks: Array<{ id: string; text: string }>) { return blocks.map((block) => ({ id: block.id, text: block.text.slice(0, 160) })); }
+export function agentToolStepInput(receipt: AgentDecisionReceipt) {
+  return jsonValue({ invocationId: receipt.invocationId, index: receipt.index,
+    decisionDigest: jsonDigest(receipt.decision, 2 * 1024 * 1024), capturedDraftDigest: receipt.capturedDraft ? jsonDigest(receipt.capturedDraft, 2 * 1024 * 1024) : null,
+    capturedCourseRevision: receipt.capturedCourseRevision, preparationError: receipt.preparationError });
+}
+export function curriculumObservationData(snapshot: z.infer<typeof CurriculumAuthoringSnapshotSchema>, page?: Extract<AgentDecision, { tool: "read_artifact" }>["input"]["page"]) {
+  const { draft, artifact, evidence } = snapshot;
+  const selected = page?.kind === "outcomes" ? draft.outcomes : page?.kind === "modules" ? draft.modules
+    : page?.kind === "questions" ? draft.unresolvedQuestions : evidence.sources;
+  return { courseId: artifact.courseId, draftId: draft.id, courseRevision: artifact.revision, draftRevision: draft.revision,
+    contentDigest: snapshot.contentDigest, title: draft.title, goal: draft.goal, audience: draft.audience, language: draft.contentLanguage,
+    outcomeCount: draft.outcomes.length, moduleCount: draft.modules.length, questionCount: draft.unresolvedQuestions.length,
+    sourceCount: evidence.sources.length, evidenceStatus: evidence.status, approvalRequestedRevision: artifact.approvalRequestedRevision,
+    readyVersionId: artifact.readyVersionId, ...(page ? { page: { ...page, items: selected.slice(page.offset, page.offset + page.limit),
+      total: selected.length, nextOffset: page.offset + page.limit < selected.length ? page.offset + page.limit : null } } : {}) };
+}
 
 export async function executeAgentTool(context: RunContext, receipt: AgentDecisionReceipt, snapshot: ContextSnapshot,
   dependencies: AgentToolDependencies): Promise<ToolObservation> {
@@ -93,8 +109,24 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
   const decision = receipt.decision;
   const authority = await context.read((tx, target) => loadToolAuthority(tx, target, context.claim.jobId));
   const sources = receipt.preparationError ? [] : await context.read((tx) => selectedSources(tx, authority, decision));
+  let composed: Awaited<ReturnType<typeof composeDurableCurriculum>> | null = null;
+  let compositionFailure: ToolOutput | null = null;
+  if (!receipt.preparationError && ["create_course", "revise_curriculum", "revise_language"].includes(decision.tool)) {
+    try {
+      if (decision.tool === "create_course" || decision.tool === "revise_curriculum" || decision.tool === "revise_language") {
+        composed = await composeDurableCurriculum(context, dependencies.model, { invocationId: receipt.invocationId,
+          decision, capturedDraft: receipt.capturedDraft, now: snapshot.now, sources });
+      }
+    } catch (error) {
+      if (error instanceof ProviderFailure && error.code === "invalid_output") compositionFailure = { kind: "failure", code: error.code,
+        summary: "A saved curriculum part did not pass its reference, source or coverage checks. Review the source selection or requested scope before trying again; no partial programme was published." };
+      else if (error instanceof ServiceFault) compositionFailure = { kind: "failure", code: error.code,
+        summary: "The selected curriculum changed or became unavailable before this programme could be saved." };
+      else throw error;
+    }
+  }
   const result = await context.step({
-    key: journalKey(receipt.index, "tool"), input: jsonValue(receipt),
+    key: journalKey(receipt.index, "tool"), input: agentToolStepInput(receipt),
     digests: { schema: jsonDigest({ version: "agent-tool-output-v1" }), capability: jsonDigest({ model: MODEL_ID, policy: MODEL_POLICY_VERSION, tools: "agent-tools-v1" }),
       validationPolicy: jsonDigest({ version: "curriculum-evidence-v1" }), approval: null },
     outputSchema: jsonSchema(ToolOutputSchema), resultSchema: jsonSchema(ToolObservationSchema),
@@ -102,7 +134,7 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
       let output: ToolOutput;
       try {
         if (receipt.preparationError) return jsonValue({ kind: "failure", code: receipt.preparationError, summary: "The selected record changed or is outside this conversation. Read its current state before trying again." });
-        const composerContext = { ownerId: agent.ownerId, conversationId: agent.conversationId, runId: agent.runId, now: snapshot.now, step, sources };
+        if (compositionFailure) return jsonValue(compositionFailure);
         switch (decision.tool) {
           case "search": output = { kind: "search", result: await dependencies.researchForStep(step).search(decision.input, step.signal) }; break;
           case "read_source": {
@@ -126,19 +158,9 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
             output = { kind: "artifact", snapshot: await context.read((tx) => readAuthoringSnapshot(tx, agent.ownerId, receipt.capturedDraft!.id)) };
             break;
           }
-          case "create_course": output = { kind: "curriculum", prepared: preparedCurriculumOutput(await composeResearchedCourse(dependencies.model, composerContext, {
-            ...decision.input, courseId: stableExecutionId(receipt.invocationId, "course"), draftId: stableExecutionId(receipt.invocationId, "draft"),
-          })) }; break;
-          case "revise_curriculum": {
-            if (!receipt.capturedDraft) throw notInScope();
-            output = { kind: "curriculum", prepared: preparedCurriculumOutput(await researchCurriculumRevision(dependencies.model, composerContext,
-              { draft: receipt.capturedDraft, changes: decision.input.changes })) }; break;
-          }
-          case "revise_language": {
-            if (!receipt.capturedDraft) throw notInScope();
-            output = { kind: "curriculum", prepared: preparedCurriculumOutput(await researchCurriculumLanguage(dependencies.model, composerContext,
-              receipt.capturedDraft, decision.input.contentLanguage)) }; break;
-          }
+          case "create_course": case "revise_curriculum": case "revise_language":
+            if (!composed) throw new ProviderFailure("invalid_output");
+            output = { kind: "curriculum", prepared: preparedCurriculumOutput(composed) }; break;
           case "update_metadata": output = { kind: "metadata" }; break;
           case "respond": output = { kind: "response" }; break;
         }
@@ -167,14 +189,14 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
             extractionState: source.extractionState, blockIndex: blockOverview(source.blocks), previewOnly: true }, [source.id]); break;
         }
         case "blocks": result = observation(decision.tool, true, output.overview ? "Listed the source's available blocks; previews are not complete passages." : "Read the selected source blocks.", output, [output.sourceId]); break;
-        case "artifact": result = observation(decision.tool, true, "Read the current course and curriculum revision.", output.snapshot, [], [output.snapshot.artifact.courseId]); break;
+        case "artifact": result = observation(decision.tool, true, "Read the current course and curriculum revision.",
+          curriculumObservationData(output.snapshot, decision.tool === "read_artifact" ? decision.input.page : undefined), [], [output.snapshot.artifact.courseId]); break;
         case "curriculum": {
           const prepared = output.prepared;
-          const facts = { ownerId: agent.ownerId, authorizedSourceIds: authority.sourceIds,
-            sources: sources.map((selected) => selected.document), passages: prepared.passages, claims: prepared.claims };
+          if (!composed) throw new ProviderFailure("invalid_output");
+          const facts = composed.facts;
           let mutation;
           if (decision.tool === "create_course") {
-            await persistPreparedResearch(tx, prepared, facts);
             mutation = await createResearchedCourse(tx, { ownerId: agent.ownerId, runId: agent.runId, branchId: agent.branchId,
               courseId: prepared.draft.courseId, summary: prepared.summary!, draft: prepared.draft, evidence: prepared.evidence, facts });
           } else {
@@ -187,7 +209,12 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
           if (mutation.artifact.approvalRequestedRevision === mutation.draft.revision) await context.emitChat(tx, {
             type: "approval.required", courseId: mutation.artifact.courseId, draftId: mutation.draft.id, revision: mutation.draft.revision,
           });
-          result = observation(decision.tool, true, "Saved a researched curriculum. The user must explicitly approve its exact revision before lesson construction.", mutation,
+          result = observation(decision.tool, true, "Saved a researched curriculum. The user must explicitly approve its exact revision before lesson construction.", {
+            courseId: mutation.artifact.courseId, draftId: mutation.draft.id, courseRevision: mutation.artifact.revision,
+            draftRevision: mutation.draft.revision, contentDigest: mutation.contentDigest, title: mutation.draft.title,
+            language: mutation.draft.contentLanguage, outcomeCount: mutation.draft.outcomes.length, moduleCount: mutation.draft.modules.length,
+            approvalRequestedRevision: mutation.artifact.approvalRequestedRevision, readyVersionId: mutation.artifact.readyVersionId,
+          },
             mutation.draft.sourceIds, [mutation.artifact.courseId]); break;
         }
         case "metadata": {

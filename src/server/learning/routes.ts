@@ -4,7 +4,7 @@ import type { NextRequest } from "next/server";
 import { IdSchema } from "@/domain/common";
 import { ActivityActionRequestSchema, SaveActivityInputSchema, SubmitActivityAttemptSchema } from "@/domain/activity";
 import { ActionRetryInputSchema, RouteRevisionInputSchema, StartActivityInputSchema, RevisitInputSchema,
-  LearningContextQuerySchema, HintInputSchema, EvaluationRevisionInputSchema, SupportRequestSchema, SupportResponseInputSchema } from "@/application/learning-port";
+  LearningContextQuerySchema, HintInputSchema, EvaluationRevisionInputSchema, SupportRequestSchema, SupportResponseInputSchema, AssessmentReviewInputSchema } from "@/application/learning-port";
 import { requireActor } from "@/server/auth/session";
 import { assertSameOrigin, failure, readInput, success } from "@/server/auth/http";
 import { invalidLearningFields } from "./actions";
@@ -26,6 +26,13 @@ async function mutationInput<T>(request: NextRequest, schema: z.ZodType<T>) {
 export async function loadSessionRoute(request: NextRequest, enrollmentId: string) {
   try { return success(await learningService.loadSession(await requireActor(), id(enrollmentId))); }
   catch (error) { return failure(error, request); }
+}
+export async function requestFreshAssessmentRoute(request: NextRequest, enrollmentId: string) {
+  try {
+    const { actor, command } = await mutationInput(request, RouteRevisionInputSchema);
+    const result = await learningService.requestFreshAssessment(actor, id(enrollmentId), command);
+    return success(result.data, result.status);
+  } catch (error) { return failure(error, request); }
 }
 export async function loadContextRoute(request: NextRequest, enrollmentId: string) {
   try {
@@ -86,6 +93,27 @@ export async function returnFromSupportRoute(request: NextRequest, enrollmentId:
   try {
     const { actor, command } = await mutationInput(request, RouteRevisionInputSchema);
     const result = await learningService.returnFromSupport(actor, id(enrollmentId), id(offerId), command);
+    return success(result.data, result.status);
+  } catch (error) { return failure(error, request); }
+}
+export async function retryEvaluationRoute(request: NextRequest, attemptId: string) {
+  try {
+    const { actor, command } = await mutationInput(request, EvaluationRevisionInputSchema);
+    const result = await learningService.retryEvaluation(actor, id(attemptId), command);
+    return success(result.data, result.status);
+  } catch (error) { return failure(error, request); }
+}
+export async function requestReviewRoute(request: NextRequest, attemptId: string) {
+  try {
+    const { actor, command } = await mutationInput(request, AssessmentReviewInputSchema);
+    const result = await learningService.requestReview(actor, id(attemptId), command);
+    return success(result.data, result.status);
+  } catch (error) { return failure(error, request); }
+}
+export async function retryReviewRoute(request: NextRequest, attemptId: string, reviewId: string) {
+  try {
+    const { actor, command } = await mutationInput(request, EvaluationRevisionInputSchema);
+    const result = await learningService.retryReview(actor, id(attemptId), id(reviewId), command);
     return success(result.data, result.status);
   } catch (error) { return failure(error, request); }
 }

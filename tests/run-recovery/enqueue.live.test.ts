@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 import { withSystemTransaction } from "../../src/server/db";
-import { cancelGenerationInTransaction, enqueueAcceptedRun } from "../../src/server/runs/enqueue";
+import { cancelGenerationInTransaction, cancelTurnInTransaction, enqueueAcceptedRun } from "../../src/server/runs/enqueue";
 import { retryRunInTransaction } from "../../src/server/runs/retry";
 
 it.skipIf(process.env.RUN_LIVE_RUN_ENQUEUE !== "1")("atomically enqueues once and invalidates a cancelled generation's job/step fences (rollback)", async () => {
@@ -21,6 +21,10 @@ it.skipIf(process.env.RUN_LIVE_RUN_ENQUEUE !== "1")("atomically enqueues once an
     expect(await enqueueAcceptedRun(tx, { kind: "agent_turn", runId: ids.turn })).toEqual(turn);
     await tx.query("INSERT INTO unfurl.courses(id,owner_id,slug,title,summary,content_language) VALUES($1,$2,$3,'Rollback proof','Rollback only','en')", [ids.course, owner, "rollback-" + randomUUID()]);
     await tx.query("INSERT INTO unfurl.curriculum_drafts(id,course_id,conversation_id,revision,document) VALUES($1,$2,$3,1,'{}')", [ids.draft, ids.course, ids.conversation]);
+    await tx.query("INSERT INTO unfurl.curriculum_patch_intents(run_id,owner_id,draft_id,expected_draft_revision,changes) VALUES($1,$2,$3,1,$4::jsonb)",[ids.turn,owner,ids.draft,JSON.stringify([{op:"replace",path:"/title",value:"Retried title"}])]);
+    await cancelTurnInTransaction(tx,{runId:ids.turn,ownerId:owner,reason:"user"});
+    const retriedTurn=await retryRunInTransaction(tx,{id:owner,sessionId:randomUUID(),email:null},ids.turn,"agent_turn");
+    expect((await tx.query("SELECT draft_id,expected_draft_revision,changes FROM unfurl.curriculum_patch_intents WHERE run_id=$1",[retriedTurn.runId])).rows[0]).toEqual({draft_id:ids.draft,expected_draft_revision:1,changes:[{op:"replace",path:"/title",value:"Retried title"}]});
     await tx.query("INSERT INTO unfurl.curriculum_revisions(draft_id,revision,content_digest,document) VALUES($1,1,$2,'{}')", [ids.draft, digest]);
     await tx.query("INSERT INTO unfurl.curriculum_approvals(id,draft_id,draft_revision,content_digest,approved_by) VALUES($1,$2,1,$3,$4)", [ids.approval, ids.draft, digest, owner]);
     await tx.query(`INSERT INTO unfurl.generation_runs(id,owner_id,course_id,conversation_id,branch_id,input_message_id,source_draft_revision,approval_id,phase,status)

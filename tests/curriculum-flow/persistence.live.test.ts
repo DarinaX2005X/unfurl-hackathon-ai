@@ -16,7 +16,7 @@ import { researchFixture } from "./fixtures";
 it.skipIf(process.env.RUN_LIVE_CURRICULUM !== "1")("persists researched courses, isolates approvals, invalidates stale builds and records language intent (rollback)", async () => {
   const fixture = await researchFixture();
   const ids = { conversation: randomUUID(), branch: randomUUID(), message: randomUUID(), turn: randomUUID(), step: randomUUID(),
-    courseA: randomUUID(), courseB: randomUUID(), draftA: randomUUID(), draftB: randomUUID() };
+    courseA: randomUUID(), courseB: randomUUID(), draftA: randomUUID(), draftB: randomUUID(), courseC: randomUUID(), draftC: randomUUID(), question: randomUUID() };
   const rollback = new Error("intentional_curriculum_rollback");
   await expect(withSystemTransaction("run_execution", async (tx) => {
     const ownerId = (await tx.query<{ id: string }>("SELECT id FROM unfurl.profiles ORDER BY created_at LIMIT 1")).rows[0]?.id;
@@ -52,6 +52,10 @@ it.skipIf(process.env.RUN_LIVE_CURRICULUM !== "1")("persists researched courses,
       summary: "Another rollback fixture", draft: draftB, evidence: { ...fixture.evidence, contentDigest: await curriculumDigest(draftB) }, facts: fixture.facts });
     expect((await tx.query<{ count: number }>("SELECT count(*)::int AS count FROM unfurl.conversation_artifacts WHERE conversation_id=$1", [ids.conversation])).rows[0]?.count).toBe(2);
     expect((await readAuthoringSnapshot(tx, ownerId, ids.draftA)).evidence.status).toBe("verified");
+    const draftC = { ...fixture.draft, id: ids.draftC, courseId: ids.courseC,
+      unresolvedQuestions: [{ id: ids.question, text: "What programming experience should this course assume?", blocking: true }] };
+    await createResearchedCourse(tx, { ownerId, runId: ids.turn, branchId: ids.branch, courseId: ids.courseC,
+      summary: "Question intent fixture", draft: draftC, evidence: { ...fixture.evidence, contentDigest: await curriculumDigest(draftC) }, facts: fixture.facts });
     await expect(requireDraft(tx, randomUUID(), ids.draftA)).rejects.toMatchObject({ status: 404 });
 
     const approvedA = await approveInTransaction(tx, { ownerId, draftId: ids.draftA, expectedRevision: 1, contentDigest: createdA.contentDigest });
@@ -112,9 +116,24 @@ it.skipIf(process.env.RUN_LIVE_CURRICULUM !== "1")("persists researched courses,
     expect(language.data.artifact.curriculum!.contentLanguage).toBe("en");
     expect((await readAuthoringSnapshot(tx, ownerId, ids.draftB)).languageRun?.id).toBe(language.data.run.id);
     expect((await tx.query<{ count: number }>("SELECT count(*)::int AS count FROM unfurl.course_language_revision_intents WHERE course_id=$1", [ids.courseB])).rows[0]?.count).toBe(1);
+    await tx.query("UPDATE unfurl.agent_turn_runs SET status='cancelled' WHERE id=$1", [language.data.run.id]);
+    const patchInput = { expectedRevision: 1, changes: [{ op: "answer_question" as const, id: ids.question, answer: "I use Python daily." },
+      { op: "set_details" as const, title: "The exact title in the captured batch" }] };
+    const patchKey = randomUUID();
+    const pending = await service.patch(actor, ids.draftC, patchInput, patchKey);
+    expect(pending.status).toBe(202);
+    if (!("status" in pending.data)) throw new Error("Expected an asynchronous patch receipt");
+    const replay = await service.patch(actor, ids.draftC, patchInput, patchKey);
+    expect(replay.replayed).toBe(true);
+    expect(replay.data).toEqual(pending.data);
+    expect((await requireDraft(tx, ownerId, ids.draftC)).draft).toEqual(draftC);
+    expect((await readAuthoringSnapshot(tx, ownerId, ids.draftC)).authoringRun?.id).toBe(pending.data.run.id);
+    expect((await tx.query<{ changes: unknown }>("SELECT changes FROM unfurl.curriculum_patch_intents WHERE run_id=$1", [pending.data.run.id])).rows[0]?.changes).toEqual(patchInput.changes);
+    await expect(approveInTransaction(tx, { ownerId, draftId: ids.draftC, expectedRevision: 1, contentDigest: await curriculumDigest(draftC) }))
+      .rejects.toMatchObject({ status: 409, messageKey: "curriculum.reviewInProgress" });
     await tx.query("SET CONSTRAINTS ALL IMMEDIATE");
     throw rollback;
   })).rejects.toBe(rollback);
-  const remains = await withSystemTransaction("run_execution", (tx) => tx.query("SELECT id FROM unfurl.courses WHERE id=ANY($1::uuid[])", [[ids.courseA, ids.courseB]]));
+  const remains = await withSystemTransaction("run_execution", (tx) => tx.query("SELECT id FROM unfurl.courses WHERE id=ANY($1::uuid[])", [[ids.courseA, ids.courseB, ids.courseC]]));
   expect(remains.rowCount).toBe(0);
-}, 60_000);
+}, 90_000);

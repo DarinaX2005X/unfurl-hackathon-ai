@@ -7,6 +7,7 @@ import type { DbTransaction } from "@/server/db";
 import { ServiceFault } from "@/server/auth/errors";
 import { createInitialLearningRoute } from "./initial-route";
 import * as repository from "./repository";
+import { loadFreshAssessmentChoice } from "./fresh-assessment";
 
 const CursorSchema = z.object({ versionId: IdSchema, routeRevision: RevisionSchema, index: z.number().int().nonnegative() }).strict();
 export async function projectLearningContext(tx: DbTransaction, enrollment: Enrollment, query: LearningContextQuery): Promise<LearningContext> {
@@ -41,6 +42,7 @@ export async function projectLearningContext(tx: DbTransaction, enrollment: Enro
       workedExample: worked ? { content: privateTask.workedExample ?? repository.invariant(), usedAt: repository.storedTime(worked.created_at) } : null };
   }
   const support = await repository.readSupport(tx, enrollment);
+  const { availability: freshAssessment } = await loadFreshAssessmentChoice(tx, enrollment, program);
   const relevantOutcomes = new Set([...route.pendingOutcomeIds, ...(currentLesson?.outcomeIds ?? []), ...(currentTask?.outcomeIds ?? [])]);
   const outline: LearningContext["outline"] = lessonIds.map((lessonId) => {
     const lesson = program.lessons.find(({ id }) => id === lessonId) ?? repository.invariant();
@@ -55,7 +57,7 @@ export async function projectLearningContext(tx: DbTransaction, enrollment: Enro
     course: { id: enrollment.courseId, versionId: program.version.id, versionNumber: program.version.number, title: program.version.title, contentLanguage: program.version.contentLanguage },
     outcomes: program.version.outcomes.filter(({ id }) => relevantOutcomes.has(id)).map(({ id, title }) => ({ id, title })), outline,
     outlineNextCursor: index + outline.length < program.version.lessonIds.length ? Buffer.from(JSON.stringify({ versionId: program.version.id, routeRevision: route.revision, index: index + outline.length })).toString("base64url") : null,
-    citations: sources.map((row) => ({ id: row.id, title: row.title, url: row.final_url, retrievedAt: repository.storedTime(row.retrieved_at) })), assistance,
+    citations: sources.map((row) => ({ id: row.id, title: row.title, url: row.final_url, retrievedAt: repository.storedTime(row.retrieved_at) })), assistance, freshAssessment,
     revisitBlockedReason: enrollment.status === "archived" ? "archived" : support ? "support_active" : route.next.some(({ reasonCode }) => reasonCode === "scheduled_review") ? "review_active" : null });
   let result = makeContext();
   while (Buffer.byteLength(JSON.stringify(result), "utf8") > 2 * 1024 * 1024 && outline.length > 1) { outline.pop(); result = makeContext(); }

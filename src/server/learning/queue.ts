@@ -21,7 +21,7 @@ export function learningCapabilityRequirements(input: { kind: "evaluation" | "ac
 
 /** External admission happens after durable acceptance and outside every transaction. */
 export async function activateLearningJob(transactions: LearningTransactions, admission: LearningAdmission | undefined, actor: Actor,
-  target: LearningJobTarget, explicit: { retryReceiptId: string; expectedRetryEpoch: number } | null): Promise<boolean> {
+  target: LearningJobTarget, explicit: { retryReceiptId: string; expectedRetryEpoch: number; hadEffects: boolean } | null): Promise<boolean> {
   if (!admission) return false;
   const identity = await transactions.run(async (tx) => {
     const row = target.kind === "evaluation" ? (await tx.query(`SELECT a.enrollment_id,a.task_id,a.task_version,a.learner_id FROM unfurl.evaluations v JOIN unfurl.attempts a ON a.id=v.attempt_id WHERE v.id=$1 AND a.learner_id=$2`, [target.evaluationId, actor.id])).rows[0]
@@ -44,9 +44,10 @@ export async function activateLearningJob(transactions: LearningTransactions, ad
         FROM unfurl.execution_jobs j WHERE j.activity_action_id=$1`, [target.activityActionId])).rows[0];
     if (!job || !["waiting", "failed"].includes(job.status)) return false;
     if (explicit && explicit.expectedRetryEpoch !== job.retry_epoch) return false;
+    if (explicit && !explicit.hadEffects && job.has_steps) return false;
     if (!explicit && (job.retry_epoch !== 0 || job.has_steps)) return false;
     await resumeLearningJobTx(tx, target, { actorId: actor.id, expectedRetryEpoch: job.retry_epoch,
-      explicitPaidRetry: explicit !== null && Boolean(job.has_steps), ...(explicit && job.has_steps ? { retryReceiptId: explicit.retryReceiptId } : {}) });
+      explicitPaidRetry: explicit?.hadEffects === true, ...(explicit?.hadEffects ? { retryReceiptId: explicit.retryReceiptId } : {}) });
     if (target.kind === "evaluation") {
       if (target.targetEvaluationRevision === 1) await tx.query("UPDATE unfurl.evaluations SET status='pending',updated_at=now() WHERE id=$1 AND revision=1 AND status='unavailable'", [target.evaluationId]);
       else await tx.query("UPDATE unfurl.assessment_review_requests SET status='queued',updated_at=now() WHERE evaluation_id=$1 AND expected_evaluation_revision=$2 AND status='unavailable'", [target.evaluationId, target.targetEvaluationRevision - 1]);

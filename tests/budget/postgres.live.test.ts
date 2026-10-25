@@ -81,7 +81,7 @@ describe.skipIf(!live)("actual migrated budget ledger (rollback fixtures)", () =
     expect(await ledger.recover(request, request.requestDigest)).toMatchObject({ receipt });
   });
   ledgerTest("enforces campaign and probe limits inside one fixed campaign", async () => {
-    await expect(ledger.reserve(input("750001", true))).rejects.toThrow("provider.budget_exhausted");
+    await expect(ledger.reserve(input("1000001", true))).rejects.toThrow("provider.budget_exhausted");
     const one = await ledger.reserve(input("9400000"));
     await expect(ledger.reserve(input("100001"))).rejects.toThrow("provider.budget_exhausted");
     await ledger.releaseUnsent(one); await ledger.releaseUnsent(one);

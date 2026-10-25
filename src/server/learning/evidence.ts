@@ -66,23 +66,10 @@ export function deriveCriterionCoverage(input: {
   evidence: readonly ConfirmableEvidence[]; traversedLessonIds: readonly Id[];
 }): { coveredOutcomeIds: Id[]; pendingOutcomeIds: Id[]; completedRequiredOutcomes: number; totalRequiredOutcomes: number;
   requiredProgramTraversed: boolean; completed: boolean } {
-  const required = requiredCriteria(input.tasks);
-  const tasks = new Map(input.tasks.map((entry) => [entry.task.id, entry]));
-  const met = new Map<Id, Set<string>>();
-  for (const evidence of input.evidence) {
-    if (evidence.enrollmentId !== input.enrollmentId || evidence.courseVersionId !== input.version.id || !isCurrentConfirmedEvidence(evidence)) continue;
-    const entry = tasks.get(evidence.taskId);
-    if (!entry || entry.task.taskVersion !== evidence.taskVersion || entry.assessment.evidenceGroupId !== evidence.evidenceGroupId) continue;
-    const mapping = entry.assessment.outcomes.find(({ outcomeId }) => outcomeId === evidence.outcomeId);
-    if (!mapping) continue;
-    const dimensions = met.get(evidence.outcomeId) ?? new Set<string>();
-    for (const { dimensionId } of mapping.dimensions) if (evidence.dimensionStatuses[dimensionId] === "met") dimensions.add(dimensionId);
-    met.set(evidence.outcomeId, dimensions);
-  }
+  const remaining = uncoveredRequiredCriteria(input);
   const coveredOutcomeIds: Id[] = [], pendingOutcomeIds: Id[] = [];
   for (const { id } of input.version.outcomes) {
-    const criteria = required.get(id);
-    if (criteria && criteria.size > 0 && [...criteria].every((dimension) => met.get(id)?.has(dimension))) coveredOutcomeIds.push(id);
+    if (remaining.has(id) && remaining.get(id)!.size === 0) coveredOutcomeIds.push(id);
     else pendingOutcomeIds.push(id);
   }
   const visited = new Set(input.traversedLessonIds);
@@ -90,4 +77,21 @@ export function deriveCriterionCoverage(input: {
   return { coveredOutcomeIds, pendingOutcomeIds, completedRequiredOutcomes: coveredOutcomeIds.length,
     totalRequiredOutcomes: input.version.outcomes.length, requiredProgramTraversed,
     completed: input.version.state === "ready" && requiredProgramTraversed && pendingOutcomeIds.length === 0 };
+}
+
+/** Shared canonical coverage calculation for progress and fresh assessment selection. */
+export function uncoveredRequiredCriteria(input: {
+  enrollmentId: Id; version: CourseVersion; tasks: readonly AssessedTask[]; evidence: readonly ConfirmableEvidence[];
+}): Map<Id, Set<string>> {
+  const remaining = requiredCriteria(input.tasks);
+  const tasks = new Map(input.tasks.map((entry) => [entry.task.id, entry]));
+  for (const evidence of input.evidence) {
+    if (evidence.enrollmentId !== input.enrollmentId || evidence.courseVersionId !== input.version.id || !isCurrentConfirmedEvidence(evidence)) continue;
+    const entry = tasks.get(evidence.taskId);
+    if (!entry || entry.task.taskVersion !== evidence.taskVersion || entry.assessment.evidenceGroupId !== evidence.evidenceGroupId) continue;
+    const mapping = entry.assessment.outcomes.find(({ outcomeId }) => outcomeId === evidence.outcomeId);
+    if (!mapping) continue;
+    for (const { dimensionId } of mapping.dimensions) if (evidence.dimensionStatuses[dimensionId] === "met") remaining.get(evidence.outcomeId)?.delete(dimensionId);
+  }
+  return remaining;
 }

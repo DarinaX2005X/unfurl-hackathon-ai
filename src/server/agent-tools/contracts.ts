@@ -16,7 +16,10 @@ export const AgentDecisionSchema = z.discriminatedUnion("tool", [
     z.object({ kind: z.literal("url"), url: SourceUrlSchema }).strict(),
     z.object({ kind: z.literal("blocks"), sourceId: IdSchema, blockIds: z.array(z.string().min(1).max(80)).max(64) }).strict(),
   ]) }).strict(),
-  z.object({ tool: z.literal("read_artifact"), input: z.object({ courseId: IdSchema }).strict() }).strict(),
+  z.object({ tool: z.literal("read_artifact"), input: z.object({ courseId: IdSchema,
+    page: z.object({ kind: z.enum(["outcomes", "modules", "questions", "sources"]), offset: z.number().int().nonnegative(),
+      limit: z.number().int().min(1).max(12) }).strict().optional(),
+  }).strict() }).strict(),
   z.object({ tool: z.literal("create_course"), input: z.object({
     goal: z.string().trim().min(1).max(4000), audience: z.string().trim().min(1).max(4000),
     assumedKnowledge: z.array(z.string().trim().min(1).max(500)), contentLanguage: ContentLanguageSchema,

@@ -83,10 +83,17 @@ export const CurriculumMutationResultSchema = z.object({
   }
 });
 export type CurriculumMutationResult = z.infer<typeof CurriculumMutationResultSchema>;
+export const CurriculumPatchPendingSchema = z.object({
+  status: z.literal("pending"), run: AgentTurnRunSchema, artifact: CourseArtifactRefSchema,
+}).strict().refine((value) => value.artifact.curriculum?.conversationId === value.run.conversationId,
+  "The authoring request must belong to this course's conversation");
+export const CurriculumPatchResultSchema = z.union([CurriculumMutationResultSchema, CurriculumPatchPendingSchema]);
+export type CurriculumPatchResult = z.infer<typeof CurriculumPatchResultSchema>;
 export const CurriculumAuthoringSnapshotSchema = CurriculumMutationResultSchema.safeExtend({
   evidence: CurriculumEvidencePublicSchema,
   generationRun: GenerationRunSchema.nullable(),
   languageRun: AgentTurnRunSchema.nullable(),
+  authoringRun: AgentTurnRunSchema.nullable().default(null),
 }).superRefine((value, ctx) => {
   if (value.generationRun && (value.generationRun.courseId !== value.artifact.courseId
     || value.generationRun.approvalId !== value.artifact.approval?.id
@@ -96,6 +103,9 @@ export const CurriculumAuthoringSnapshotSchema = CurriculumMutationResultSchema.
   }
   if (value.languageRun && value.languageRun.conversationId !== value.draft.conversationId) {
     ctx.addIssue({ code: "custom", path: ["languageRun"], message: "The language request must belong to this curriculum's conversation" });
+  }
+  if (value.authoringRun && value.authoringRun.conversationId !== value.draft.conversationId) {
+    ctx.addIssue({ code: "custom", path: ["authoringRun"], message: "The authoring request must belong to this curriculum's conversation" });
   }
 });
 export type CurriculumAuthoringSnapshot = z.infer<typeof CurriculumAuthoringSnapshotSchema>;

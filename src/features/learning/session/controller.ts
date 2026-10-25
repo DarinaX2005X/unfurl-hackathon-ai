@@ -6,12 +6,12 @@ import {
 } from "@/domain/activity";
 import type { JsonValue } from "@/domain/common";
 import type { ApiError } from "@/domain/errors";
-import type { EvaluationReceipt, LearningSession } from "@/domain/learning";
+import { LearningSessionSchema, type EvaluationReceipt, type LearningSession } from "@/domain/learning";
 import type { SubmissionIssue } from "@/domain/mechanic-families/v2/shared";
 import type { ProductionMechanicHandle } from "@/features/learning/registry";
 import { cloneResponse, readRecovery, recoveryKey, type RecoveryCommand, type RecoveryRecord, type RecoveryStorage } from "./recovery";
 
-type Scope = "load" | "start" | "save" | "action" | "submit" | "evaluation" | "advance" | "assistance" | "navigation" | "support" | "review";
+type Scope = "load" | "start" | "save" | "action" | "submit" | "evaluation" | "advance" | "assistance" | "navigation" | "support" | "review" | "fresh";
 export type LearningFailure = { scope: Scope; error: ApiError };
 export interface LearningPlayerState {
   phase: "loading" | "ready" | "error";
@@ -38,7 +38,7 @@ export interface LearningPlayerState {
 export type LearningControllerPort = Pick<LearningPort,
   "loadSession" | "startActivity" | "getActivity" | "saveInput" | "dispatchAction" | "retryAction" |
   "submitAttempt" | "getEvaluation" | "retryEvaluation" | "acknowledgeFeedback" | "advance" | "loadContext" |
-  "requestHint" | "revealAnswer" | "revisit" | "requestSupport" | "respondToSupport" | "returnFromSupport" | "requestReview" | "retryReview">;
+  "requestHint" | "revealAnswer" | "revisit" | "requestSupport" | "respondToSupport" | "returnFromSupport" | "requestReview" | "retryReview" | "requestFreshAssessment">;
 type MechanicResolver = (id: string, version: number) => ProductionMechanicHandle | null;
 
 const initialState: LearningPlayerState = {
@@ -77,6 +77,7 @@ export class LearningSessionController {
   private navigationLock = false;
   private actionLock = false;
   private polling = false;
+  private freshAssessmentLock = false;
   private disposed = false;
   private leases = 0;
 
@@ -181,7 +182,7 @@ export class LearningSessionController {
     }
     if (this.disposed) return;
     const samePosition = positionKey(this.state.session) === positionKey(session);
-    if (samePosition && this.state.session && session.route.revision < this.state.session.route.revision) return;
+    if (this.state.session && session.route.revision < this.state.session.route.revision) return;
     if (!samePosition) {
       this.epoch += 1;
       this.recordKey = recoveryKey(this.actorId, this.enrollmentId, session.lesson?.id ?? "end", session.task?.id ?? null);
@@ -261,6 +262,7 @@ export class LearningSessionController {
           case "hint": return this.port.requestHint(this.enrollmentId, command.body, options);
           case "reveal": return this.port.revealAnswer(this.enrollmentId, command.body, options);
           case "revisit": return this.port.revisit(this.enrollmentId, command.body, options);
+          case "fresh_assessment": return this.port.requestFreshAssessment(this.enrollmentId, command.body, options);
           case "support": return this.port.requestSupport(this.enrollmentId, command.body, options);
           case "support_response": return this.port.respondToSupport(this.enrollmentId, command.target, command.body, options);
           case "support_return": return this.port.returnFromSupport(this.enrollmentId, command.target, command.body, options);
@@ -274,10 +276,15 @@ export class LearningSessionController {
       this.update({ busy: null });
       if (!result.ok) {
         if (!result.error.error.retryable || ["invalid_input", "revision_conflict", "forbidden", "not_found"].includes(result.error.error.code)) { record.command = null; this.update({ commandUnconfirmed: false }); this.persist(); }
-        this.fail(scope, result.error); return;
+        this.fail(scope, result.error);
+        if (command.kind === "fresh_assessment" && !this.state.commandUnconfirmed) void this.loadContext();
+        return;
       }
+      const freshSession = command.kind === "fresh_assessment" ? LearningSessionSchema.safeParse(result.data) : null;
+      if (freshSession && !freshSession.success) { this.fail(scope, unavailable()); return; }
       record.command = null; this.update({ commandUnconfirmed: false }); this.persist();
-      await this.load();
+      if (freshSession?.success) await this.acceptSession(freshSession.data);
+      else await this.load();
     });
   }
 
@@ -285,7 +292,18 @@ export class LearningSessionController {
     const command = this.record?.command;
     if (command) await this.command(command, command.kind === "hint" || command.kind === "reveal" ? "assistance" :
       command.kind === "review" || command.kind === "review_retry" ? "review" : command.kind === "evaluation_retry" ? "evaluation" :
-        command.kind === "action_retry" ? "action" : command.kind === "revisit" ? "navigation" : "support");
+        command.kind === "action_retry" ? "action" : command.kind === "revisit" ? "navigation" : command.kind === "fresh_assessment" ? "fresh" : "support");
+  }
+  async requestFreshAssessment(): Promise<void> {
+    if (this.freshAssessmentLock) return;
+    this.freshAssessmentLock = true;
+    try {
+      if (this.record?.command?.kind === "fresh_assessment") { await this.retryCommand(); return; }
+      const session = this.state.session, context = this.state.context;
+      if (!session || !context || context.routeRevision !== session.route.revision || context.freshAssessment.availability !== "available" ||
+        this.state.contextLoading || this.state.commandUnconfirmed || this.state.routeMoved) return;
+      await this.command({ kind: "fresh_assessment", key: this.createId(), body: { expectedRouteRevision: session.route.revision } }, "fresh");
+    } finally { this.freshAssessmentLock = false; }
   }
   async hint(): Promise<void> {
     const task = this.state.session?.task, assistance = this.state.context?.assistance;
@@ -557,7 +575,8 @@ export class LearningSessionController {
       ...(receipt.route.revision >= session.route.revision ? { route: receipt.route,
         enrollment: { ...session.enrollment, routeRevision: receipt.route.revision }, progress: receipt.progress, support: receipt.support } : {}),
     } });
-    if (receipt.route.revision !== this.state.context?.routeRevision) { this.update({ context: null }); if (!routeMoved) void this.loadContext(); }
+    if (receipt.route.revision !== this.state.context?.routeRevision) this.update({ context: null });
+    if (!routeMoved) void this.loadContext();
   }
 
   async retryEvaluation(): Promise<void> {

@@ -5,6 +5,7 @@ vi.mock("server-only", () => ({}));
 import { httpFailureReceipt } from "../../src/server/ai/error-receipt";
 import { RubricJudgementSchema } from "../../src/server/evaluation/contracts";
 import { providerWireSchema } from "../../src/server/ai/wire-schema";
+import { sanitizeProbeError } from "./diagnostic-fetch";
 import type { JsonObject } from "../../src/domain/common";
 
 describe("bounded private error diagnostics", () => {
@@ -45,11 +46,13 @@ describe("bounded private error diagnostics", () => {
     expect(receipt.result).toMatchObject({schemaKeywords:expect.arrayContaining(["maxItems"]),schemaPaths:["/properties/dimensions"]});
     expect(JSON.stringify(receipt)).not.toContain("secret user prompt");
   });
-  it("normalizes only transport constraints and retains full domain validation",()=>{
+  it("preserves the bounded canonical schema for prompt instructions and retains full domain validation",()=>{
     const original=z.toJSONSchema(RubricJudgementSchema) as JsonObject;const wire=providerWireSchema(original);
-    expect(JSON.stringify(wire)).not.toMatch(/minItems|maxItems|minLength|maxLength|exclusiveMinimum|9007199254740991|\$schema/);
+    expect(wire).toEqual(original); expect(JSON.stringify(wire)).toContain("minItems");
     expect(wire).toMatchObject({type:"object",additionalProperties:false,required:["dimensions","feedback","uncertainReasons"]});
     expect(RubricJudgementSchema.safeParse({dimensions:[],feedback:"",uncertainReasons:[]}).success).toBe(false);
-    expect(providerWireSchema({type:"object",properties:{minimum:{type:"string",maxLength:2}},required:["minimum"]})).toEqual({type:"object",properties:{minimum:{type:"string"}},required:["minimum"]});
+    expect(providerWireSchema({type:"object",properties:{minimum:{type:"string",maxLength:2}},required:["minimum"]})).toEqual({type:"object",properties:{minimum:{type:"string",maxLength:2}},required:["minimum"]});
+    expect(()=>providerWireSchema({description:"x".repeat(65537)})).toThrow();
+    expect(sanitizeProbeError("Invalid response_format type; Bearer abc123 sk-secret " + "x".repeat(50),["secret"])).not.toMatch(/abc123|sk-secret|x{40}/);
   });
 });

@@ -8,6 +8,7 @@ import { RunHandlerRegistry } from "../../src/server/runs/registry";
 import { claimJob, type RuntimeTransaction } from "../../src/server/runs/store";
 import { enqueueAcceptedRun } from "../../src/server/runs/enqueue";
 import type { RunContext, RunHandler } from "../../src/server/runs/ports";
+import { ServiceFault } from "../../src/server/auth/errors";
 
 describe.skipIf(process.env.RUN_LIVE_RUN_EXECUTOR !== "1")("actual fenced executor (rollback fixtures, no provider calls)", () => {
   let client: Client; let transaction: RuntimeTransaction;
@@ -35,9 +36,11 @@ describe.skipIf(process.env.RUN_LIVE_RUN_EXECUTOR !== "1")("actual fenced execut
   afterAll(async()=>{await client?.end();});
   function handler(advance:(context:RunContext)=>ReturnType<RunHandler["advance"]>):RunHandler { return {kind:"agent_turn",version:"rollback-proof",assertAuthority:async()=>undefined,advance}; }
   it("commits a durable step once, replays it, and atomically completes a later step", async () => {
-    let effects=0;
+    let effects=0;let prepared=0;
     const h=handler(async ctx=>{
       const first=await ctx.step({key:"first",input:{value:4},digests,outputSchema:z.object({value:z.number()}),resultSchema:z.object({value:z.number()}),
+        prepare:async(tx,effect)=>{prepared++;const row=(await tx.query("SELECT status,lease_owner,fencing_token::text FROM unfurl.run_steps WHERE id=$1",[effect.stepId])).rows[0];
+          expect(row).toEqual({status:"running",lease_owner:effect.stepFence.stepLeaseOwner,fencing_token:effect.stepFence.stepFencingToken});},
         effect:async()=>{effects++;return{value:4};},commit:async(_tx,output)=>output});
       await ctx.step({key:"final",input:first,digests,outputSchema:z.object({value:z.number()}),resultSchema:z.object({done:z.boolean()}),
         effect:async()=>{effects++;return first;},commit:async tx=>{await ctx.completeTurn(tx,{status:"succeeded"});return{done:true};}});
@@ -46,6 +49,7 @@ describe.skipIf(process.env.RUN_LIVE_RUN_EXECUTOR !== "1")("actual fenced execut
     const executor=new DurableRunExecutor(new RunHandlerRegistry([h]),transaction);
     expect(await executor.advance(job)).toEqual({status:"continue"}); expect(effects).toBe(1);
     expect(await executor.advance(job)).toEqual({status:"finished"}); expect(effects).toBe(2);
+    expect(prepared).toBe(1);
     expect(await executor.advance(job)).toEqual({status:"finished"}); expect(effects).toBe(2);
     expect((await client.query("SELECT status FROM unfurl.agent_turn_runs WHERE id=$1",[run])).rows[0].status).toBe("succeeded");
     expect((await client.query("SELECT count(*)::int AS n FROM unfurl.agent_turn_events WHERE run_id=$1 AND type='run.completed'",[run])).rows[0].n).toBe(1);
@@ -65,11 +69,31 @@ describe.skipIf(process.env.RUN_LIVE_RUN_EXECUTOR !== "1")("actual fenced execut
   });
   it("fences a late result after cancellation without committing its domain effect", async () => {
     let committed=false;
-    const h=handler(async ctx=>{await ctx.step({key:"late",input:null,digests,outputSchema:z.null(),resultSchema:z.null(),
-      effect:async()=>{await client.query("UPDATE unfurl.agent_turn_runs SET status='cancelled' WHERE id=$1",[run]);
+    const h=handler(async ctx=>{await ctx.step({key:"late",executionProfile:"longform_curriculum",input:null,digests,outputSchema:z.null(),resultSchema:z.null(),
+      effect:async effect=>{expect(effect.deadlineAt-Date.now()).toBeGreaterThan(260000);
+        const lease=(await client.query("SELECT extract(epoch FROM j.lease_expires_at-now())::int AS job,extract(epoch FROM s.lease_expires_at-now())::int AS step FROM unfurl.execution_jobs j JOIN unfurl.run_steps s ON s.job_id=j.id WHERE j.id=$1",[job])).rows[0];
+        expect(lease.job).toBeGreaterThan(285);expect(lease.job).toBeLessThanOrEqual(295);expect(lease.step).toBeGreaterThan(275);expect(lease.step).toBeLessThanOrEqual(285);
+        await client.query("UPDATE unfurl.agent_turn_runs SET status='cancelled' WHERE id=$1",[run]);
         await client.query("UPDATE unfurl.execution_jobs SET status='cancelled',lease_owner=NULL,lease_expires_at=NULL,fencing_token=fencing_token+1 WHERE id=$1",[job]);return null;},
       commit:async()=>{committed=true;return null;}});return{status:"succeeded"};});
     expect(await new DurableRunExecutor(new RunHandlerRegistry([h]),transaction).advance(job)).toEqual({status:"finished"});expect(committed).toBe(false);
     expect((await client.query("SELECT count(*)::int AS n FROM unfurl.run_steps WHERE job_id=$1 AND status='succeeded'",[job])).rows[0].n).toBe(0);
+  });
+  it("persists an authority revision conflict as a safe failed run", async () => {
+    const h=handler(async()=>{throw new Error("must not execute stale intent");});
+    h.assertAuthority=async()=>{throw new ServiceFault(409,"revision_conflict","curriculum.revisionConflict",false,{currentRevision:7});};
+    expect(await new DurableRunExecutor(new RunHandlerRegistry([h]),transaction).advance(job)).toEqual({status:"finished"});
+    expect((await client.query("SELECT status,error FROM unfurl.agent_turn_runs WHERE id=$1",[run])).rows[0]).toMatchObject({status:"failed",error:{code:"revision_conflict",messageKey:"curriculum.revisionConflict"}});
+    expect((await client.query("SELECT count(*)::int AS n FROM unfurl.agent_turn_events WHERE run_id=$1 AND type='run.failed'",[run])).rows[0].n).toBe(1);
+    expect((await client.query("SELECT status FROM unfurl.execution_jobs WHERE id=$1",[job])).rows[0].status).toBe("failed");
+  });
+  it("terminalizes an obsolete branch job before any effect",async()=>{
+    const conversation=(await client.query("SELECT conversation_id FROM unfurl.agent_turn_runs WHERE id=$1",[run])).rows[0].conversation_id;
+    const replacement=randomUUID();await client.query("INSERT INTO unfurl.conversation_branches(id,conversation_id) VALUES($1,$2)",[replacement,conversation]);
+    await client.query("UPDATE unfurl.conversations SET active_branch_id=$2 WHERE id=$1",[conversation,replacement]);
+    const h=handler(async()=>{throw new Error("obsolete branch must not execute");});
+    expect(await new DurableRunExecutor(new RunHandlerRegistry([h]),transaction).advance(job)).toEqual({status:"finished"});
+    expect((await client.query("SELECT status FROM unfurl.execution_jobs WHERE id=$1",[job])).rows[0].status).toBe("cancelled");
+    expect((await client.query("SELECT status FROM unfurl.agent_turn_runs WHERE id=$1",[run])).rows[0].status).toBe("cancelled");
   });
 });

@@ -31,6 +31,7 @@ export interface ModelRequestBase {
   untrustedInput: JsonValue;
   model: typeof MODEL_ID;
   maxOutputTokens: number;
+  executionProfile?: "longform_curriculum" | "longform_content";
   deadlineAt: number;
   budget: BudgetOperationContext;
 }
@@ -64,6 +65,7 @@ export interface ModelEvidence {
   usage: NativeUsage;
   rateCardDigest: string;
   replayed: boolean;
+  normalizationEvidenceDigest?: string;
 }
 export interface ModelResult<T> { data: T; evidence: ModelEvidence }
 export interface TextDelta { type: "text.delta"; text: string }

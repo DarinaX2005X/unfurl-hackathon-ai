@@ -65,6 +65,7 @@ describe("paid completion boundary (simulated provider, no live quality claim)",
     expect(result.data).toEqual({ answer: "ok" });
     const body = JSON.parse(String(h.fetcher.mock.calls[0]?.[1]?.body));
     expect(body).toMatchObject({ model: MODEL_ID, provider: { only: [PROVIDER_TAG], allow_fallbacks: false, require_parameters: true, max_price: { prompt: 0.6, completion: 2.6 } } });
+    expect(body.response_format).toBeUndefined(); expect(body.messages[0].content).toContain("canonical schema");
     expect(body.messages[1].content).toContain('"untrustedInput"');
     expect(h.budget.recordResponse).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ reportedCostUsd: "0.0000354" }), "36");
     expect(JSON.stringify(h.saved())).not.toContain("must not be stored");
@@ -131,10 +132,30 @@ describe("paid completion boundary (simulated provider, no live quality claim)",
     expect(h.budget.recordResponse).toHaveBeenCalledTimes(1);
   });
   it("bounds search to one use/two reserved inference passes and holds unverified tool accounting", async () => {
-    const h = harness(completion({ usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30, cost: 0.005, server_tool_use: { web_search_requests: 1 } } }));
-    await h.model.complete(request(), new AbortController().signal, { search: true });
+    const h = harness(completion({ usage: { prompt_tokens: 20, completion_tokens: 10, total_tokens: 30, cost: 0.005, server_tool_use_details: { web_search_requests: 1,tool_calls_requested:1,tool_calls_executed:1 } } }));
+    await expect(h.model.complete(request(), new AbortController().signal, { search: true })).rejects.toThrow("provider.unavailable");
+    expect(h.saved()?.receipt.usage.searchRequests).toBe(1);
     const body = JSON.parse(String(h.fetcher.mock.calls[0]?.[1]?.body));
     expect(body).toMatchObject({ max_tool_calls: 1, tools: [{ type: "openrouter:web_search", parameters: { engine: "parallel", mode: "advanced", max_uses: 1, max_total_results: 5 } }] });
     expect(h.budget.recordResponse).toHaveBeenCalledWith(expect.anything(), expect.anything(), null);
+  });
+  it("admits the larger curriculum bound only with the trusted longform profile",async()=>{
+    const h=harness(),input={...request(),maxOutputTokens:16384,deadlineAt:Date.now()+270000};
+    await expect(h.model.complete(input,new AbortController().signal)).rejects.toThrow("provider.invalid_output");
+    expect(h.budget.reserve).not.toHaveBeenCalled();
+    await h.model.complete({...input,executionProfile:"longform_curriculum"},new AbortController().signal);
+    expect(h.budget.reserve).toHaveBeenCalledWith(expect.objectContaining({amountMicroUsd:"199886"}));
+    await expect(h.model.complete({...input,purpose:"rubric_grading",executionProfile:"longform_curriculum"},new AbortController().signal)).rejects.toThrow("provider.invalid_output");
+  });
+  it("settles every valid native search fee before returning the next executable result",async()=>{
+    const h=harness(completion({usage:{prompt_tokens:20,completion_tokens:10,total_tokens:30,cost:0.0050354,
+      cost_details:{upstream_inference_cost:0.0000354},server_tool_use_details:{web_search_requests:1,tool_calls_requested:1,tool_calls_executed:1}},
+      choices:[{finish_reason:"stop",message:{content:"A cited fact.",annotations:[{type:"url_citation",url_citation:{url:"https://nodejs.org/api/globals.html",title:"Node.js",content:"AbortController"}}]}}]}));
+    expect((await h.model.complete(request(),new AbortController().signal,{search:true})).evidence.usage.searchRequests).toBe(1);
+    expect(h.budget.recordResponse).toHaveBeenCalledWith(expect.anything(),expect.anything(),"5036");
+    const truncated=harness(completion({usage:{prompt_tokens:20,completion_tokens:10,total_tokens:30,cost:0.0050354,cost_details:{upstream_inference_cost:0.0000354},
+      server_tool_use_details:{web_search_requests:1,tool_calls_requested:1,tool_calls_executed:1}},choices:[{finish_reason:"length",message:{content:"Incomplete",annotations:[]}}]}));
+    await expect(truncated.model.complete(request(),new AbortController().signal,{search:true})).rejects.toThrow("provider.invalid_output");
+    expect(truncated.budget.recordResponse).toHaveBeenCalledWith(expect.anything(),expect.anything(),"5036");
   });
 });

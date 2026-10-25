@@ -5,7 +5,7 @@ import { probeSourceDigest } from "./probe-files.mjs";
 
 const root = process.cwd();
 const mode = process.argv[2];
-if (!["--prepare", "--execute-approved-three-probes", "--prepare-diagnostic", "--execute-approved-diagnostic"].includes(mode)) {
+if (!["--prepare", "--execute-approved-three-probes", "--prepare-diagnostic", "--execute-approved-diagnostic", "--replay-saved-diagnostic", "--prepare-search", "--execute-approved-search", "--replay-saved-search"].includes(mode)) {
   throw new Error("Choose --prepare (no inference) or the explicitly approved three-probe execution");
 }
 if (JSON.parse(await readFile(resolve(root, "package.json"), "utf8")).name !== "unfurl") throw new Error("Wrong workspace");
@@ -22,19 +22,34 @@ function run(args, env) {
 }
 if (mode === "--prepare-diagnostic") {
   const before = await probeSourceDigest(root);
-  run(["tests/provider-integration/error-receipt.test.ts", "tests/provider-integration/openrouter.test.ts", "tests/provider-integration/diagnostic-preparation.test.ts",
-    "--reporter=json", "--outputFile=" + reportPath], { RUN_DIAGNOSTIC_PREPARE: "1", WRITE_SCHEMA_DIAGNOSTIC: "1", RUN_PAID_DIAGNOSTIC: "", RUN_PAID_PROVIDER_PROBE: "" });
+  run(["tests/provider-integration/error-receipt.test.ts", "tests/provider-integration/openrouter.test.ts", "tests/provider-integration/diagnostic-preparation.test.ts","tests/budget/post-terminal.live.test.ts","tests/budget/admission.test.ts",
+    "--reporter=json", "--outputFile=" + reportPath], { RUN_DIAGNOSTIC_PREPARE: "1", RUN_LIVE_TERMINAL_LEDGER:"1", WRITE_SCHEMA_DIAGNOSTIC: "1", RUN_PAID_DIAGNOSTIC: "", RUN_PAID_PROVIDER_PROBE: "" });
   const report = JSON.parse(await readFile(reportPath,"utf8"));
-  if (report.numFailedTests !== 0 || report.numPassedTests !== 21 || report.success !== true) throw new Error("Diagnostic preparation failed");
+  if (report.numFailedTests !== 0 || report.numPassedTests !== 32 || report.success !== true) throw new Error("Diagnostic preparation failed");
   const digest = await probeSourceDigest(root); if (digest !== before) throw new Error("Source changed during preparation");
-  await writeFile(resolve(root,".cache/provider-diagnostic-preparation.json"),JSON.stringify({version:1,kind:"single-diagnostic",sourceDigest:digest,
-    observedAt:new Date().toISOString(),passedTests:21,maxPaidCalls:1,maxProbeMicroUsd:"162612"},null,2));
-  console.log(JSON.stringify({prepared:true,inferenceCalls:0,passedTests:21,maxApprovedMicroUsd:"162612"}));
+  await writeFile(resolve(root,".cache/provider-diagnostic-preparation.json"),JSON.stringify({version:4,kind:"single-diagnostic",sourceDigest:digest,
+    observedAt:new Date().toISOString(),passedTests:32,maxPaidCalls:1,maxProbeMicroUsd:"162612"},null,2));
+  console.log(JSON.stringify({prepared:true,inferenceCalls:0,passedTests:32,maxApprovedMicroUsd:"162612"}));
+} else if(mode === "--prepare-search"){
+  const before=await probeSourceDigest(root);
+  run(["tests/provider-integration/accounting.test.ts","tests/provider-integration/search-preparation.test.ts","--reporter=json","--outputFile="+reportPath],{RUN_SEARCH_PREPARE:"1",RUN_PAID_SEARCH:"",RUN_PAID_DIAGNOSTIC:"",RUN_PAID_PROVIDER_PROBE:""});
+  const report=JSON.parse(await readFile(reportPath,"utf8"));if(report.numFailedTests!==0||report.numPassedTests!==5||report.success!==true)throw new Error("Search preparation failed");
+  const sourceDigest=await probeSourceDigest(root);if(sourceDigest!==before)throw new Error("Source changed during preparation");
+  await writeFile(resolve(root,".cache/provider-search-preparation.json"),JSON.stringify({version:1,kind:"single-search",sourceDigest,observedAt:new Date().toISOString(),passedTests:5,maxPaidCalls:1,maxProbeMicroUsd:"330224"},null,2));
+  console.log(JSON.stringify({prepared:true,inferenceCalls:0,passedTests:5,reusedPriorBudgetChecks:32,maxApprovedMicroUsd:"330224"}));
+} else if(mode === "--execute-approved-search"){
+  const path=resolve(root,".cache/provider-search-preparation.json"),proof=JSON.parse(await readFile(path,"utf8"));
+  if(proof.version!==1||proof.kind!=="single-search"||proof.passedTests!==5||proof.maxPaidCalls!==1||proof.maxProbeMicroUsd!=="330224"||Date.now()-Date.parse(proof.observedAt)>1800000||await probeSourceDigest(root)!==proof.sourceDigest)throw new Error("Fresh unchanged search proof required");
+  run(["tests/provider-integration/search.live.test.ts"],{RUN_PAID_SEARCH:"approved-one-search-v1",SEARCH_PREPARATION_PATH:path,RUN_PAID_DIAGNOSTIC:"",RUN_PAID_PROVIDER_PROBE:""});
+} else if(mode === "--replay-saved-search"){
+  run(["tests/provider-integration/search.live.test.ts"],{RUN_PAID_SEARCH:"approved-one-search-v1",REPLAY_SEARCH_ONLY:"1",SEARCH_PREPARATION_PATH:resolve(root,".cache/provider-search-preparation.json"),RUN_PAID_DIAGNOSTIC:"",RUN_PAID_PROVIDER_PROBE:""});
 } else if (mode === "--execute-approved-diagnostic") {
   const path = resolve(root,".cache/provider-diagnostic-preparation.json"); const proof = JSON.parse(await readFile(path,"utf8"));
-  if(proof.version!==1||proof.kind!=="single-diagnostic"||proof.passedTests!==21||proof.maxPaidCalls!==1||proof.maxProbeMicroUsd!=="162612"||
+  if(proof.version!==4||proof.kind!=="single-diagnostic"||proof.passedTests!==32||proof.maxPaidCalls!==1||proof.maxProbeMicroUsd!=="162612"||
     Date.now()-Date.parse(proof.observedAt)>30*60*1000||await probeSourceDigest(root)!==proof.sourceDigest)throw new Error("Fresh unchanged diagnostic proof required");
-  run(["tests/provider-integration/diagnostic.live.test.ts"],{RUN_PAID_DIAGNOSTIC:"approved-one-diagnostic-v1",DIAGNOSTIC_PREPARATION_PATH:path,RUN_PAID_PROVIDER_PROBE:""});
+  run(["tests/provider-integration/diagnostic.live.test.ts"],{RUN_PAID_DIAGNOSTIC:"approved-one-diagnostic-v4",DIAGNOSTIC_PREPARATION_PATH:path,RUN_PAID_PROVIDER_PROBE:""});
+} else if(mode === "--replay-saved-diagnostic"){
+  run(["tests/provider-integration/diagnostic.live.test.ts"],{RUN_PAID_DIAGNOSTIC:"approved-one-diagnostic-v4",REPLAY_DIAGNOSTIC_ONLY:"1",DIAGNOSTIC_PREPARATION_PATH:resolve(root,".cache/provider-diagnostic-preparation.json"),RUN_PAID_PROVIDER_PROBE:""});
 } else if (mode === "--prepare") {
   const before = await probeSourceDigest(root);
   run(["tests/budget/postgres.live.test.ts", "tests/provider-integration/research.live.test.ts",

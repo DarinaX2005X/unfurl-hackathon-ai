@@ -3,10 +3,10 @@ import { NextRequest } from "next/server";
 vi.mock("server-only", () => ({}));
 vi.mock("@/server/auth/session", () => ({ requireActor: vi.fn() }));
 vi.mock("@/server/auth/config", () => ({ requireAuthConfiguration: () => ({ origin: "http://127.0.0.1:3000" }) }));
-vi.mock("@/server/learning/service", () => ({ learningService: { loadSession: vi.fn(), loadContext: vi.fn(), getActivity: vi.fn(), startActivity: vi.fn(), saveInput: vi.fn(), dispatchAction: vi.fn(), retryAction: vi.fn(), advance: vi.fn(), revisit: vi.fn(), submitAttempt: vi.fn(), requestHint: vi.fn(), revealAnswer: vi.fn(), getEvaluation: vi.fn(), acknowledgeFeedback: vi.fn() } }));
+vi.mock("@/server/learning/service", () => ({ learningService: { loadSession: vi.fn(), loadContext: vi.fn(), getActivity: vi.fn(), startActivity: vi.fn(), saveInput: vi.fn(), dispatchAction: vi.fn(), retryAction: vi.fn(), advance: vi.fn(), revisit: vi.fn(), requestFreshAssessment: vi.fn(), submitAttempt: vi.fn(), requestHint: vi.fn(), revealAnswer: vi.fn(), getEvaluation: vi.fn(), acknowledgeFeedback: vi.fn() } }));
 import { requireActor } from "@/server/auth/session";
 import { learningService } from "@/server/learning/service";
-import { loadSessionRoute, loadContextRoute, getEvaluationRoute, requestHintRoute, submitAttemptRoute, acknowledgeFeedbackRoute, startActivityRoute, saveInputRoute, revisitRoute } from "@/server/learning/routes";
+import { loadSessionRoute, loadContextRoute, getEvaluationRoute, requestHintRoute, submitAttemptRoute, acknowledgeFeedbackRoute, startActivityRoute, saveInputRoute, revisitRoute, requestFreshAssessmentRoute } from "@/server/learning/routes";
 import { ServiceFault } from "@/server/auth/errors";
 
 const actor = { id: crypto.randomUUID(), sessionId: crypto.randomUUID(), email: null }, id = crypto.randomUUID(), key = crypto.randomUUID();
@@ -53,6 +53,14 @@ describe("learning API authority boundary", () => {
     vi.mocked(learningService.loadContext).mockClear();
     for (const query of ["limit=101", "limit=", "limit=2.5", "learnerId=other", "cursor="]) expect((await loadContextRoute(page(query), id)).status).toBe(400);
     expect(learningService.loadContext).not.toHaveBeenCalled();
+  });
+  it("fresh assessment accepts only explicit route CAS, never client-chosen task or independence", async () => {
+    const body = { expectedRouteRevision: 3 };
+    expect((await requestFreshAssessmentRoute(request({ ...body, taskId: key, independent: true }), id)).status).toBe(400);
+    expect(learningService.requestFreshAssessment).not.toHaveBeenCalled();
+    vi.mocked(learningService.requestFreshAssessment).mockRejectedValue(new ServiceFault(409, "revision_conflict", "learning.freshAssessment.noUnseenAssessment"));
+    expect((await requestFreshAssessmentRoute(request(body), id)).status).toBe(409);
+    expect(learningService.requestFreshAssessment).toHaveBeenCalledWith(actor, id, { key, body });
   });
   it("evaluation GET does not acknowledge feedback; assistance and submissions reject authority fields", async () => {
     vi.mocked(learningService.getEvaluation).mockRejectedValue(new ServiceFault(404, "not_found", "learning.notFound"));

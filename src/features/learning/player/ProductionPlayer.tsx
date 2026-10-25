@@ -12,11 +12,18 @@ import { routes } from "@/lib/routes";
 import { UnsupportedTask } from "./UnsupportedTask";
 import { LessonText } from "./LessonText";
 import { TaskGuide } from "./TaskGuide";
+import { FreshAssessment } from "./FreshAssessment";
 import { AssessmentReview, CourseOutline, LessonAssistance, LessonSources, SupportControls } from "./PlayerTools";
 import styles from "./player.module.css";
 
 function failureText(failure: LearningFailure): string {
   const code = failure.error.error.code;
+  const messageKey = failure.error.error.messageKey;
+  if (messageKey === "learning.freshAssessment.noUnseenAssessment") return "No unseen assessment remains for these outcomes in this course. Your earlier answers and results are retained.";
+  if (messageKey === "learning.freshAssessment.notNeeded") return "The course no longer requires a fresh assessment for these outcomes.";
+  if (messageKey === "learning.freshAssessment.support_active") return "Return from your support activity before opening a fresh assessment.";
+  if (messageKey === "learning.freshAssessment.review_active") return "An assessment or review is in progress. Check for a fresh assessment after it finishes.";
+  if (messageKey === "learning.freshAssessment.archived") return "This enrollment is archived, so a fresh assessment cannot be opened.";
   if (failure.error.error.messageKey === "support.unavailable") return "No support activity is available for that choice in this course. You can choose another kind of support or keep working on your current activity.";
   if (code === "unauthenticated") return "Sign in again to continue with your saved course.";
   if (code === "forbidden" || code === "not_found") return "This course is not available to this account.";
@@ -35,6 +42,7 @@ function failureText(failure: LearningFailure): string {
     navigation: "Your position could not be confirmed. Reload the course to check its saved route.",
     support: "The support request could not be confirmed. Your current work is retained.",
     review: "The assessment review request could not be confirmed. Retry the same request.",
+    fresh: "The fresh-assessment request could not be confirmed. Retry the same request to recover its saved position.",
   };
   return messages[failure.scope];
 }
@@ -78,7 +86,8 @@ function LearningWorkspace({ actorId, enrollmentId }: { actorId: string; enrollm
   const currentEvaluation = controller.hasCurrentEvaluation();
   const evaluated = evaluation?.status === "evaluated" || evaluation?.status === "uncertain";
   const busy = state.busy !== null;
-  const editingLocked = !session.activity || session.enrollment.status === "archived" || state.routeMoved || state.busy === "submit" || state.busy === "advance";
+  const editingLocked = !session.activity || session.enrollment.status === "archived" || state.routeMoved || state.busy === "submit" || state.busy === "advance" || state.busy === "fresh";
+  const observedPrediction = task?.mechanicId === "outcome_prediction" && Boolean(session.activity?.events.some((event) => event.action.kind === "run" && event.receipt.status === "completed"));
   const reading = session.lesson?.blocks.filter((block) => block.kind !== "task") ?? [];
   const Renderer = handle?.Renderer;
   const failedAccess = state.failure && ["unauthenticated", "forbidden", "not_found"].includes(state.failure.error.error.code);
@@ -94,6 +103,7 @@ function LearningWorkspace({ actorId, enrollmentId }: { actorId: string; enrollm
       case "evaluation": void controller.refreshStatus(); break;
       case "advance": void controller.advance(); break;
       case "navigation": case "assistance": case "support": case "review": void controller.load(); break;
+      case "fresh": void controller.load(); break;
     }
   };
 
@@ -124,7 +134,7 @@ function LearningWorkspace({ actorId, enrollmentId }: { actorId: string; enrollm
       {session.enrollment.status === "completed" ? <><Check size={32} aria-hidden="true" /><p>You have worked through the course and demonstrated its required learning outcomes.</p></> :
         <><p>You have reached the end of the sequence. Some learning outcomes still need confirmed evidence before the course is complete.</p>
           {state.context && <ul>{state.context.outcomes.filter((outcome) => session.route.pendingOutcomeIds.includes(outcome.id)).map((outcome) => <li key={outcome.id}>{outcome.title}</li>)}</ul>}
-          <p>Revisit a completed lesson from the course outline to work on these outcomes.</p></>}
+          <FreshAssessment state={state} controller={controller} /></>}
       <LinkButton href={routes.library} variant="secondary">Return to library</LinkButton>
     </section> : <div className={styles.lessonLayout}>
       <div className={styles.work}>
@@ -164,6 +174,7 @@ function LearningWorkspace({ actorId, enrollmentId }: { actorId: string; enrollm
           {evaluation.status === "unavailable" && <Button variant="secondary" pending={state.busy === "evaluation"} disabled={!state.online || busy} onClick={() => void controller.retryEvaluation()}>Retry assessment</Button>}
           {(currentEvaluation || state.routeMoved) && evaluated && <Button pending={state.busy === "advance"} disabled={!state.online || busy || state.commandUnconfirmed || ["queued", "running"].includes(session.evaluation?.review?.status ?? "")} onClick={() => void controller.advance()}>{state.routeMoved ? "Return to your saved course position" : "Continue"}</Button>}
           <AssessmentReview key={evaluation.attemptId} state={state} controller={controller} />
+          {observedPrediction && evaluated && <FreshAssessment state={state} controller={controller} observedPrediction />}
         </section>}
         {!task && <Button className={styles.readingContinue} pending={state.busy === "advance" || state.busy === "support"} disabled={!state.online || busy || state.commandUnconfirmed}
           onClick={() => void (session.support?.status === "accepted" && session.support.tasks.length === 0 ? controller.returnSupport() : controller.advance())}>{session.support?.status === "accepted" && session.support.tasks.length === 0 ? "Return to course" : "Continue"}</Button>}

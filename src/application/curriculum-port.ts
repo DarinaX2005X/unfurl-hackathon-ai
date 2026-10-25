@@ -6,7 +6,7 @@ import type {
   CourseMetadataInput,
   CurriculumApprovalResult,
   CurriculumAuthoringSnapshot,
-  CurriculumMutationResult,
+  CurriculumPatchResult,
   PatchCurriculumInput,
   RequestCourseLanguageInput,
 } from "../domain/curriculum-authoring";
@@ -24,7 +24,7 @@ export interface CurriculumPort {
     draftId: Id,
     input: PatchCurriculumInput,
     options: CurriculumMutationOptions,
-  ): Promise<ServiceResult<CurriculumMutationResult>>;
+  ): Promise<ServiceResult<CurriculumPatchResult>>;
   approveCurriculum(
     draftId: Id,
     input: ApproveCurriculumInput,

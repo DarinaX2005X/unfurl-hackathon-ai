@@ -46,7 +46,9 @@ function harness(storage = new MemoryStorage()) {
   const currentActivity = () => ({ activity: copy(data.activity!), savedInput: copy(data.savedInput) });
   const port: LearningControllerPort = {
     loadContext: vi.fn<LearningControllerPort["loadContext"]>(async () => ({ ok: true, data: { enrollmentId: id(1), routeRevision: data.route.revision,
-      course: { id: id(3), versionId: id(4), versionNumber: 1, title: "Evidence", contentLanguage: "en" }, outcomes: [{ id: id(7), title: "Interpret held-out evidence" }], outline: [], outlineNextCursor: null, citations: [], assistance: null, revisitBlockedReason: null } })),
+      course: { id: id(3), versionId: id(4), versionNumber: 1, title: "Evidence", contentLanguage: "en" }, outcomes: [{ id: id(7), title: "Interpret held-out evidence" }], outline: [], outlineNextCursor: null, citations: [], assistance: null, revisitBlockedReason: null,
+      freshAssessment: { availability: "available", blockedReason: null, outcomeIds: [id(7)] } } })),
+    requestFreshAssessment: vi.fn<LearningControllerPort["requestFreshAssessment"]>(async () => fail()),
     requestHint: vi.fn<LearningControllerPort["requestHint"]>(async () => fail()), revealAnswer: vi.fn<LearningControllerPort["revealAnswer"]>(async () => fail()),
     revisit: vi.fn<LearningControllerPort["revisit"]>(async () => fail()), requestSupport: vi.fn<LearningControllerPort["requestSupport"]>(async () => fail()),
     respondToSupport: vi.fn<LearningControllerPort["respondToSupport"]>(async () => fail()), returnFromSupport: vi.fn<LearningControllerPort["returnFromSupport"]>(async () => fail()),
@@ -97,6 +99,56 @@ const track = (controller: LearningSessionController) => { controllers.push(cont
 afterEach(() => { controllers.splice(0).forEach((controller) => controller.dispose()); vi.useRealTimers(); });
 
 describe("production learning continuity", () => {
+  it("replays a fresh-assessment request after a lost response and double click without changing the old answer", async () => {
+    const h = harness(), controller = track(h.make()); await controller.load(); await controller.start();
+    controller.setResponse(response("Earlier submitted answer")); await controller.submit(); await controller.loadContext();
+    const prior = copy({ activity: h.data.activity, savedInput: h.data.savedInput, evaluation: h.data.evaluation });
+    const saveCount = vi.mocked(h.port.saveInput).mock.calls.length;
+    await Promise.all([controller.requestFreshAssessment(), controller.requestFreshAssessment()]);
+    expect(h.port.requestFreshAssessment).toHaveBeenCalledTimes(1);
+    const original = vi.mocked(h.port.requestFreshAssessment).mock.calls[0]!;
+    expect(original[1]).toEqual({ expectedRouteRevision: 1 });
+    expect(controller.getSnapshot().commandUnconfirmed).toBe(true);
+    controller.dispose();
+    const next: LearningSession = { ...copy(h.data), route: { ...copy(h.data.route), revision: 2, next: [{ lessonId: id(55), taskId: id(56), reasonCode: "scheduled_review", basisEvidenceIds: [] }] },
+      enrollment: { ...copy(h.data.enrollment), routeRevision: 2, currentLessonId: id(55), currentTaskId: id(56) },
+      lesson: { ...copy(h.data.lesson!), id: id(55), taskIds: [id(56)], blocks: [{ id: id(57), kind: "task", taskId: id(56) }] }, task: { ...copy(h.data.task!), id: id(56) },
+      activity: { ...copy(h.data.activity!), id: id(58), taskId: id(56), revision: 1, inputRevision: 0, events: [] }, savedInput: null, evaluation: null };
+    vi.mocked(h.port.requestFreshAssessment).mockResolvedValue({ ok: true, data: next });
+    const resumed = track(h.make()); await resumed.load(); await resumed.requestFreshAssessment();
+    const replay = vi.mocked(h.port.requestFreshAssessment).mock.calls[1]!;
+    expect(replay[1]).toEqual(original[1]); expect(replay[2].idempotencyKey).toBe(original[2].idempotencyKey);
+    expect(resumed.getSnapshot().session?.task?.id).toBe(id(56)); expect(resumed.getSnapshot().session?.activity?.id).toBe(id(58));
+    expect(resumed.getSnapshot().session?.savedInput).toBeNull(); expect(resumed.getSnapshot().commandUnconfirmed).toBe(false);
+    expect(vi.mocked(h.port.saveInput).mock.calls.length).toBe(saveCount);
+    expect({ activity: h.data.activity, savedInput: h.data.savedInput, evaluation: h.data.evaluation }).toEqual(prior);
+  });
+
+  it("does not request a fresh assessment when the server reports exhaustion or a stale availability revision", async () => {
+    const h = harness(), controller = track(h.make()); await controller.load(); await controller.loadContext();
+    const context = controller.getSnapshot().context!;
+    vi.mocked(h.port.loadContext).mockResolvedValue({ ok: true, data: { ...context, freshAssessment: { availability: "no_unseen_assessment", blockedReason: null, outcomeIds: [id(7)] } } });
+    await controller.loadContext(); await controller.requestFreshAssessment();
+    expect(h.port.requestFreshAssessment).not.toHaveBeenCalled();
+    h.data.route.revision = 2; h.data.enrollment.routeRevision = 2; await controller.load(); await controller.loadContext();
+    expect(controller.getSnapshot().contextError).toBe(true);
+    await controller.requestFreshAssessment(); expect(h.port.requestFreshAssessment).not.toHaveBeenCalled();
+  });
+
+  it("does not replace a newer route with a late fresh-assessment response", async () => {
+    const h = harness(), controller = track(h.make()); await controller.load(); await controller.loadContext();
+    const result = deferred<ServiceResult<LearningSession>>();
+    vi.mocked(h.port.requestFreshAssessment).mockReturnValue(result.promise);
+    const pending = controller.requestFreshAssessment();
+    await vi.waitFor(() => expect(h.port.requestFreshAssessment).toHaveBeenCalledTimes(1));
+    h.data.route.revision = 3; h.data.enrollment.routeRevision = 3; await controller.load();
+    result.resolve({ ok: true, data: { ...copy(h.data), route: { ...copy(h.data.route), revision: 2, next: [] },
+      enrollment: { ...copy(h.data.enrollment), routeRevision: 2, currentLessonId: null, currentTaskId: null }, lesson: null, task: null } });
+    await pending;
+    expect(controller.getSnapshot().session?.route.revision).toBe(3);
+    expect(controller.getSnapshot().session?.task?.id).toBe(id(6));
+  });
+
   it("replays an unconfirmed hint after reload with the exact original request and blocks unrelated submission", async () => {
     const h = harness(), first = track(h.make()); await first.load(); await first.start(); await first.loadContext();
     first.setResponse(response("My explanation"));

@@ -97,6 +97,8 @@
 .supportOffer h2 { font-size: 1.25rem; margin: 0; }
 .supportForm { display: grid; gap: 1.25rem; max-width: 42rem; padding: 1rem 0; }
 .supportForm > button { justify-self: start; }
+.freshAssessment { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid var(--color-line-soft); }
+.freshAssessment p { max-width: 68ch; font-size: .9375rem; line-height: 1.65; }
 .sources ul { padding-left: 1.25rem; }
 .sources li { margin-bottom: .75rem; line-height: 1.5; }
 .sources span { display: block; font-size: .8rem; color: var(--color-muted); }

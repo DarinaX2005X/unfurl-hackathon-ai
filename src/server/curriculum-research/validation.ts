@@ -103,7 +103,7 @@ export async function validateCurriculumEvidence(
     if (answered.has(answer.questionId)) add("duplicate_reference", path, "An answer must have one current verification");
     answered.add(answer.questionId);
     if (answer.questionDigest !== questionDigest({ id: answer.questionId, text: answer.question }) || answer.answerDigest !== answerDigest(answer.answer)
-      || (answer.basis === "source_evidence" && answer.claimIds.length === 0)) add("unverified_answer", path, "Answer verification must match the exact question and answer");
+      || (answer.decision === "resolved" && answer.basis === "source_evidence" && answer.claimIds.length === 0)) add("unverified_answer", path, "Answer verification must match the exact question and answer");
     answer.claimIds.forEach((id) => checkClaim(id, path));
     if (answer.decision === "resolved" && draft.unresolvedQuestions.some((question) => question.id === answer.questionId)) {
       add("unverified_answer", path, "A resolved question cannot remain unresolved");

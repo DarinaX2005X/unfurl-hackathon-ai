@@ -77,4 +77,24 @@ describe("program review", () => {
     expect(html).toContain("approved program is still saved");
     expect(html).not.toContain("Cancel build");
   });
+  it("keeps approval blocked while an accepted answer intent is being checked", () => {
+    const run = { id: ids.request, ownerId: ids.actor, conversationId: ids.conversation, branchId: ids.sample,
+      inputMessageId: ids.task, status: "running" as const, lastSeq: 1, error: null, createdAt: timestamp, updatedAt: timestamp };
+    const html = renderToStaticMarkup(<CurriculumPanel draft={curriculum()} currentRevision={1} awaitingApproval onApprove={vi.fn()}
+      authoringRun={run} onCancelAuthoring={vi.fn()} />);
+    expect(html).toContain("exact edits are saved");
+    expect(html).toContain("Cancel answer check");
+    const approval = html.indexOf("Approve version");
+    expect(html.slice(html.lastIndexOf("<button", approval), approval)).toContain("disabled");
+  });
+
+  it("offers intent retry after a failed answer check without dropping the editor recovery copy", () => {
+    const run = { id: ids.request, ownerId: ids.actor, conversationId: ids.conversation, branchId: ids.sample,
+      inputMessageId: ids.task, status: "failed" as const, lastSeq: 2,
+      error: { code: "generation_failed" as const, messageKey: "authoring.failed", retryable: true, requestId: ids.missing },
+      createdAt: timestamp, updatedAt: timestamp };
+    const html = renderToStaticMarkup(<CurriculumPanel draft={curriculum()} currentRevision={1} authoringRun={run} onRetryAuthoring={vi.fn()} />);
+    expect(html).toContain("local changes are still available");
+    expect(html).toContain("Retry answer check");
+  });
 });

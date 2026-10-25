@@ -7,6 +7,20 @@ import type { DbTransaction } from "../db";
 import { ServiceFault, unavailable } from "../auth/errors";
 
 interface EnqueueRunRow { id: string; owner_id: string; conversation_id: string; branch_id: string; status: string; last_seq: number; course_id?: string }
+export async function cancelTurnInTransaction(tx:DbTransaction,input:{runId:string;ownerId:string;reason:"user"|"superseded"}):Promise<{cancelled:boolean}>{
+  const run=(await tx.query<EnqueueRunRow>("SELECT * FROM unfurl.agent_turn_runs WHERE id=$1 AND owner_id=$2 FOR UPDATE",[input.runId,input.ownerId])).rows[0];
+  if(!run)throw new ServiceFault(404,"not_found","generation.notFound");
+  if(!["queued","running"].includes(run.status))return{cancelled:false};
+  const event=ChatEventSchema.parse({id:randomUUID(),runId:run.id,branchId:run.branch_id,seq:run.last_seq+1,at:new Date().toISOString(),type:"run.cancelled",reason:input.reason});
+  await tx.query("UPDATE unfurl.agent_turn_runs SET status='cancelled',last_seq=$2,error=NULL,updated_at=now() WHERE id=$1",[run.id,event.seq]);
+  await tx.query("INSERT INTO unfurl.agent_turn_events(id,run_id,branch_id,seq,type,event,at) VALUES($1,$2,$3,$4,$5,$6,$7)",[event.id,run.id,event.branchId,event.seq,event.type,JSON.stringify(event),event.at]);
+  const job=(await tx.query<{id:string}>("UPDATE unfurl.execution_jobs SET status='cancelled',fencing_token=fencing_token+1,lease_owner=NULL,lease_expires_at=NULL,updated_at=now() WHERE agent_turn_run_id=$1 RETURNING id",[run.id])).rows[0];
+  if(job){
+    await tx.query("UPDATE unfurl.run_steps SET status='cancelled',fencing_token=fencing_token+1,lease_owner=NULL,lease_expires_at=NULL,updated_at=now() WHERE job_id=$1 AND status IN ('pending','running')",[job.id]);
+    await tx.query("INSERT INTO unfurl.outbox(id,job_id,operation) VALUES($1,$2,'cancel') ON CONFLICT(job_id,operation) DO NOTHING",[randomUUID(),job.id]);
+  }
+  return{cancelled:true};
+}
 export type LearningJobTarget = { kind: "evaluation"; evaluationId: string; targetEvaluationRevision: number }
   | { kind: "activity_action"; activityActionId: string };
 

@@ -76,6 +76,7 @@ export function createHttpLearning(fetcher: typeof fetch = (...args) => fetch(..
       (data) => data.attemptId === id && data.evaluationRevision === input.expectedEvaluationRevision),
     advance: (id, input, options) => mutation([id], `/enrollments/${id}/advance`, "POST", contract.RouteRevisionInputSchema, contract.LearningSessionSchema, input, options, (data) => data.enrollment.id === id),
     revisit: (id, input, options) => mutation([id], `/enrollments/${id}/revisit`, "POST", contract.RevisitInputSchema, contract.LearningSessionSchema, input, options, (data) => data.enrollment.id === id),
+    requestFreshAssessment: (id, input, options) => mutation([id], `/enrollments/${id}/fresh-assessment`, "POST", contract.RouteRevisionInputSchema, contract.LearningSessionSchema, input, options, (data) => data.enrollment.id === id),
     requestSupport: (id, input, options) => mutation([id], `/enrollments/${id}/support-requests`, "POST", contract.SupportRequestSchema, contract.SupportProposalSchema, input, options, (data) => data.route.enrollmentId === id),
     respondToSupport: (id, offerId, input, options) => mutation([id, offerId], `/enrollments/${id}/support-offers/${offerId}/respond`, "POST", contract.SupportResponseInputSchema, contract.SupportResultSchema, input, options,
       (data) => data.enrollment.id === id && data.offer.id === offerId),

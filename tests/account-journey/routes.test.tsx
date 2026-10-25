@@ -17,6 +17,7 @@ describe("mounted account route contract", () => {
     expect(html).toContain(`href="${routes.signup(destination)}"`);
     expect(html).not.toContain("Forgot password?");
     expect(html).toContain("After signing in, you will return to your conversation.");
+    expect(html).toContain('disabled=""');
   });
 
   it("offers confirmation only for a new password and keeps reset links inside the current journey", async () => {

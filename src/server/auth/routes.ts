@@ -90,7 +90,8 @@ export async function handleAccountState(request: NextRequest): Promise<NextResp
     auth = createRequestAuth(request, config);
     const verified = await getVerifiedIdentity(auth.client);
     const session = verified ? await accountSession(verified) : null;
-    return auth.apply(success({ session, capabilities: { generation: false, cloudIdentity: true, cloudPersistence } }));
+    const generation = session ? (await (await import("../runs/composition")).getRuntimeCapabilityProjection()).generation : false;
+    return auth.apply(success({ session, capabilities: { generation, cloudIdentity: true, cloudPersistence } }));
   } catch (error) {
     const response = failure(error, request);
     return auth ? auth.apply(response) : response;

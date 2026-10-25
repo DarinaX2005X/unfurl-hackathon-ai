@@ -10,7 +10,7 @@ import { CourseArtifactRefSchema } from "../../domain/chat";
 import { curriculumDigest, type CurriculumDraft } from "../../domain/course";
 import {
   ApproveCurriculumInputSchema, CourseLanguageRequestResultSchema, CurriculumApprovalResultSchema,
-  CurriculumAuthoringSnapshotSchema, CurriculumMutationResultSchema, EditCourseMetadataInputSchema,
+  CurriculumAuthoringSnapshotSchema, CurriculumPatchResultSchema, EditCourseMetadataInputSchema,
   PatchCurriculumInputSchema, RequestCourseLanguageInputSchema, type PatchCurriculumInput,
 } from "../../domain/curriculum-authoring";
 import { PostgresCurriculumResearchRepository } from "../curriculum-research/repository";
@@ -23,13 +23,9 @@ import * as repository from "./repository";
 export interface AuthoringAdmission { assertAvailable(kind: "agent_turn" | "generation"): Promise<void> }
 export type AuthoringTransaction = <T>(work: (tx: DbTransaction) => Promise<T>) => Promise<T>;
 export interface PreparedQuestionAnswers { verifications: QuestionAnswerVerification[]; answers: QuestionEvidence[] }
-export interface QuestionVerificationPort {
-  verify(input: { ownerId: string; draft: CurriculumDraft; changes: PatchCurriculumInput["changes"] }, signal: AbortSignal): Promise<PreparedQuestionAnswers>;
-}
 export interface CurriculumServiceOptions {
   transaction?: AuthoringTransaction;
   admission?: AuthoringAdmission;
-  questions?: QuestionVerificationPort;
   now?: () => string;
 }
 
@@ -129,18 +125,31 @@ export function createCurriculumService(options: CurriculumServiceOptions = {}) 
       parse(IdSchema, draftId);
       return transaction((tx) => readAuthoringSnapshot(tx, actor.id, draftId));
     },
-    async patch(actor: Actor, draftId: string, value: unknown, key: string, signal = new AbortController().signal) {
+    async patch(actor: Actor, draftId: string, value: unknown, key: string) {
       parse(IdSchema, draftId);
       const input = parse(PatchCurriculumInputSchema, value);
-      let answers: PreparedQuestionAnswers | undefined;
-      if (input.changes.some((change) => change.op === "answer_question")) {
-        if (!options.questions) throw unavailable("curriculum.questionReviewUnavailable");
-        const context = await transaction((tx) => repository.requireDraft(tx, actor.id, draftId));
-        if (context.draft.revision !== input.expectedRevision) throw repository.curriculumConflict(context.draft.revision);
-        answers = await options.questions.verify({ ownerId: actor.id, draft: context.draft, changes: input.changes }, signal);
-      }
-      return command(actor, "curriculum.patch", key, { draftId, ...input }, CurriculumMutationResultSchema, async (tx) => ({ status: 200,
-        data: await patchCurriculumInTransaction(tx, { ownerId: actor.id, draftId, request: input, now: now(), ...(answers ? { answers } : {}) }) }));
+      const pending = input.changes.some((change) => change.op === "answer_question");
+      if (pending) await admission.assertAvailable("agent_turn");
+      return command(actor, "curriculum.patch", key, { draftId, ...input }, CurriculumPatchResultSchema, async (tx) => {
+        if (!pending) return { status: 200, data: await patchCurriculumInTransaction(tx, { ownerId: actor.id, draftId, request: input, now: now() }) };
+        const { course, draft } = await repository.requireDraft(tx, actor.id, draftId, true);
+        if (draft.revision !== input.expectedRevision) throw repository.curriculumConflict(draft.revision);
+        const answerIds = input.changes.filter((change) => change.op === "answer_question").map((change) => change.id);
+        if (new Set(answerIds).size !== answerIds.length || answerIds.some((id) => !draft.unresolvedQuestions.some((question) => question.id === id))) throw repository.invalidCurriculum();
+        const conversation = await repository.requireAuthoringConversation(tx, actor.id, draft, "update");
+        const active = (await tx.query("SELECT id FROM unfurl.agent_turn_runs WHERE conversation_id=$1 AND branch_id=$2 AND status IN ('queued','running')", [draft.conversationId, conversation.branchId])).rows[0];
+        if (active) throw new ServiceFault(409, "revision_conflict", "chat.turnInProgress");
+        const runId = randomUUID();
+        await tx.query(`INSERT INTO unfurl.agent_turn_runs(id,owner_id,conversation_id,branch_id,input_message_id,status)
+          VALUES($1,$2,$3,$4,$5,'queued')`, [runId, actor.id, draft.conversationId, conversation.branchId, conversation.inputMessageId]);
+        await tx.query(`INSERT INTO unfurl.curriculum_patch_intents(run_id,owner_id,draft_id,expected_draft_revision,changes)
+          VALUES($1,$2,$3,$4,$5)`, [runId, actor.id, draft.id, draft.revision, JSON.stringify(input.changes)]);
+        await enqueueAcceptedRun(tx, { kind: "agent_turn", runId });
+        const artifact = await repository.readArtifact(tx, actor.id, course.id);
+        const current = await repository.readCurrentRuns(tx, actor.id, artifact);
+        if (!current.authoringRun || current.authoringRun.id !== runId) throw unavailable("generation.acceptanceUnconfirmed");
+        return { status: 202, data: { status: "pending" as const, run: current.authoringRun, artifact } };
+      });
     },
     async approve(actor: Actor, draftId: string, value: unknown, key: string) {
       parse(IdSchema, draftId);
@@ -149,7 +158,8 @@ export function createCurriculumService(options: CurriculumServiceOptions = {}) 
       const receipt = await command(actor, "curriculum.approve", key, { draftId, ...input }, CurriculumApprovalResultSchema, async (tx) => ({ status: 202,
         data: await repository.approveInTransaction(tx, { ownerId: actor.id, draftId, ...input }) }));
       if (receipt.replayed) await transaction(async (tx) => {
-        const { draft } = await repository.requireDraft(tx, actor.id, draftId);
+        const { draft } = await repository.requireDraft(tx, actor.id, draftId, true);
+        await repository.assertNoPendingPatch(tx, actor.id, draftId);
         if (draft.revision !== input.expectedRevision || await curriculumDigest(draft) !== input.contentDigest) throw repository.curriculumConflict(draft.revision);
       });
       return receipt;

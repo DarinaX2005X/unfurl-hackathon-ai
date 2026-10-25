@@ -14,7 +14,7 @@ import { refreshCoverageTx } from "./evaluation";
 import * as repository from "./repository";
 
 const reviewReference = z.object({ reviewId: IdSchema }).strict();
-const retryReference = z.object({ evaluationId: IdSchema, targetRevision: RevisionSchema, retryEpoch: z.number().int().nonnegative().nullable() }).strict();
+const retryReference = z.object({ evaluationId: IdSchema, targetRevision: RevisionSchema, retryEpoch: z.number().int().nonnegative().nullable(), hadEffects: z.boolean() }).strict();
 function parse<T>(schema: z.ZodType<T>, value: unknown): T {
   const parsed = schema.safeParse(value); if (!parsed.success) throw invalidLearningFields(parsed.error.issues); return parsed.data;
 }
@@ -36,8 +36,9 @@ async function readReview(tx: DbTransaction, actor: Actor, attemptId: string, re
   const evaluation = await repository.readEvaluation(tx, enrollment, attemptId);
   return ReviewReceiptSchema.parse({ review, evaluation: { ...evaluation, review } });
 }
-async function retryEpoch(tx: DbTransaction, evaluationId: string, target: number) {
-  return (await tx.query<{ retry_epoch: number }>("SELECT retry_epoch FROM unfurl.execution_jobs WHERE evaluation_id=$1 AND target_evaluation_revision=$2", [evaluationId, target])).rows[0]?.retry_epoch ?? repository.invariant();
+async function retryIdentity(tx: DbTransaction, evaluationId: string, target: number) {
+  const row = (await tx.query<{ retry_epoch: number; has_steps: boolean }>("SELECT retry_epoch,EXISTS(SELECT 1 FROM unfurl.run_steps s WHERE s.job_id=j.id) AS has_steps FROM unfurl.execution_jobs j WHERE evaluation_id=$1 AND target_evaluation_revision=$2", [evaluationId, target])).rows[0] ?? repository.invariant();
+  return { retryEpoch: row.retry_epoch, hadEffects: row.has_steps };
 }
 
 export function createReviewOperations(transactions: LearningTransactions, createId: () => string, admission?: LearningAdmission) {
@@ -73,12 +74,12 @@ export function createReviewOperations(transactions: LearningTransactions, creat
         return executeIdempotentInTransaction(tx, actor, { operation: "learning.evaluation.retry", key: command.key, body: { attemptId, ...body }, parseResult: retryReference }, async () => {
           const receipt = await repository.readEvaluation(tx, enrollment, attemptId);
           if (receipt.revision !== body.expectedEvaluationRevision) repository.revisionConflict(receipt.revision, "learning.evaluationChanged");
-          if (["evaluated", "uncertain"].includes(receipt.evaluation.status)) return { status: 200, data: { evaluationId: receipt.evaluation.id, targetRevision: receipt.revision, retryEpoch: null } };
+          if (["evaluated", "uncertain"].includes(receipt.evaluation.status)) return { status: 200, data: { evaluationId: receipt.evaluation.id, targetRevision: receipt.revision, retryEpoch: null, hadEffects: false } };
           return { status: 202, data: { evaluationId: receipt.evaluation.id, targetRevision: receipt.revision,
-            retryEpoch: receipt.evaluation.status === "unavailable" ? await retryEpoch(tx, receipt.evaluation.id, receipt.revision) : null } };
+            ...(receipt.evaluation.status === "unavailable" ? await retryIdentity(tx, receipt.evaluation.id, receipt.revision) : { retryEpoch: null, hadEffects: false }) } };
         });
       });
-      if (reference.data.retryEpoch !== null) await activateLearningJob(transactions, admission, actor, { kind: "evaluation", evaluationId: reference.data.evaluationId, targetEvaluationRevision: reference.data.targetRevision }, { retryReceiptId: command.key, expectedRetryEpoch: reference.data.retryEpoch });
+      if (reference.data.retryEpoch !== null) await activateLearningJob(transactions, admission, actor, { kind: "evaluation", evaluationId: reference.data.evaluationId, targetEvaluationRevision: reference.data.targetRevision }, { retryReceiptId: command.key, expectedRetryEpoch: reference.data.retryEpoch, hadEffects: reference.data.hadEffects });
       return transactions.run(async (tx) => {
         const enrollment = await repository.requireEnrollment(tx, actor, await repository.attemptEnrollmentId(tx, actor, attemptId));
         const receipt = await repository.readEvaluation(tx, enrollment, attemptId);
@@ -93,10 +94,10 @@ export function createReviewOperations(transactions: LearningTransactions, creat
           const receipt = await readReview(tx, actor, attemptId, reviewId);
           if (receipt.evaluation.revision !== body.expectedEvaluationRevision || receipt.review.expectedEvaluationRevision !== body.expectedEvaluationRevision || receipt.review.status === "superseded") repository.revisionConflict(receipt.evaluation.revision, "learning.evaluationChanged");
           return { status: 202, data: { evaluationId: receipt.review.evaluationId, targetRevision: receipt.review.expectedEvaluationRevision + 1,
-            retryEpoch: receipt.review.status === "unavailable" ? await retryEpoch(tx, receipt.review.evaluationId, receipt.review.expectedEvaluationRevision + 1) : null } };
+            ...(receipt.review.status === "unavailable" ? await retryIdentity(tx, receipt.review.evaluationId, receipt.review.expectedEvaluationRevision + 1) : { retryEpoch: null, hadEffects: false }) } };
         });
       });
-      if (reference.data.retryEpoch !== null) await activateLearningJob(transactions, admission, actor, { kind: "evaluation", evaluationId: reference.data.evaluationId, targetEvaluationRevision: reference.data.targetRevision }, { retryReceiptId: command.key, expectedRetryEpoch: reference.data.retryEpoch });
+      if (reference.data.retryEpoch !== null) await activateLearningJob(transactions, admission, actor, { kind: "evaluation", evaluationId: reference.data.evaluationId, targetEvaluationRevision: reference.data.targetRevision }, { retryReceiptId: command.key, expectedRetryEpoch: reference.data.retryEpoch, hadEffects: reference.data.hadEffects });
       return { status: 202 as const, data: await transactions.run((tx) => readReview(tx, actor, attemptId, reviewId)) };
     },
   };

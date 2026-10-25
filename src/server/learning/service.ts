@@ -22,6 +22,7 @@ import { createAttemptOperations } from "./attempts";
 import { createSupportOperations } from "./support";
 import { activateLearningJob, type LearningAdmission } from "./queue";
 import { createReviewOperations } from "./reviews";
+import { createFreshAssessmentOperations } from "./fresh-assessment";
 import * as repository from "./repository";
 
 export interface LearningTransactions { run<T>(work: (tx: DbTransaction) => Promise<T>): Promise<T> }
@@ -29,7 +30,7 @@ export interface LearningServiceDependencies { transactions?: LearningTransactio
 export type LearningCommand<T> = { key: string; body: T };
 const activityReference = z.object({ activitySessionId: IdSchema }).strict();
 const actionReference = activityReference.extend({ receiptId: IdSchema }).strict();
-const actionRetryReference = actionReference.extend({ retryEpoch: z.number().int().nonnegative().nullable() }).strict();
+const actionRetryReference = actionReference.extend({ retryEpoch: z.number().int().nonnegative().nullable(), hadEffects: z.boolean() }).strict();
 const enrollmentReference = z.object({ enrollmentId: IdSchema }).strict();
 function parsed<T>(schema: z.ZodType<T>, input: unknown): T {
   const result = schema.safeParse(input);
@@ -52,6 +53,7 @@ export function createLearningService(dependencies: LearningServiceDependencies 
     ...createAttemptOperations(transactions, createId, dependencies.admission),
     ...createSupportOperations(transactions, createId),
     ...createReviewOperations(transactions, createId, dependencies.admission),
+    ...createFreshAssessmentOperations(transactions, createId),
     loadContext(actor: Actor, enrollmentId: string, query: LearningContextQuery = {}) {
       parsed(IdSchema, enrollmentId);
       const value = parsed(LearningContextQuerySchema, query);
@@ -174,14 +176,14 @@ export function createLearningService(dependencies: LearningServiceDependencies 
           const receipt = state.activity.events.find((event) => event.receipt.id === receiptId)?.receipt ?? repository.notFound();
           if (receipt.status === "unavailable") {
             if (state.activity.revision !== body.expectedRevision) repository.revisionConflict(state.activity.revision, "learning.activityChanged");
-            const job = (await tx.query<{ retry_epoch: number }>("SELECT retry_epoch FROM unfurl.execution_jobs WHERE activity_action_id=$1", [receiptId])).rows[0] ?? repository.invariant();
-            return { status: 200, data: { activitySessionId: activityId, receiptId, retryEpoch: job.retry_epoch } };
+            const job = (await tx.query<{ retry_epoch: number; has_steps: boolean }>("SELECT retry_epoch,EXISTS(SELECT 1 FROM unfurl.run_steps s WHERE s.job_id=j.id) AS has_steps FROM unfurl.execution_jobs j WHERE activity_action_id=$1", [receiptId])).rows[0] ?? repository.invariant();
+            return { status: 200, data: { activitySessionId: activityId, receiptId, retryEpoch: job.retry_epoch, hadEffects: job.has_steps } };
           }
-          return { status: receipt.status === "pending" ? 202 : 200, data: { activitySessionId: activityId, receiptId, retryEpoch: null } };
+          return { status: receipt.status === "pending" ? 202 : 200, data: { activitySessionId: activityId, receiptId, retryEpoch: null, hadEffects: false } };
         });
       });
       if (accepted.data.retryEpoch !== null) await activateLearningJob(transactions, dependencies.admission, actor,
-        { kind: "activity_action", activityActionId: receiptId }, { retryReceiptId: command.key, expectedRetryEpoch: accepted.data.retryEpoch });
+        { kind: "activity_action", activityActionId: receiptId }, { retryReceiptId: command.key, expectedRetryEpoch: accepted.data.retryEpoch, hadEffects: accepted.data.hadEffects });
       return transactions.run(async (tx): Promise<MutationReceipt<ActivityActionResult>> => {
         const enrollmentId = await repository.activityEnrollmentId(tx, actor, activityId);
         const enrollment = await repository.requireEnrollment(tx, actor, enrollmentId);
@@ -268,4 +270,9 @@ export function createLearningService(dependencies: LearningServiceDependencies 
     },
   };
 }
-export const learningService = createLearningService();
+export const learningService = createLearningService({ admission: {
+  async assertAvailable(input) {
+    const { getLearningRuntimeAdmission } = await import("@/server/runs/composition");
+    await getLearningRuntimeAdmission().assertAvailable(input);
+  },
+} });

@@ -58,3 +58,23 @@ export function rehash(section: PreparedModule) {
   void _digest;
   section.moduleDigest = taskDigest(content);
 }
+
+export function adaptiveFixture(count = 1) {
+  const data = fixture(count);
+  data.authored.forEach((section, sectionIndex) => {
+    for (const [index, role] of (["practice", "diagnostic", "challenge"] as const).entries()) {
+      const authored = structuredClone(section.tasks[0]!), taskId = id(1000 + sectionIndex * 100 + index), slope = 5 + index;
+      authored.task.id = taskId; authored.task.instruction = `Synthetic ${role} activity in a distinct context ${sectionIndex}:${index}.`;
+      authored.task.config = { kind: "rule_induction", pairs: [[0, 2], [1, slope + 2], [2, slope * 2 + 2]], hypothesisClass: "affine", probeXs: [4] };
+      authored.privateTask.taskId = taskId; authored.privateTask.assessment.role = role; authored.privateTask.assessment.evidenceGroupId = id(2000 + sectionIndex * 100 + index);
+      authored.design = { ...authored.design, taskId, purpose: "support", transfer: null };
+      section.tasks.push(authored); section.lessons[0]!.taskIds.push(taskId);
+      section.lessons[0]!.blocks.push({ id: id(3000 + sectionIndex * 100 + index), kind: "task", taskId });
+    }
+  });
+  const modules = data.authored.map((section, index) => {
+    const result = prepareModuleCandidate(section, { ...data.context, knowledge: data.knowledge[index] });
+    if (!result.candidate) throw new Error(JSON.stringify(result.issues)); return result.candidate;
+  });
+  return { ...data, modules };
+}

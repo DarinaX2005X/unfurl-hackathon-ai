@@ -16,12 +16,21 @@ export function selectSupportMaterial(input: {
   if (input.reasonCode === "prerequisite_support" && (!input.version.outcomes.some((candidate) => candidate.prerequisiteOutcomeIds.includes(outcome.id)) ||
     !input.evidence.some((entry) => entry.outcomeId === outcome.id && entry.assistance === "independent" && isCurrentConfirmedEvidence(entry) && Object.values(entry.dimensionStatuses).includes("not_met")))) return null;
   const knownDimensions = [...new Set(input.tasks.flatMap(({ assessment }) => assessment.outcomes.filter(({ outcomeId }) => outcomeId === outcome.id).flatMap(({ dimensions }) => dimensions.map(({ dimensionId }) => dimensionId))))];
-  const dimensions = input.dimensionIds ?? knownDimensions;
+  const met = new Set(input.evidence.filter((entry) => entry.courseVersionId === input.version.id && entry.outcomeId === outcome.id && isCurrentConfirmedEvidence(entry) &&
+    input.tasks.some(({ task, assessment }) => task.id === entry.taskId && task.taskVersion === entry.taskVersion && assessment.evidenceGroupId === entry.evidenceGroupId))
+    .flatMap((entry) => Object.entries(entry.dimensionStatuses).filter(([, status]) => status === "met").map(([id]) => id)));
+  const relevantDimensions = knownDimensions.filter((id) => !met.has(id));
+  const desiredRole = input.reasonCode === "challenge" ? "challenge" : input.reasonCode === "diagnostic_clarification" ? "diagnostic" : "practice";
+  const candidates = input.tasks.filter(({ task, assessment }) => task.id !== input.currentTaskId && assessment.role === desiredRole);
+  const eligibleDimensions = relevantDimensions.length ? relevantDimensions : knownDimensions;
+  const firstMapping = candidates.map(({ assessment }) => assessment.outcomes.find(({ outcomeId }) => outcomeId === outcome.id))
+    .find((mapping) => mapping?.dimensions.some(({ dimensionId }) => eligibleDimensions.includes(dimensionId)));
+  const dimensions = input.dimensionIds ?? (input.reasonCode === "explanation" ? eligibleDimensions :
+    firstMapping?.dimensions.map(({ dimensionId }) => dimensionId).filter((id) => eligibleDimensions.includes(id)) ?? []);
   if (dimensions.length === 0 || dimensions.some((id) => !knownDimensions.includes(id))) return null;
   const explanation = input.reasonCode === "challenge" ? null : input.lessons.flatMap((lesson) => lesson.outcomeIds.includes(outcome.id)
     ? lesson.blocks.filter((block) => block.kind === "explanation").map((block) => ({ lessonId: lesson.id, blockId: block.id })) : [])[0] ?? null;
-  const desiredRole = input.reasonCode === "challenge" ? "challenge" : input.reasonCode === "diagnostic_clarification" ? "diagnostic" : "practice";
-  const selected = input.reasonCode === "explanation" ? [] : input.tasks.filter(({ task, assessment }) => task.id !== input.currentTaskId && assessment.role === desiredRole &&
+  const selected = input.reasonCode === "explanation" ? [] : candidates.filter(({ assessment }) =>
     assessment.outcomes.some((mapping) => mapping.outcomeId === outcome.id && dimensions.every((id) => mapping.dimensions.some(({ dimensionId }) => dimensionId === id))))
     .slice(0, 2).map(({ task }) => {
       const lesson = input.lessons.find((lesson) => lesson.taskIds.includes(task.id));

@@ -7,10 +7,12 @@ import { MODEL_ID, OPENROUTER_BASE_URL, SEARCH_PRICE_USD } from "./constants";
 import { ProviderFailure } from "./failure";
 import { boundedResponseText } from "./http";
 import { jsonDigest, parseProviderJson } from "./json";
+import {NativeUsageSchema} from "./native-usage";
+import {verifyNativeSearchAccounting} from "./search-accounting";
 
 const count = z.number().int().nonnegative().max(10_000_000);
 const metadataSchema = z.object({ data: z.object({
-  id: z.string().regex(/^gen-[0-9A-Za-z-]+$/), model: z.literal(MODEL_ID), provider_name: z.literal("DigitalOcean"),
+  id: z.string().regex(/^gen-[0-9A-Za-z-]+$/), model: z.string().max(200), provider_name: z.literal("DigitalOcean"),
   total_cost: z.string(), finish_reason: z.string().min(1), cancelled: z.boolean(),
   native_tokens_prompt: count, native_tokens_completion: count, native_tokens_cached: count.nullable().optional(),
   num_search_results: count.nullable().optional(), web_search_engine: z.string().nullable().optional(),
@@ -30,6 +32,16 @@ export class OpenRouterAccounting {
     const id = target?.receipt?.providerRequestId;
     const key = this.apiKey();
     if (!target || !target.receipt || !id || !/^gen-[0-9A-Za-z-]{1,124}$/.test(id) || !key) return { settled: false, searchFeeVerified: false, evidence: null };
+    const savedResult=z.object({nativeUsage:NativeUsageSchema.optional(),finishReason:z.string(),failure:z.unknown(),annotations:z.array(z.unknown())}).safeParse(target.receipt.result);
+    const native=NativeUsageSchema.safeParse(target.receipt.nativeUsage??(savedResult.success?savedResult.data.nativeUsage:undefined));
+    if(native.success&&(native.data.server_tool_use_details?.web_search_requests??0)>0){
+      const proof=savedResult.success?verifyNativeSearchAccounting(native.data,target.rateCard,{reportedCostUsd:target.receipt.reportedCostUsd,
+        finishReason:savedResult.data.finishReason,failure:savedResult.data.failure,annotationCount:savedResult.data.annotations.length}):null;
+      if(!proof)return{settled:false,searchFeeVerified:false,evidence:null};
+      const evidence:JsonObject={...proof.evidence,operationId,providerRequestId:id,responseDigest:target.receipt.responseDigest,normalizationEvidenceDigest:target.receipt.normalizationEvidenceDigest??null};
+      await this.budget.reconcile(target.reservation,{providerRequestId:id,digest:jsonDigest(evidence),finalCostMicroUsd:proof.costMicroUsd});
+      return{settled:true,searchFeeVerified:true,evidence};
+    }
     let response: Response;
     try {
       response = await this.fetcher(OPENROUTER_BASE_URL + "/generation?id=" + encodeURIComponent(id), {
@@ -43,6 +55,9 @@ export class OpenRouterAccounting {
     catch { return { settled: false, searchFeeVerified: false, evidence: null }; }
     const data = parsed.data;
     if (data.id !== id) throw new ProviderFailure("unavailable");
+    const endpoint=z.object({endpointName:z.string()}).safeParse(target.rateCard);
+    const nativeModel=endpoint.success?/^DigitalOcean \| (moonshotai\/kimi-k2\.6-\d{8})$/.exec(endpoint.data.endpointName)?.[1]:undefined;
+    if(data.model!==MODEL_ID&&data.model!==nativeModel)throw new ProviderFailure("unavailable");
     let actual: bigint;
     try { actual = usdToMicroUsdCeil(data.total_cost); } catch { return { settled: false, searchFeeVerified: false, evidence: null }; }
     const rate = z.object({ contextTokens: count, pricing: z.object({ prompt: z.string(), completion: z.string(), input_cache_read: z.string().optional() }) }).safeParse(target.rateCard);
