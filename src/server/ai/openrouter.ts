@@ -11,7 +11,7 @@ import { providerWireSchema } from "./wire-schema";
 import {NativeUsageSchema,normalizeNativeUsage} from "./native-usage";
 import {verifyNativeSearchAccounting} from "./search-accounting";
 import { boundedResponseText } from "./http";
-import { canonicalJson, digestBytes, jsonDigest, parseProviderJson } from "./json";
+import { canonicalJson, digestBytes, jsonDigest, parseProviderJson, parseStructuredOutput } from "./json";
 import type { ModelEvidence, ModelPort, ModelRequestBase, ModelResult, NativeUsage, ProviderCapabilityGate, StructuredRequest, TextCompleted, TextDelta, TextRequest } from "./ports";
 import type { ApprovedRateCard } from "./rate-card";
 
@@ -46,7 +46,7 @@ export class OpenRouterModel implements ModelPort {
     try { schema = providerWireSchema(z.toJSONSchema(request.schema) as JsonObject); } catch { throw new ProviderFailure("invalid_output"); }
     const completion = await this.complete(request, signal, { schema, schemaName: `${request.schemaId}_${request.schemaVersion}` });
     try {
-      const parsed = request.schema.safeParse(JSON.parse(completion.content) as unknown);
+      const parsed = request.schema.safeParse(parseStructuredOutput(completion.content));
       if (!parsed.success) throw new Error();
       return { data: parsed.data, evidence: completion.evidence };
     } catch { throw new ProviderFailure("invalid_output"); }

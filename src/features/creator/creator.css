@@ -103,8 +103,8 @@
 .creator-message--user { width: fit-content; max-width: 90%; margin-left: auto; }
 .creator-message--user h2 { text-align: right; }
 .creator-message--user .creator-message__text { padding: 16px 20px; border-radius: 20px 20px 4px 20px; background: var(--color-surface-inset); }
-.creator-message__tools { display: flex; align-items: center; gap: 8px; margin: 4px 0 0 -10px; font-size: 14px; color: var(--color-muted); }
-.creator-message--user .creator-message__tools { justify-content: flex-end; margin: 4px -10px 0 0; }
+.creator-message__tools { display: flex; align-items: center; gap: 8px; margin: 4px 0 0; font-size: 14px; color: var(--color-muted); }
+.creator-message--user .creator-message__tools { justify-content: flex-end; }
 .creator-message__delivery { margin-top: 10px; font-size: 14px; line-height: 1.6; color: var(--color-muted); }
 .creator-message__delivery > p:first-child { color: var(--color-danger); font-weight: 650; }
 .creator-message__failure-detail { margin-top: 3px; }

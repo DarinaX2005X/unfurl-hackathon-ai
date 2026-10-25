@@ -5,6 +5,7 @@ vi.mock("server-only", () => ({}));
 import { OpenRouterModel } from "../../src/server/ai/openrouter";
 import { approveEndpoint } from "../../src/server/ai/rate-card";
 import { MODEL_ID, PROVIDER_TAG } from "../../src/server/ai/constants";
+import { digestBytes } from "../../src/server/ai/json";
 import type { BudgetPort, BudgetReservation, ProviderResponseReceipt } from "../../src/server/budget/ports";
 import type { ModelRequestBase, ProviderCapabilityGate } from "../../src/server/ai/ports";
 
@@ -78,6 +79,25 @@ describe("paid completion boundary (simulated provider, no live quality claim)",
     expect(replay.evidence.replayed).toBe(true);
     expect(h.fetcher).toHaveBeenCalledTimes(1);
     expect(h.rateCards.current).toHaveBeenCalledTimes(1);
+  });
+  it("validates a whole fenced JSON receipt without changing wire identity or paying again on replay", async () => {
+    const content = ' ```json\n{"answer":"ok"}\n```';
+    const raw = completion({ choices: [{ finish_reason: "stop", message: { content } }] });
+    const h = harness(raw), plain = harness(), input = { ...request(), schema: z.object({ answer: z.string() }).strict(), schemaId: "answer", schemaVersion: 1 };
+    await expect(h.model.generateStructured(input, new AbortController().signal)).resolves.toMatchObject({ data: { answer: "ok" } });
+    await plain.model.generateStructured(input, new AbortController().signal);
+    expect(h.budget.reserve).toHaveBeenCalledWith(expect.objectContaining({ requestDigest: plain.saved()!.reservation.requestDigest }));
+    expect(h.fetcher.mock.calls[0]?.[1]?.body).toBe(plain.fetcher.mock.calls[0]?.[1]?.body);
+    expect(h.saved()!.receipt.responseDigest).toBe(digestBytes(raw));
+    expect(h.saved()!.receipt.result).toMatchObject({ content });
+    const savedReceipt = JSON.stringify(h.saved()!.receipt);
+    h.fetcher.mockRejectedValue(new Error("A settled receipt must not redispatch"));
+    const replay = await h.model.generateStructured(input, new AbortController().signal);
+    expect(replay.data).toEqual({ answer: "ok" });
+    expect(replay.evidence.replayed).toBe(true);
+    expect(JSON.stringify(h.saved()!.receipt)).toBe(savedReceipt);
+    expect(h.fetcher).toHaveBeenCalledTimes(1);
+    expect(h.budget.recordResponse).toHaveBeenCalledTimes(1);
   });
   it("returns a saved success when only the transport timer expires during persistence",async()=>{
     const h=harness(),transport=new AbortController();

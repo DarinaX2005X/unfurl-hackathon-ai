@@ -6,7 +6,8 @@ import {ServiceFault} from "../auth/errors";
 import type {DbTransaction} from "../db";
 import type {GenerationRow} from "../curricula/repository";
 import {MODEL_ID} from "../ai/constants";
-import {jsonDigest} from "../ai/json";
+import {jsonDigest,parseStructuredOutput} from "../ai/json";
+import {AgentDecisionSchema,LegacyAgentDecisionSchema} from "../agent-tools/contracts";
 import {agentOperationId,stableExecutionId} from "./identity";
 import {appendChatEvent} from "./events";
 
@@ -14,6 +15,15 @@ const completeResponse=z.object({model:z.literal(MODEL_ID),provider:z.literal("D
   failure:z.null(),content:z.string(),rateCardDigest:z.string().regex(/^[a-f0-9]{64}$/)});
 const terminalResponse=completeResponse.extend({finishReason:z.string().min(1),failure:z.enum(["invalid_output","refused"]).nullable(),content:z.string().nullable()});
 const conflict=()=>new ServiceFault(409,"revision_conflict","generation.changed");
+function normalizedDecisionIsValid(content:string,capture:unknown,schemaDigest:string):boolean{
+  // This exception repairs only an outer serialization wrapper, never a previously invalid
+  // JSON value or decision. The shared parser must reject prose and malformed/multiple fences.
+  try{JSON.parse(content);return false;}catch{/* A wrapper may be the sole parse failure. */}
+  const hasSearchMemory=typeof capture==="object"&&capture!==null&&!Array.isArray(capture)&&"searchMemory" in capture&&capture.searchMemory!==undefined;
+  if(schemaDigest!==jsonDigest({version:hasSearchMemory?"agent-decision-v2":"agent-decision-v1"}))return false;
+  try{return (hasSearchMemory?AgentDecisionSchema:LegacyAgentDecisionSchema).safeParse(parseStructuredOutput(content)).success;}
+  catch{return false;}
+}
 
 /** Called only after the public retry's ownership, current branch, latest run and intent guards.
  * A complete response lost only to timeout replays at the same epoch. A known settled terminal
@@ -29,7 +39,7 @@ export async function resumeSavedAgentDecision(tx:DbTransaction,actor:Actor,run:
   const python=(await tx.query(`SELECT id FROM unfurl.code_execution_runs WHERE job_id=$1
     AND status IN ('reserved','creating','running','collecting','ambiguous','cleanup_pending') LIMIT 1`,[job.id])).rows[0];
   if(python)throw conflict();
-  const unfinished=(await tx.query<{id:string;step_key:string;input_digest:string;status:string}>(`SELECT id,step_key,input_digest,status FROM unfurl.run_steps
+  const unfinished=(await tx.query<{id:string;step_key:string;input_digest:string;schema_digest:string;status:string}>(`SELECT id,step_key,input_digest,schema_digest,status FROM unfurl.run_steps
     WHERE job_id=$1 AND status<>'succeeded' ORDER BY created_at FOR UPDATE`,[job.id])).rows;
   const step=unfinished[0];
   if(unfinished.length!==1||!step||step.status!=="failed"||!/^agent\.v1:\d{6}:decision$/.test(step.step_key))return false;
@@ -46,7 +56,9 @@ export async function resumeSavedAgentDecision(tx:DbTransaction,actor:Actor,run:
   if(operation.length!==1||!paid||paid.state!=="settled"||paid.purpose!=="turn_planning"||!response.success)throw conflict();
   if(paid.id!==reservation||paid.logical_operation_id!==logical||paid.attempt!==1||!paid.provider_request_id||
     paid.provider_request_id!==paid.response_provider_id||paid.rate_card_digest!==response.data.rateCardDigest||!/^[a-f0-9]{64}$/.test(paid.request_digest))throw conflict();
-  const receiptOnly=fault.data.messageKey==="generation.timeout"&&completeResponse.safeParse(paid.result).success;
+  const complete=completeResponse.safeParse(paid.result);
+  const receiptOnly=complete.success&&(fault.data.messageKey==="generation.timeout"||
+    normalizedDecisionIsValid(complete.data.content,capture.result_reference,step.schema_digest));
   if(!receiptOnly){
     const epoch=(await tx.query<{epoch:number}>("SELECT unfurl.advance_execution_job_retry($1,$2,$3,$4,$5::jsonb) AS epoch",
       [randomUUID(),job.id,actor.id,job.retry_epoch,JSON.stringify({kind:"agent_turn",runId:run.id})])).rows[0]?.epoch;

@@ -40,6 +40,14 @@ export function jsonDigest(value: unknown, maxBytes?: number): string {
   return digestBytes(canonicalJson(value, maxBytes));
 }
 
+/** Decode structured content without changing its saved receipt or repairing JSON syntax. */
+export function parseStructuredOutput(content: string): unknown {
+  try { return JSON.parse(content) as unknown; } catch { /* A whole JSON fence is the only accepted wrapper. */ }
+  const fenced = /^```(?:json)?\r?\n([\s\S]*)\r?\n```$/i.exec(content.trim());
+  if (!fenced) throw new ProviderFailure("invalid_output");
+  try { return JSON.parse(fenced[1]!) as unknown; } catch { throw new ProviderFailure("invalid_output"); }
+}
+
 /** Preserve the provider's exact decimal cost token before JSON.parse rounds numbers. */
 export function parseProviderJson(text: string): unknown {
   const moneyKeys = new Set(["cost", "total_cost", "upstream_inference_cost"]);
