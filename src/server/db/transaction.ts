@@ -6,7 +6,13 @@ export interface DbTransaction {
   query<Row extends QueryResultRow = QueryResultRow>(text: string, values?: unknown[]): Promise<QueryResult<Row>>;
 }
 
-export type SystemTransactionPurpose = "run_execution" | "evaluation" | "public_projection";
+export type SystemTransactionPurpose =
+  | "run_execution"
+  | "evaluation"
+  | "public_projection"
+  | "course_access"
+  | "publication"
+  | "learning_activity";
 export interface TransactionPool { connect(): Promise<Pick<PoolClient, "query" | "release">> }
 
 export function createTransactionRunner(pool: TransactionPool) {

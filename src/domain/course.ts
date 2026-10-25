@@ -17,6 +17,7 @@ export const CourseSchema = z.object({
   contentLanguage: ContentLanguageSchema,
   visibility: VisibilitySchema,
   currentReadyVersionId: IdSchema.nullable(),
+  publishedVersionId: IdSchema.nullable(),
   createdAt: IsoDateTimeSchema,
   updatedAt: IsoDateTimeSchema,
   revision: RevisionSchema,
@@ -75,13 +76,22 @@ export const CourseVersionSchema = z.object({
   sourceRunId: IdSchema,
   contentDigest: DigestSchema,
   state: z.enum(["building", "validating", "ready", "failed"]),
+  title: TitleSchema,
+  summary: DescriptionSchema,
+  contentLanguage: ContentLanguageSchema,
+  assumedKnowledge: z.array(z.string().trim().min(1).max(500)),
   outcomes: z.array(OutcomeSchema).min(1),
   modules: z.array(ModuleOutlineSchema).min(1),
   lessonIds: z.array(IdSchema),
+  validationReceiptId: IdSchema.nullable(),
+  cover: z.object({
+    motifId: z.string().trim().min(1).max(100),
+    alt: z.string().trim().min(1).max(300),
+  }).strict().nullable(),
   createdAt: IsoDateTimeSchema,
   readyAt: IsoDateTimeSchema.nullable(),
 }).strict().superRefine((value, context) => {
-  if (value.state === "ready" && (value.readyAt === null || value.lessonIds.length === 0)) {
+  if (value.state === "ready" && (value.readyAt === null || value.lessonIds.length === 0 || value.validationReceiptId === null || value.cover === null)) {
     context.addIssue({ code: "custom", path: ["state"], message: "A ready version needs lessons and a ready timestamp" });
   }
   if (value.state !== "ready" && value.readyAt !== null) {
@@ -109,6 +119,13 @@ export const CourseDetailPublicSchema = CourseSummarySchema.extend({
   modules: z.array(ModuleOutlineSchema),
 }).strict();
 
+export const AccessibleCourseDetailSchema = z.object({
+  course: CourseDetailPublicSchema,
+  version: z.object({ id: IdSchema, number: z.number().int().positive() }).strict(),
+  access: z.enum(["owner", "public", "share", "enrolled"]),
+  enrollmentId: IdSchema.nullable(),
+}).strict();
+
 export type Course = z.infer<typeof CourseSchema>;
 export type Outcome = z.infer<typeof OutcomeSchema>;
 export type ModuleOutline = z.infer<typeof ModuleOutlineSchema>;
@@ -118,6 +135,7 @@ export type CourseVersion = z.infer<typeof CourseVersionSchema>;
 export type CourseCover = z.infer<typeof CourseCoverSchema>;
 export type CourseSummary = z.infer<typeof CourseSummarySchema>;
 export type CourseDetailPublic = z.infer<typeof CourseDetailPublicSchema>;
+export type AccessibleCourseDetail = z.infer<typeof AccessibleCourseDetailSchema>;
 
 export interface ValidationIssue {
   code: "invalid_shape" | "duplicate_id" | "unknown_reference" | "cycle" | "uncovered_outcome" | "invalid_estimate";

@@ -43,6 +43,8 @@ export type DispatchDecision = { kind: "dispatch" } | { kind: "replay"; receipt:
 /** Implementations must serialize on the single campaign row and persist every transition. */
 export interface BudgetPort {
   assertAvailable(options: { probe: boolean }): Promise<void>;
+  /** Recover before refreshing prices. A dispatched attempt without a receipt must never resend. */
+  recover(context: BudgetOperationContext, requestDigest: string): Promise<{ reservation: BudgetReservation; receipt: ProviderResponseReceipt } | null>;
   reserve(request: ReserveRequest): Promise<BudgetReservation>;
   claimDispatch(reservation: BudgetReservation): Promise<DispatchDecision>;
   /** Receipt and settlement/unknown state commit atomically before success leaves the adapter. */

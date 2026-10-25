@@ -75,7 +75,12 @@ try {
   if (client) await client.query("ROLLBACK").catch(() => undefined);
   // Never echo a connection string, provider response, SQL parameters, or row data.
   const safeCode = error instanceof Error && /^[a-z_]+$/.test(error.message) ? error.message : error.code ?? "migration_failed";
-  console.error(JSON.stringify({ ok: false, code: safeCode, migration: currentMigration }));
+  console.error(JSON.stringify({
+    ok: false,
+    code: safeCode,
+    migration: currentMigration,
+    ...(typeof error.position === "string" && /^\d+$/.test(error.position) ? { position: Number(error.position) } : {}),
+  }));
   process.exitCode = 1;
 } finally {
   await client?.end();

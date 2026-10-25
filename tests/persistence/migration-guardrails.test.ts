@@ -51,4 +51,20 @@ describe("migration static guardrails (live PostgreSQL proof still required)", (
     expect(sql).toContain("old.state = 'unknown' and new.state = 'settled'");
     expect(sql).not.toContain("old.state = 'unknown' and new.state = 'released'");
   });
+
+  it("pins publication and learning authority to immutable versions and saved identities", () => {
+    expect(sql).toContain("add column published_version_id uuid");
+    expect(sql).toContain("add column key_version integer not null default 1");
+    expect(sql).toContain("activity_session_task_unique unique (enrollment_id, task_id, task_version)");
+    expect(sql).toContain("primary key (activity_session_id, input_revision)");
+    expect(sql).toContain("unique (activity_session_id, client_action_id)");
+    expect(sql).toContain("completed_session_revision integer");
+    expect(sql).toContain("activity_snapshot jsonb not null");
+    expect(sql).toContain("create table unfurl.evaluation_revisions");
+    expect(sql).toContain("unique (attempt_id, evaluation_revision, outcome_id)");
+    expect(sql).toContain("xp_award_stable_task unique (learner_id, course_id, task_id)");
+    expect(sql).toContain("feedback_acknowledgements");
+    expect(sql).toContain("one_live_support");
+    expect(sql).toContain("num_nonnulls(agent_turn_run_id, generation_run_id, evaluation_id, activity_action_id) = 1");
+  });
 });

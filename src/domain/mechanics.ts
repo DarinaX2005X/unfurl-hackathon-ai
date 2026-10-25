@@ -60,10 +60,37 @@ export const EvaluationSpecSchema = z.discriminatedUnion("kind", [
     requiredDimensions: z.array(z.string().min(1)).min(1), calibrationSetId: IdSchema.nullable(),
   }).strict(),
 ]);
-export const TaskPrivateSchema = z.object({
-  taskId: IdSchema, evaluationSpec: EvaluationSpecSchema,
-  sourceClaimIds: z.array(IdSchema), validationReceiptId: IdSchema,
+const assessmentDimensionId = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9_.:-]*$/)
+  .refine((id) => !["__proto__", "prototype", "constructor"].includes(id), "Reserved identifier");
+const uniqueIds = <T extends z.ZodType<string>>(schema: T, max: number) => z.array(schema).max(max)
+  .refine((ids) => new Set(ids).size === ids.length, "Identifiers must be unique");
+export const TaskAssessmentSchema = z.object({
+  evidenceGroupId: IdSchema,
+  role: z.enum(["required", "practice", "diagnostic", "challenge"]),
+  outcomes: z.array(z.object({
+    outcomeId: IdSchema,
+    dimensions: z.array(z.object({
+      dimensionId: assessmentDimensionId,
+      evaluationDimensionIds: uniqueIds(assessmentDimensionId, 24).min(1),
+    }).strict()).min(1).max(24).refine((items) => new Set(items.map((item) => item.dimensionId)).size === items.length,
+      "Canonical criteria must be unique within an outcome"),
+  }).strict()).min(1).max(24).refine((items) => new Set(items.map((item) => item.outcomeId)).size === items.length,
+    "Assessment outcomes must be unique"),
 }).strict();
+export type TaskAssessment = z.infer<typeof TaskAssessmentSchema>;
+
+/** The family-specific private schema is enforced by the server registry after this envelope. */
+export const TaskEvaluatorDataSchema = JsonObjectSchema.refine((data) =>
+  new TextEncoder().encode(JSON.stringify(data)).byteLength <= 128 * 1024, "Private evaluator data exceeds 128 KiB");
+export const TaskPrivateSchema = z.object({
+  taskId: IdSchema, taskVersion: z.number().int().positive(), evaluationSpec: EvaluationSpecSchema,
+  evaluatorData: TaskEvaluatorDataSchema, assessment: TaskAssessmentSchema,
+  sourceClaimIds: uniqueIds(IdSchema, 100), validationReceiptId: IdSchema,
+  hints: z.array(z.string().trim().min(1).max(4_000)).max(6),
+  workedExample: z.string().trim().min(1).max(12_000).nullable(),
+}).strict();
+export const TaskPrivateCandidateSchema = TaskPrivateSchema.omit({ validationReceiptId: true });
+export type TaskPrivateCandidate = z.infer<typeof TaskPrivateCandidateSchema>;
 export type EvaluationSpec = z.infer<typeof EvaluationSpecSchema>;
 export type TaskPrivate = z.infer<typeof TaskPrivateSchema>;
 
@@ -81,6 +108,7 @@ export interface MechanicDefinition<TConfig extends JsonValue, TResponse extends
 const privateKeys = new Set([
   "evaluationSpec", "secretConfig", "expectedAnswer", "referenceAnswer", "answerKey",
   "privateResearch", "sourceClaimIds", "validationReceiptId",
+  "evaluatorData", "assessment", "hints", "workedExample", "privateData",
 ]);
 
 function assertPublicConfig(value: JsonValue): void {

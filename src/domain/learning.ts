@@ -1,5 +1,8 @@
 import { z } from "zod";
 import { IdSchema, IsoDateTimeSchema, JsonValueSchema, RevisionSchema } from "./common";
+import { ActivitySessionPublicSchema, InputSnapshotSchema } from "./activity";
+import { LocalIdSchema } from "./mechanic-families/v2/shared";
+import { TaskPublicSchema } from "./mechanics";
 
 export const LessonBlockSchema = z.discriminatedUnion("kind", [
   z.object({ id: IdSchema, kind: z.literal("explanation"), markdown: z.string(), sourceIds: z.array(IdSchema) }).strict(),
@@ -88,6 +91,112 @@ export const ProgressSummarySchema = z.object({
   }).strict(),
 }).strict();
 
+export const AccountProgressSchema = ProgressSummarySchema.pick({
+  xpTotal: true, level: true, xpToNextLevel: true, publication: true,
+}).strict();
+
+const UniqueDimensionIdsSchema = z.array(LocalIdSchema).min(1).max(24).superRefine((ids, context) => {
+  if (new Set(ids).size !== ids.length) context.addIssue({ code: "custom", message: "Dimension identifiers must be unique" });
+});
+
+export const SupportOfferSchema = z.object({
+  id: IdSchema,
+  enrollmentId: IdSchema,
+  courseVersionId: IdSchema,
+  policyVersion: z.literal("adaptation-v1"),
+  basedOnRouteRevision: RevisionSchema,
+  target: z.object({ outcomeId: IdSchema, dimensionIds: UniqueDimensionIdsSchema }).strict(),
+  triggerKind: z.enum(["auto", "user_request"]),
+  reasonCode: RouteReasonSchema.exclude(["course_sequence", "scheduled_review"]),
+  basisEvidenceIds: z.array(IdSchema).max(6).superRefine((ids, context) => {
+    if (new Set(ids).size !== ids.length) context.addIssue({ code: "custom", message: "Evidence identifiers must be unique" });
+  }),
+  explanation: z.string().trim().min(1).max(1_000),
+  tasks: z.array(z.object({ lessonId: IdSchema, taskId: IdSchema, taskVersion: RevisionSchema }).strict()).max(2),
+  explanationBlock: z.object({ lessonId: IdSchema, blockId: IdSchema }).strict().nullable(),
+  estimatedStudyMinutes: z.number().int().min(1).max(8),
+  returnPoint: z.object({ lessonId: IdSchema, taskId: IdSchema.nullable() }).strict(),
+  completionCheck: z.object({ taskId: IdSchema, dimensionIds: UniqueDimensionIdsSchema }).strict().nullable(),
+  status: z.enum(["offered", "accepted", "declined", "returned", "completed", "superseded"]),
+  createdAt: IsoDateTimeSchema,
+  updatedAt: IsoDateTimeSchema,
+}).strict().superRefine((offer, context) => {
+  if (offer.tasks.length === 0 && offer.explanationBlock === null) {
+    context.addIssue({ code: "custom", path: ["tasks"], message: "Support needs a validated task or explanation block" });
+  }
+  if (new Set(offer.tasks.map((task) => task.taskId)).size !== offer.tasks.length) {
+    context.addIssue({ code: "custom", path: ["tasks"], message: "Support tasks must be unique" });
+  }
+  const finalTask = offer.tasks.at(-1)?.taskId;
+  if ((offer.tasks.length === 0 && offer.completionCheck !== null)
+    || (offer.tasks.length > 0 && offer.completionCheck?.taskId !== finalTask)) {
+    context.addIssue({ code: "custom", path: ["completionCheck"], message: "The completion check belongs to the final support task" });
+  }
+});
+
+export const AssessmentReviewRequestSchema = z.object({
+  id: IdSchema,
+  attemptId: IdSchema,
+  evaluationId: IdSchema,
+  expectedEvaluationRevision: RevisionSchema,
+  reason: z.enum(["valid_alternative", "unclear_prompt", "other"]),
+  comment: z.string().trim().min(1).max(2_000),
+  status: z.enum(["queued", "running", "resolved", "unavailable", "superseded"]),
+  resolution: z.enum(["upheld", "corrected", "uncertain"]).nullable(),
+  resolvedEvaluationRevision: RevisionSchema.nullable(),
+  createdAt: IsoDateTimeSchema,
+  updatedAt: IsoDateTimeSchema,
+  resolvedAt: IsoDateTimeSchema.nullable(),
+}).strict().superRefine((review, context) => {
+  const complete = review.resolution !== null && review.resolvedEvaluationRevision !== null && review.resolvedAt !== null;
+  const empty = review.resolution === null && review.resolvedEvaluationRevision === null && review.resolvedAt === null;
+  if ((review.status === "resolved" && !complete) || (review.status !== "resolved" && !empty)) {
+    context.addIssue({ code: "custom", path: ["status"], message: "Only a resolved review has resolution metadata" });
+  }
+});
+
+export const EvaluationReceiptSchema = z.object({
+  evaluation: EvaluationSchema,
+  revision: RevisionSchema,
+  review: AssessmentReviewRequestSchema.nullable(),
+}).strict();
+
+export const LearningSessionSchema = z.object({
+  enrollment: EnrollmentSchema,
+  route: PersonalRouteSchema,
+  lesson: LessonSchema.nullable(),
+  task: TaskPublicSchema.nullable(),
+  progress: ProgressSummarySchema,
+  activity: ActivitySessionPublicSchema.nullable(),
+  savedInput: InputSnapshotSchema.nullable(),
+  evaluation: EvaluationReceiptSchema.nullable(),
+  support: SupportOfferSchema.nullable(),
+}).strict().superRefine((session, context) => {
+  if (session.route.enrollmentId !== session.enrollment.id) {
+    context.addIssue({ code: "custom", path: ["route", "enrollmentId"], message: "The route belongs to another enrollment" });
+  }
+  if (session.activity && (session.activity.enrollmentId !== session.enrollment.id || session.activity.taskId !== session.task?.id)) {
+    context.addIssue({ code: "custom", path: ["activity"], message: "The activity does not match the selected enrollment and task" });
+  }
+  if (session.savedInput && session.savedInput.activitySessionId !== session.activity?.id) {
+    context.addIssue({ code: "custom", path: ["savedInput"], message: "The saved input belongs to another activity" });
+  }
+  if (session.support && (session.support.enrollmentId !== session.enrollment.id || session.support.courseVersionId !== session.enrollment.courseVersionId)) {
+    context.addIssue({ code: "custom", path: ["support"], message: "The support offer belongs to another enrollment" });
+  }
+});
+
+export const EnrollmentReceiptSchema = z.object({
+  enrollment: EnrollmentSchema,
+  redirectTo: z.string().regex(/^\/learn\/[0-9a-f-]{36}$/),
+}).strict();
+
+export const FeedbackAcknowledgementSchema = z.object({
+  attemptId: IdSchema,
+  evaluationRevision: RevisionSchema,
+  acknowledgedAt: IsoDateTimeSchema,
+}).strict();
+
 export type LessonBlock = z.infer<typeof LessonBlockSchema>;
 export type Lesson = z.infer<typeof LessonSchema>;
 export type AttemptPayload = z.infer<typeof AttemptPayloadSchema>;
@@ -99,3 +208,10 @@ export type LearnerEvidence = z.infer<typeof LearnerEvidenceSchema>;
 export type RouteReason = z.infer<typeof RouteReasonSchema>;
 export type PersonalRoute = z.infer<typeof PersonalRouteSchema>;
 export type ProgressSummary = z.infer<typeof ProgressSummarySchema>;
+export type AccountProgress = z.infer<typeof AccountProgressSchema>;
+export type SupportOffer = z.infer<typeof SupportOfferSchema>;
+export type AssessmentReviewRequest = z.infer<typeof AssessmentReviewRequestSchema>;
+export type EvaluationReceipt = z.infer<typeof EvaluationReceiptSchema>;
+export type LearningSession = z.infer<typeof LearningSessionSchema>;
+export type EnrollmentReceipt = z.infer<typeof EnrollmentReceiptSchema>;
+export type FeedbackAcknowledgement = z.infer<typeof FeedbackAcknowledgementSchema>;
