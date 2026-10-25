@@ -23,7 +23,7 @@ export const SendMessageInputSchema = z.object({
   requestId: IdSchema,
   conversationId: IdSchema,
   messageId: IdSchema,
-  text: z.string().trim().min(1).max(20_000),
+  text: z.string().max(20_000).refine((text) => text.trim().length > 0, "Write a message first"),
   userLocale: ContentLanguageSchema.optional(),
 }).strict();
 export interface SendMessageInput {
@@ -31,7 +31,7 @@ export interface SendMessageInput {
   conversationId: Id;
   messageId: Id;
   text: string;
-  userLocale?: ContentLanguage;
+  userLocale?: ContentLanguage | undefined;
 }
 export interface SendMessageResult {
   message: ChatMessage;

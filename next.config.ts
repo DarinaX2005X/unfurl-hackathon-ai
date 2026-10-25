@@ -5,6 +5,7 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   agentRules: false,
   devIndicators: false,
+  logging: { incomingRequests: false },
 };
 
 export default nextConfig;
