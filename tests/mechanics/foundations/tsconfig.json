@@ -1,0 +1,14 @@
+{
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": { "incremental": false },
+  "include": [
+    "../../../next-env.d.ts",
+    "../../../src/domain/mechanic-families/v2/foundations.ts",
+    "../../../src/features/learning/mechanics/foundations/**/*.ts",
+    "../../../src/features/learning/mechanics/foundations/**/*.tsx",
+    "../../../src/server/evaluation/foundations/**/*.ts",
+    "./*.ts",
+    "./*.tsx"
+  ],
+  "exclude": ["../../../node_modules"]
+}

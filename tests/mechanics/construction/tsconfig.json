@@ -1,0 +1,13 @@
+{
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": { "incremental": false },
+  "include": [
+    "../../../next-env.d.ts",
+    "../../../src/domain/mechanic-families/v2/construction.ts",
+    "../../../src/features/learning/mechanics/construction/**/*.ts",
+    "../../../src/features/learning/mechanics/construction/**/*.tsx",
+    "../../../src/server/evaluation/construction/**/*.ts",
+    "./*.ts"
+  ],
+  "exclude": ["../../../node_modules"]
+}

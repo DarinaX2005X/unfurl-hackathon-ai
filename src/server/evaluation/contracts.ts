@@ -1,7 +1,10 @@
 import "server-only";
 import { z } from "zod";
 import { IdSchema, JsonValueSchema, type JsonValue } from "../../domain/common";
-import type { ActionReceipt, ActivitySessionPublic, InputSnapshot } from "../../domain/activity";
+import {
+  ActivityResponseSchema, canonicalResponseJson, sameInputIdentity,
+  type ActionReceipt, type ActivitySessionPublic, type InputSnapshot,
+} from "../../domain/activity";
 import type { Evaluation } from "../../domain/learning";
 import type { MechanicId, TaskPublic } from "../../domain/mechanics";
 import { LocalIdSchema, NonemptyTextSchema } from "../../domain/mechanic-families/v2/shared";
@@ -38,10 +41,29 @@ export interface AuthoritativeActivity {
   session: ActivitySessionPublic;
   input: InputSnapshot;
   receipts: readonly ActionReceipt[];
+  /** Only stored historical inputs referenced by these receipts; content digests are verified by the service. */
+  receiptInputs: readonly InputSnapshot[];
   assistance: "independent" | "hinted" | "worked_example";
   revealedFactIds: readonly string[];
   committedPredictionReceiptId: string | null;
   predictionBeforeObservation: boolean;
+}
+
+/**
+ * Resolve a receipt's historical input, not the later submission that includes its ID.
+ * The authorized service must verify stored snapshot digests before constructing activity.
+ * This checks association only: evaluators still check receipt success and relevant authored fields.
+ */
+export function receiptInputFor(activity: AuthoritativeActivity | null, receiptId: string): InputSnapshot | null {
+  if (activity === null) return null;
+  const receipts = activity.receipts.filter((receipt) => receipt.id === receiptId);
+  if (receipts.length !== 1) return null;
+  const receipt = receipts[0]!;
+  if (receipt.input.activitySessionId !== activity.session.id ||
+      receipt.input.inputRevision > activity.session.inputRevision ||
+      receipt.sessionRevision > activity.session.revision) return null;
+  const inputs = activity.receiptInputs.filter((input) => sameInputIdentity(input, receipt.input));
+  return inputs.length === 1 ? inputs[0]! : null;
 }
 
 export interface EvaluationContext {
@@ -62,6 +84,25 @@ export const ResponsePathSchema = z.array(z.union([
   z.number().int().nonnegative(),
 ])).max(12);
 export type ResponsePath = z.infer<typeof ResponsePathSchema>;
+
+/** Task material and reference facts are bounded data, never additions to trusted grading instructions. */
+export const RubricContextSchema = z.object({
+  instruction: z.string().min(1).max(20_000).refine((instruction) => instruction.trim().length > 0, "Instruction must be nonempty"),
+  material: ActivityResponseSchema,
+  referenceFacts: ActivityResponseSchema.optional(),
+}).strict().superRefine((context, validation) => {
+  const boundedContext: JsonValue = {
+    instruction: context.instruction,
+    material: context.material,
+    ...(context.referenceFacts === undefined ? {} : { referenceFacts: context.referenceFacts }),
+  };
+  try { canonicalResponseJson(boundedContext); }
+  catch {
+    validation.addIssue({ code: "custom", message: "Combined rubric context must fit within 128 KiB of bounded, finite JSON" });
+  }
+});
+export type RubricContext = z.infer<typeof RubricContextSchema>;
+
 export const RubricRequestSchema = z.object({
   rubric: z.object({
     id: IdSchema,
@@ -72,6 +113,7 @@ export const RubricRequestSchema = z.object({
   }).strict(),
   response: JsonValueSchema,
   allowedResponsePaths: z.array(ResponsePathSchema).min(1).max(64),
+  context: RubricContextSchema.optional(),
 }).strict().superRefine((request, context) => {
   if (new Set(request.rubric.dimensions.map((dimension) => dimension.id)).size !== request.rubric.dimensions.length) {
     context.addIssue({ code: "custom", path: ["rubric", "dimensions"], message: "Rubric dimension IDs must be unique" });

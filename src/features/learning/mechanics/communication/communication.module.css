@@ -1,0 +1,94 @@
+.workspace {
+  display: grid;
+  gap: var(--space-8);
+  min-width: 0;
+  container-type: inline-size;
+  color: var(--color-ink);
+  font: 500 1rem/1.65 var(--font-sans);
+}
+
+.workspace :is(h3, p, ul, ol, dl, dd) { margin: 0; }
+.workspace h3, .references legend, .mapping legend, .finding legend { font-size: 1.05rem; font-weight: 750; line-height: 1.45; }
+.workspace :is(input, textarea, select, button) { font-family: var(--font-sans); }
+.workspace :is(textarea, select) { min-width: 0; max-width: 100%; font-size: 1rem; line-height: 1.6; }
+.workspace textarea { resize: vertical; min-height: 132px; }
+.workspace :global(.uf-field) { min-width: 0; }
+.workspace :global(.uf-field__input) { width: 100%; box-sizing: border-box; }
+.workspace :global(.uf-field__hint), .workspace :global(.uf-field__error) { font-size: .875rem; }
+.material { display: grid; gap: var(--space-3); min-width: 0; }
+.materialList { display: grid; gap: var(--space-3); padding-left: 1.25rem; }
+.materialList li { padding-left: var(--space-1); }
+.materialText, .question { font-size: 1.125rem; line-height: 1.65; }
+.materialText, .materialList, .question, .quotedText, .turnText p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.materialPair, .revisionPair, .argumentResponse, .agreementPair { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-6); align-items: start; }
+.materialPair { padding-bottom: var(--space-6); border-bottom: 1px solid var(--color-line-soft); }
+.materialPair > :only-child { grid-column: 1 / -1; }
+.responseSection { display: grid; justify-items: start; gap: var(--space-4); min-width: 0; }
+.responseSection > :is(fieldset, div, .uf-field) { width: 100%; }
+.responseSection > :global(.uf-field) { width: 100%; }
+.mapping, .finding { display: grid; gap: var(--space-4); min-width: 0; width: 100%; margin: 0; padding: var(--space-4); border: 1px solid var(--color-line-soft); border-radius: var(--radius-field); background: var(--color-surface); }
+.mapping legend, .finding legend { padding: 0 var(--space-2); }
+.mapping > button, .finding > button { justify-self: start; }
+.mappingFields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--space-4); }
+.mappingFields > :last-child { grid-column: 1 / -1; }
+.references { display: grid; gap: var(--space-3); min-width: 0; margin: 0; padding: 0; border: 0; }
+.references legend { margin-bottom: var(--space-4); }
+.referenceChoice { display: flex; align-items: start; gap: var(--space-3); min-width: 0; padding: var(--space-3) var(--space-4); border-radius: var(--radius-control); background: var(--color-surface); border: 1px solid var(--color-line-soft); cursor: pointer; transition: background-color var(--motion-hover) var(--ease-out), border-color var(--motion-hover) var(--ease-out); }
+.referenceChoice:has(input:checked) { background: var(--color-selected); border-color: var(--color-action); }
+.referenceChoice:has(input:focus-visible), .turnReference:has(input:focus-visible) { outline: 3px solid var(--color-focus); outline-offset: 3px; }
+.referenceChoice > span { display: grid; gap: var(--space-1); min-width: 0; overflow-wrap: anywhere; }
+.referenceChoice input, .turnReference input { width: 20px; height: 20px; flex: 0 0 20px; margin: 4px 0 0; accent-color: var(--color-action); }
+.referenceChoice:has(input:disabled), .turnReference:has(input:disabled) { cursor: default; }
+.requiredFact, .turnCount, .wordCount, .selectionNote, .localStatus { color: var(--color-muted); font-size: .875rem; line-height: 1.5; }
+.requiredFact { display: block; }
+.originalDraft { display: grid; gap: var(--space-2); min-width: 0; }
+.originalDraft textarea { background: var(--color-surface-inset); color: var(--color-ink); cursor: text; }
+.revisionPair textarea { min-height: 340px; }
+.citation { display: grid; gap: var(--space-2); }
+.quotedText { padding: var(--space-3) var(--space-4); background: var(--color-surface-inset); border-radius: var(--radius-control); }
+.inlineActions { display: flex; gap: var(--space-2); flex-wrap: wrap; }
+.dialogue { display: grid; gap: var(--space-4); min-width: 0; }
+.sectionHeading { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); flex-wrap: wrap; }
+.turnCount, .wordCount { font-variant-numeric: tabular-nums; }
+.transcript { display: grid; gap: var(--space-6); padding: 0; list-style: none; max-height: 540px; overflow-y: auto; scrollbar-gutter: stable; overscroll-behavior-y: contain; }
+.transcript > li { display: grid; gap: var(--space-3); padding: var(--space-4); border-radius: var(--radius-field); background: var(--color-surface-inset); }
+.turnText { display: grid; gap: var(--space-1); }
+.turnText strong { font-weight: 700; }
+.turnReference { display: flex; align-items: start; gap: var(--space-3); min-height: 44px; width: fit-content; max-width: 100%; padding: var(--space-2); border-radius: var(--radius-control); cursor: pointer; transition: background-color var(--motion-hover) var(--ease-out); }
+.dialogueAction { display: grid; grid-template-columns: max-content minmax(0, 1fr); align-items: center; gap: var(--space-4); }
+.pendingTurn { display: grid; justify-items: start; gap: var(--space-2); }
+.localStatus:empty { display: none; }
+.agreementItem { display: grid; justify-items: start; gap: var(--space-2); min-width: 0; }
+.agreementItem > :global(.uf-field) { width: 100%; }
+.wordCount[data-exceeded="true"] { color: var(--color-danger); }
+.assessment { display: grid; gap: var(--space-4); padding-top: var(--space-6); border-top: 1px solid var(--color-line-soft); }
+.dimensions { display: grid; gap: var(--space-4); }
+.dimensions > div { display: grid; gap: var(--space-1); }
+.dimensions dt { display: flex; gap: var(--space-4); justify-content: space-between; flex-wrap: wrap; font-weight: 700; }
+.dimensions dd { overflow-wrap: anywhere; }
+.dimensions [data-result="met"] { color: var(--color-success); }
+.dimensions [data-result="not_met"] { color: var(--color-danger); }
+.dimensions [data-result="partial"], .dimensions [data-result="uncertain"] { color: var(--color-warning); }
+
+@media (hover: hover) and (pointer: fine) {
+  .referenceChoice:not(:has(input:disabled)):hover { border-color: var(--color-border); background: var(--color-surface-inset); }
+  .referenceChoice:has(input:checked):not(:has(input:disabled)):hover { border-color: var(--color-action); background: var(--color-selected); }
+  .turnReference:not(:has(input:disabled)):hover { background: var(--color-surface); }
+}
+.referenceChoice:not(:has(input:disabled)):active, .turnReference:not(:has(input:disabled)):active { background: var(--color-selected); }
+@container (max-width: 640px) {
+  .materialPair, .revisionPair, .argumentResponse, .agreementPair, .mappingFields { grid-template-columns: minmax(0, 1fr); }
+  .mappingFields > :last-child { grid-column: auto; }
+  .revisionPair textarea { min-height: 260px; }
+  .dialogueAction { grid-template-columns: minmax(0, 1fr); justify-items: start; }
+  .mapping, .finding { padding: var(--space-3); }
+  .transcript > li { padding: var(--space-3); }
+  .materialText, .question { font-size: 1rem; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .referenceChoice, .turnReference { transition: none; }
+}
+@media (forced-colors: active) {
+  .referenceChoice:has(input:checked) { border-color: Highlight; }
+  .referenceChoice:has(input:focus-visible), .turnReference:has(input:focus-visible) { outline-color: Highlight; }
+}

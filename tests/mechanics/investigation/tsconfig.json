@@ -1,0 +1,6 @@
+{
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": { "incremental": false },
+  "include": ["../../../next-env.d.ts", "../../../src/domain/mechanic-families/v2/investigation.ts", "../../../src/features/learning/mechanics/investigation/**/*.tsx", "../../../src/features/learning/mechanics/investigation/**/*.ts", "../../../src/server/evaluation/investigation/**/*.ts", "./*.ts", "./*.tsx"],
+  "exclude": ["../../../node_modules"]
+}

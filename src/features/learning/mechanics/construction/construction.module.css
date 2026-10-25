@@ -1,0 +1,99 @@
+.mechanic { display: grid; gap: var(--space-6); min-width: 0; container-type: inline-size; color: var(--color-ink); }
+.mechanic h3, .mechanic h4, .mechanic p { margin: 0; }
+.mechanic h3 { font-size: 20px; line-height: 1.4; font-weight: 750; }
+.mechanic h4 { font-size: 16px; line-height: 1.5; font-weight: 750; }
+.specification { font-size: 18px; line-height: 1.65; max-width: var(--width-reading); white-space: pre-wrap; overflow-wrap: anywhere; }
+.artifactHeading, .stepHeading { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); min-width: 0; }
+.artifactHeading > span { font-size: 14px; line-height: 1.5; color: var(--color-muted); font-variant-numeric: tabular-nums; flex-shrink: 0; }
+.expressionBuilder { display: grid; gap: var(--space-4); min-width: 0; }
+.formula { min-height: 112px; display: flex; align-items: center; background: var(--color-surface); border: 1px solid var(--color-line-soft); border-radius: var(--radius-surface); padding: var(--space-6); box-shadow: var(--shadow-card); }
+.formula output, .formulaText { font-size: clamp(20px, 3.6cqi, 28px); font-weight: 650; line-height: 1.6; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.formula p { color: var(--color-muted); font-size: 16px; line-height: 1.65; }
+.builderControls { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr); gap: var(--space-4); }
+.partEditor { display: grid; gap: var(--space-4); min-width: 0; padding: var(--space-4); background: var(--color-surface-inset); border-radius: var(--radius-field); }
+.selectedPart { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); align-items: baseline; font-size: 16px; line-height: 1.6; }
+.selectedPart > span { overflow-wrap: anywhere; }
+.constantEditor, .addStep, .addLocation { display: grid; grid-template-columns: minmax(0, 1fr) max-content; gap: var(--space-4); align-items: start; }
+.constantEditor > button, .addStep > button, .addLocation > button { margin-top: 29px; }
+.inlineActions { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.expressionBuilder > button, .mechanic > button { justify-self: start; }
+.originalArtifact { display: grid; gap: var(--space-4); padding: var(--space-6); border-radius: var(--radius-surface); background: var(--color-surface-inset); }
+.reference { border-radius: var(--radius-field); min-width: 0; }
+.reference summary, .dependencies summary { min-height: 44px; padding: var(--space-3) var(--space-4); border: 1px solid var(--color-line-soft); border-radius: var(--radius-control); background: var(--color-surface); cursor: pointer; font-size: 16px; font-weight: 650; line-height: 1.5; transition: background-color var(--motion-hover) var(--ease-out), border-color var(--motion-hover) var(--ease-out); }
+.reference[open] summary, .dependencies[open] summary { background: var(--color-selected); border-color: var(--color-border); }
+.reference summary:active, .dependencies summary:active { background: var(--color-surface-inset); transition-duration: var(--motion-press); }
+.reference summary:focus-visible, .dependencies summary:focus-visible, .dependencies input:focus-visible, .range:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 3px; }
+.reference > p, .reference > dl { margin: var(--space-4) 0 0; }
+.operations { display: grid; gap: var(--space-4); }
+.operations > div { display: grid; gap: var(--space-2); }
+.operations dt { font-weight: 700; }
+.operations dd { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-6); margin: 0; color: var(--color-muted); font-size: 14px; line-height: 1.5; }
+.publicCases { display: grid; gap: var(--space-3); }
+.publicCases > div { display: grid; grid-template-columns: minmax(80px, .3fr) 1fr; gap: var(--space-4); font-size: 16px; line-height: 1.5; }
+.publicCases dt { font-weight: 700; overflow-wrap: anywhere; }
+.publicCases dd { margin: 0; overflow-wrap: anywhere; }
+.planBudget { display: flex; flex-wrap: wrap; gap: var(--space-4) var(--space-8); padding: var(--space-4) var(--space-6); background: var(--color-surface-inset); border-radius: var(--radius-field); font-variant-numeric: tabular-nums; font-size: 16px; line-height: 1.5; }
+.planBudget strong { font-size: 24px; }
+.planHelp, .emptyWork { font-size: 16px; line-height: 1.65; color: var(--color-muted); }
+.plan { list-style: none; display: grid; gap: var(--space-4); margin: 0; padding: 0; }
+.plan > li { display: grid; gap: var(--space-3); padding: var(--space-4) var(--space-6); border-radius: var(--radius-field); background: var(--color-surface); border: 1px solid var(--color-line-soft); }
+.stepHeading h3 { font-size: 18px; overflow-wrap: anywhere; }
+.stepHeading > button { flex-shrink: 0; }
+.plan > li > p { color: var(--color-muted); font-size: 14px; line-height: 1.5; }
+.dependencies fieldset { margin: var(--space-3) 0 0; border: 0; padding: 0; display: grid; gap: var(--space-2); }
+.dependencies label { display: flex; align-items: center; gap: var(--space-3); min-height: 44px; font-size: 16px; line-height: 1.5; cursor: pointer; border-radius: var(--radius-control); padding: var(--space-2); transition: background-color var(--motion-hover) var(--ease-out); }
+.dependencies input { width: 20px; height: 20px; flex-shrink: 0; accent-color: var(--color-action); }
+.dependencies fieldset:disabled label { cursor: default; opacity: .65; }
+.markedLocations { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: var(--space-2); }
+.markedLocations li { display: flex; align-items: center; gap: var(--space-2); padding-left: var(--space-3); background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-control); font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+.runPanel { display: grid; gap: var(--space-4); }
+.runAction { display: flex; align-items: center; gap: var(--space-4); }
+.runAction > button { flex-shrink: 0; }
+.runAction p, .runAvailability, .historical { max-width: 60ch; font-size: 14px; line-height: 1.6; color: var(--color-muted); }
+.observation { display: grid; gap: var(--space-3); padding: var(--space-6); border: 1px solid var(--color-line-soft); border-radius: var(--radius-surface); background: var(--color-surface); }
+.values { display: flex; flex-wrap: wrap; gap: var(--space-4) var(--space-8); margin: 0; }
+.values > div { display: grid; gap: var(--space-1); }
+.values dt { font-size: 14px; line-height: 1.5; color: var(--color-muted); overflow-wrap: anywhere; }
+.values dd { margin: 0; font-size: 22px; font-weight: 700; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.values dd span { font-size: 14px; font-weight: 500; }
+.caseResults { display: grid; gap: var(--space-4); }
+.caseResults > div { display: grid; gap: var(--space-1); font-size: 16px; line-height: 1.5; }
+.caseResults > div > p { overflow-wrap: anywhere; }
+.caseResults > div > p:first-of-type { color: var(--color-muted); font-size: 14px; }
+.error { font-size: 14px; line-height: 1.6; color: var(--color-danger); }
+.formIssues { font-size: 14px; line-height: 1.6; padding: var(--space-4); border-radius: var(--radius-field); background: var(--color-surface-inset); }
+.formIssues > p { font-weight: 700; }
+.formIssues ul { margin: var(--space-2) 0 0; padding-left: var(--space-6); display: grid; gap: var(--space-1); }
+.testCases { display: grid; gap: var(--space-4); }
+.testCase { display: grid; gap: var(--space-3); padding: var(--space-4) var(--space-6); background: var(--color-surface); border-radius: var(--radius-field); border: 1px solid var(--color-line-soft); }
+.numericFields { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(150px, 100%), 1fr)); gap: var(--space-4); }
+.optimizationGoal { display: grid; gap: var(--space-2); }
+.optimizationGoal p { font-size: 16px; line-height: 1.65; }
+.baselineAndConstraints { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-6); }
+.baselineAndConstraints > section { display: grid; align-content: start; gap: var(--space-3); }
+.baselineAndConstraints ul { margin: 0; padding-left: var(--space-6); font-size: 16px; line-height: 1.7; }
+.parameterStage { display: grid; gap: var(--space-4); padding: var(--space-6); background: var(--color-surface); border-radius: var(--radius-surface); box-shadow: var(--shadow-card); border: 1px solid var(--color-line-soft); }
+.parameters { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr)); gap: var(--space-6); }
+.parameters > div { min-width: 0; }
+.range { width: 100%; min-height: 44px; margin: var(--space-3) 0 0; accent-color: var(--color-action); cursor: pointer; border-radius: var(--radius-control); }
+.range:disabled { cursor: default; }
+.rangeLimits { display: flex; justify-content: space-between; font-size: 14px; line-height: 1.5; color: var(--color-muted); font-variant-numeric: tabular-nums; }
+.srOnly { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+@media (hover: hover) and (pointer: fine) {
+  .reference summary:hover, .dependencies summary:hover { background: var(--color-selected); border-color: var(--color-border); }
+  .dependencies fieldset:not(:disabled) label:hover { background: var(--color-selected); }
+  .range:not(:disabled):hover { filter: brightness(.87); }
+}
+@container (max-width: 520px) {
+  .builderControls, .constantEditor, .addStep, .addLocation, .baselineAndConstraints { grid-template-columns: minmax(0, 1fr); }
+  .constantEditor > button, .addStep > button, .addLocation > button { margin-top: 0; justify-self: start; }
+  .artifactHeading, .stepHeading { flex-wrap: wrap; }
+  .runAction { align-items: flex-start; flex-wrap: wrap; }
+  .formula, .originalArtifact, .observation, .parameterStage { padding: var(--space-4); border-radius: var(--radius-field); }
+  .plan > li, .testCase { padding: var(--space-4); }
+  .parameters { grid-template-columns: minmax(0, 1fr); }
+  .publicCases > div { grid-template-columns: minmax(0, 1fr); gap: var(--space-1); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .reference summary, .dependencies summary, .dependencies label { transition-duration: 0ms; }
+}

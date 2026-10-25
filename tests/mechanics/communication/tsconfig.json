@@ -1,0 +1,14 @@
+{
+  "extends": "../../../tsconfig.json",
+  "compilerOptions": { "incremental": false },
+  "include": [
+    "../../../next-env.d.ts",
+    "../../../src/domain/mechanic-families/v2/communication.ts",
+    "../../../src/features/learning/mechanics/communication/**/*.ts",
+    "../../../src/features/learning/mechanics/communication/**/*.tsx",
+    "../../../src/server/evaluation/communication/**/*.ts",
+    "./*.ts",
+    "./*.tsx"
+  ],
+  "exclude": ["../../../node_modules"]
+}

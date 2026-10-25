@@ -13,6 +13,14 @@ export interface ActivityController {
   dispatch(action: ActivityAction): Promise<
     { ok: true; data: ActionReceipt } | { ok: false; error: ApiError }
   >;
+  /**
+   * Resume an accepted pending/unavailable action by its existing receipt; never spend another action.
+   * A lost HTTP response before a receipt ID is known is reconciled internally by replaying the
+   * original clientActionId, not by dispatching a new turn.
+   */
+  retryAction(receiptId: string): Promise<
+    { ok: true; data: ActionReceipt } | { ok: false; error: ApiError }
+  >;
 }
 
 export interface TaskRendererProps<C extends JsonValue, R extends JsonValue> {
