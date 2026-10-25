@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "incremental": false },
+  "include": [
+    "../../next-env.d.ts",
+    "../../src/domain/mechanic-families/v2/shared.ts",
+    "../../src/domain/activity.ts",
+    "../../src/features/learning/player/contracts.ts",
+    "../../src/features/learning/player/SamplePlayer.tsx",
+    "../../src/server/evaluation/contracts.ts",
+    "./*.ts"
+  ],
+  "exclude": ["../../node_modules"]
+}
