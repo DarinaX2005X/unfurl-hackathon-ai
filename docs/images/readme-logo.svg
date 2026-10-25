@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="336" height="136" viewBox="0 0 336 136" role="img" aria-labelledby="title">
+  <title id="title">Unfurl</title>
+  <rect x="2" y="2" width="332" height="132" rx="24" fill="#FFFFFF" stroke="#25272B" stroke-width="4"/>
+  <g transform="translate(30 24)">
+<g fill="#BA432D">
+    <path d="M14 14h16v29c0 10 6 17 16 17s16-7 16-17V29l16 7v7c0 19-13 32-32 32S14 62 14 43Z"/>
+    <path d="M44 7 78 22v16L44 23Z"/>
+  </g>
+  <text x="96" y="61" fill="#25272B" font-family="Manrope, Segoe UI, Arial, sans-serif" font-size="54" font-weight="750" letter-spacing="-2">Unfurl</text>
+  </g>
+</svg>

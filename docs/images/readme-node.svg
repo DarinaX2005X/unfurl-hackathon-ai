@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="132" height="36" viewBox="0 0 132 36" role="img" aria-labelledby="title">
+  <title id="title">Node.js 22.x</title>
+  <rect x="0.75" y="0.75" width="130.5" height="34.5" rx="17.25" fill="#F5F3ED" stroke="#8B8E87" stroke-width="1.5"/>
+  <text x="66" y="22.5" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-size="14" font-weight="600" fill="#25272B">Node.js<tspan dx="7" font-weight="700" fill="#BA432D">22.x</tspan></text>
+</svg>

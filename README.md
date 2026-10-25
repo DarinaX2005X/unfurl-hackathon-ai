@@ -1,6 +1,8 @@
-<img src="public/brand/logo.svg" alt="Unfurl" width="276" height="88">
+<p align="center">
+  <img src="docs/images/readme-logo.svg" alt="Unfurl" width="336" height="136">
+</p>
 
-**Learn what you've always wanted to**
+<p align="center"><strong>Learn what you've always wanted to</strong></p>
 
 Unfurl is a learning workspace for turning a personal goal into a substantial course and studying through varied, interactive practice. Its intended experience combines a researched curriculum that the creator can review with a shared course whose support and next steps can differ for each learner.
 
@@ -8,7 +10,12 @@ This checkout currently provides a standalone local chat and a guided numerical 
 
 [Run locally](#run-locally), [try the learning activity](#try-the-learning-activity), [repository](https://github.com/DarinaX2005X/hackathon-ai)
 
-Next.js **16.4.3**, React **19.3.1**, TypeScript **6.0.3**, Node.js **22.x**
+<p align="center">
+  <img src="docs/images/readme-next.svg" alt="Next.js 16.4.3" width="136" height="36">
+  <img src="docs/images/readme-react.svg" alt="React 19.3.1" width="132" height="36">
+  <img src="docs/images/readme-typescript.svg" alt="TypeScript 6.0.3" width="172" height="36">
+  <img src="docs/images/readme-node.svg" alt="Node.js 22.x" width="132" height="36">
+</p>
 
 ![Unfurl home with the Learn everything heading and unfolded course book](docs/images/unfurl-home.jpg)
 
