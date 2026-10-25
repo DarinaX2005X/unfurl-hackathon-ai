@@ -10,3 +10,9 @@ export function stableExecutionId(namespace: string, name: string): string {
   const value = bytes.subarray(0, 16).toString("hex");
   return `${value.slice(0, 8)}-${value.slice(8, 12)}-${value.slice(12, 16)}-${value.slice(16, 20)}-${value.slice(20)}`;
 }
+
+/** Epoch zero preserves every existing paid identity. Later epochs require a durable explicit retry receipt. */
+export function agentOperationId(stepId:string,name:string,retryEpoch:number):string{
+  if(!Number.isSafeInteger(retryEpoch)||retryEpoch<0)throw new RangeError("Invalid retry epoch");
+  return stableExecutionId(retryEpoch===0?stepId:stableExecutionId(stepId,`retry-epoch:${retryEpoch}`),name);
+}

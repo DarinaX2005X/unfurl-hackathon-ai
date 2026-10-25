@@ -12,7 +12,8 @@ vi.mock("../../src/server/db",()=>({withSystemTransaction:async(_kind:unknown,wo
 vi.mock("../../src/server/runs/composition",()=>({getRuntimeAdmission:()=>({assertAvailable:async()=>{}})}));
 import {retryRun} from "../../src/server/runs/retry";
 import {enqueueAcceptedRun} from "../../src/server/runs/enqueue";
-import {stableExecutionId} from "../../src/server/runs/identity";
+import {agentOperationId,stableExecutionId} from "../../src/server/runs/identity";
+import {ProviderFailure} from "../../src/server/ai/failure";
 import {jsonDigest} from "../../src/server/ai/json";
 import {PostgresBudget} from "../../src/server/budget/postgres";
 import {OpenRouterModel} from "../../src/server/ai/openrouter";
@@ -55,14 +56,20 @@ describe.skipIf(process.env.RUN_LIVE_RECEIPT_RESUME!=="1")("ordinary receipt-onl
     model=new OpenRouterModel({apiKey:()=>"simulated",budget,gate:{snapshot:()=>({model:MODEL_ID,provider:PROVIDER_TAG,structured:true,text:true,search:true,rubric:true,limitations:[]}),assertAvailable:async()=>{}},rateCards:{current:async()=>rate},fetcher});
     const logical=stableExecutionId(step,"agent_decision");request={operationId:logical,purpose:"turn_planning",instructionVersion:"rollback-test-v1",trustedInstructions:"Return the requested JSON.",untrustedInput:input,model:MODEL_ID,maxOutputTokens:4096,deadlineAt:Date.now()+60000,
       budget:{logicalOperationId:logical,reservationId:stableExecutionId(logical,"attempt:1"),attempt:1,runStepId:step,probe:false}};
-    await model.generateStructured({...request,schema:z.object({answer:z.string()}).strict(),schemaId:"answer",schemaVersion:1},new AbortController().signal);
-    const fault={code:"service_unavailable" as const,messageKey:"generation.timeout",requestId:randomUUID(),retryable:true};
+  },30000);
+  async function markFailed(terminal=false){
+    if(terminal)fetcher.mockResolvedValueOnce(new Response(JSON.stringify({id:`gen-${randomUUID()}`,model:MODEL_ID,provider:"DigitalOcean",
+      choices:[{finish_reason:"length",message:{content:null}}],usage:{prompt_tokens:20,completion_tokens:4096,total_tokens:4116,completion_tokens_details:{reasoning_tokens:4096},cost:0.0098418}})));
+    const pending=model.generateStructured({...request,schema:z.object({answer:z.string()}).strict(),schemaId:"answer",schemaVersion:1},new AbortController().signal);
+    if(terminal)await expect(pending).rejects.toThrow("provider.invalid_output");else await pending;
+    const fault={code:"service_unavailable" as const,messageKey:terminal?"generation.invalidResponse":"generation.timeout",requestId:randomUUID(),retryable:!terminal};
     await client.query("UPDATE unfurl.agent_turn_runs SET status='failed',error=$2 WHERE id=$1",[run,JSON.stringify(fault)]);
     await client.query("UPDATE unfurl.execution_jobs SET status='failed',safe_error=$2 WHERE id=$1",[job,JSON.stringify(fault)]);
     await appendChatEvent(client,{kind:"agent_turn",runId:run,ownerId:actor.id,conversationId:conversation,branchId:branch,inputMessageId:message},{type:"run.failed",error:fault});
-  },30000);
+  }
   afterEach(async()=>{await client.query("ROLLBACK");});afterAll(async()=>{await client?.end();});
   it("reuses run/job/step/paid identity through the ordinary idempotent retry and commits the receipt once",async()=>{
+    await markFailed();
     const retryKey=randomUUID();const before=(await client.query("SELECT count(*)::int AS n FROM unfurl.ai_budget_entries WHERE operation_id=$1",[request.budget.reservationId])).rows[0];
     const first=await retryRun(actor,run,"agent_turn",retryKey),second=await retryRun(actor,run,"agent_turn",retryKey);
     expect(first.data.run.id).toBe(run);expect(second.data.run.id).toBe(run);expect(first.data.run.status).toBe("queued");
@@ -81,12 +88,15 @@ describe.skipIf(process.env.RUN_LIVE_RECEIPT_RESUME!=="1")("ordinary receipt-onl
     expect((await client.query("SELECT count(*)::int AS n FROM unfurl.ai_budget_entries WHERE operation_id=$1",[request.budget.reservationId])).rows[0]).toEqual(before);
   },30000);
   it("rejects foreign ownership, stale branch, newer run and every unresolved held state",async()=>{
+    await markFailed();
     await expect(retryRun({...actor,id:randomUUID()},run,"agent_turn",randomUUID())).rejects.toMatchObject({status:404});
     await client.query("SAVEPOINT stale_branch");const replacement=randomUUID();await client.query("INSERT INTO unfurl.conversation_branches(id,conversation_id) VALUES($1,$2)",[replacement,conversation]);
     await client.query("UPDATE unfurl.conversations SET active_branch_id=$2 WHERE id=$1",[conversation,replacement]);
     await expect(retryRun(actor,run,"agent_turn",randomUUID())).rejects.toMatchObject({status:409});await client.query("ROLLBACK TO SAVEPOINT stale_branch");
     await client.query("SAVEPOINT newer_run");await client.query("INSERT INTO unfurl.agent_turn_runs(id,owner_id,conversation_id,branch_id,input_message_id,status,created_at) VALUES($1,$2,$3,$4,$5,'cancelled',now()+interval '1 second')",[randomUUID(),actor.id,conversation,branch,message]);
     await expect(retryRun(actor,run,"agent_turn",randomUUID())).rejects.toMatchObject({status:409});await client.query("ROLLBACK TO SAVEPOINT newer_run");
+    await client.query("SAVEPOINT changed_capture");await client.query("UPDATE unfurl.run_steps SET input_digest=$2 WHERE id=$1",[step,"f".repeat(64)]);
+    await expect(retryRun(actor,run,"agent_turn",randomUUID())).rejects.toMatchObject({status:409});await client.query("ROLLBACK TO SAVEPOINT changed_capture");
     const held=randomUUID();await client.query(`INSERT INTO unfurl.ai_provider_operations(id,budget_id,logical_operation_id,attempt,run_step_id,request_digest,purpose,state,reserved_micro_usd,model_id,provider_tag,rate_card_digest,rate_card)
       SELECT $1,budget_id,$2,1,run_step_id,request_digest,purpose,'reserved',reserved_micro_usd,model_id,provider_tag,rate_card_digest,rate_card FROM unfurl.ai_provider_operations WHERE id=$3`,[held,randomUUID(),request.budget.reservationId]);
     for(const status of ["reserved","dispatched","unknown"]){
@@ -94,5 +104,31 @@ describe.skipIf(process.env.RUN_LIVE_RECEIPT_RESUME!=="1")("ordinary receipt-onl
       await expect(retryRun(actor,run,"agent_turn",randomUUID())).rejects.toMatchObject({status:409});
     }
     expect((await client.query("SELECT status FROM unfurl.execution_jobs WHERE id=$1",[job])).rows[0].status).toBe("failed");expect(fetcher).toHaveBeenCalledTimes(1);
+  },30000);
+  it("audits one explicit terminal retry epoch, preserves prior work, then replays a good receipt at that same epoch",async()=>{
+    await markFailed(true);const retryKey=randomUUID();
+    const captureBefore=(await client.query("SELECT result_reference,input_digest FROM unfurl.run_steps WHERE job_id=$1 AND status='succeeded'",[job])).rows;
+    expect((await retryRun(actor,run,"agent_turn",retryKey)).data.run.id).toBe(run);
+    expect((await retryRun(actor,run,"agent_turn",retryKey)).data.run.id).toBe(run);
+    expect((await client.query("SELECT retry_epoch FROM unfurl.execution_jobs WHERE id=$1",[job])).rows[0].retry_epoch).toBe(1);
+    expect((await client.query("SELECT from_epoch,to_epoch,semantic_target FROM unfurl.execution_job_retry_receipts WHERE job_id=$1",[job])).rows)
+      .toEqual([{from_epoch:0,to_epoch:1,semantic_target:{kind:"agent_turn",runId:run}}]);
+    const logical=agentOperationId(step,"agent_decision",1);expect(logical).not.toBe(request.operationId);
+    expect(agentOperationId(step,"agent_decision",0)).toBe(request.operationId);
+    let commits=0,interrupt=true;const schema=z.object({answer:z.string()}).strict();
+    const executor=new DurableRunExecutor(new RunHandlerRegistry([{kind:"agent_turn",version:"rollback-test",assertAuthority:async()=>{},advance:async context=>{
+      await context.step({key,input,digests,executionProfile:"longform_curriculum",outputSchema:schema,resultSchema:schema,
+        effect:async effect=>{const budget=effect.budgetOperation("agent_decision");expect(budget.logicalOperationId).toBe(logical);
+          const result=await model.generateStructured({...request,operationId:budget.logicalOperationId,budget,maxOutputTokens:8192,executionProfile:"longform_curriculum",deadlineAt:effect.deadlineAt,schema,schemaId:"answer",schemaVersion:1},effect.signal);
+          if(interrupt){interrupt=false;throw new ProviderFailure("timeout");}return result.data;},
+        commit:async(tx,output)=>{commits++;await context.completeTurn(tx,{status:"succeeded"});return output;}});return{status:"succeeded"};
+    }}]),work=>work(client));
+    expect(await executor.advance(job)).toEqual({status:"finished"});expect(commits).toBe(0);expect(fetcher).toHaveBeenCalledTimes(2);
+    expect((await retryRun(actor,run,"agent_turn",randomUUID())).data.run.id).toBe(run);
+    expect((await client.query("SELECT retry_epoch FROM unfurl.execution_jobs WHERE id=$1",[job])).rows[0].retry_epoch).toBe(1);
+    expect(await executor.advance(job)).toEqual({status:"finished"});expect(commits).toBe(1);expect(fetcher).toHaveBeenCalledTimes(2);
+    expect((await client.query("SELECT count(*)::int AS n FROM unfurl.ai_provider_operations WHERE run_step_id=$1",[step])).rows[0].n).toBe(2);
+    expect((await client.query("SELECT result_reference,input_digest FROM unfurl.run_steps WHERE job_id=$1 AND step_key=$2",[job,"agent.v1:000000:capture"])).rows).toEqual(captureBefore);
+    expect((await client.query("SELECT count(*)::int AS n FROM unfurl.execution_job_retry_receipts WHERE job_id=$1",[job])).rows[0].n).toBe(1);
   },30000);
 });

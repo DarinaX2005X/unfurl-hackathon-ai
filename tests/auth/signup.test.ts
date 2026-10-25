@@ -31,6 +31,9 @@ vi.mock("../../src/server/auth/client", async (importOriginal) => {
   };
 });
 vi.mock("../../src/server/auth/profile", () => ({ accountSession: mocks.profile }));
+vi.mock("../../src/server/runs/composition", () => ({
+  getRuntimeCapabilityProjection: async () => ({ generation: false }),
+}));
 vi.mock("../../src/server/auth/session", () => ({
   requireVerifiedIdentity: mocks.requireIdentity,
   getVerifiedIdentity: mocks.getIdentity,

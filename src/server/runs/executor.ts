@@ -6,7 +6,7 @@ import type { DbTransaction } from "../db";
 import { ProviderFailure, publicProviderFault } from "../ai/failure";
 import { ServiceFault } from "../auth/errors";
 import { canonicalJson, jsonDigest } from "../ai/json";
-import { stableExecutionId } from "./identity";
+import { agentOperationId,stableExecutionId } from "./identity";
 import { appendChatEvent, appendGenerationEvent, completeGenerationInTransaction, completeTurnInTransaction } from "./events";
 import type { DurableStep, JobClaim, RunContext, RunHandler, StepEffectContext } from "./ports";
 import { claimJob, guardClaim, runtimeTransaction, type RuntimeTransaction } from "./store";
@@ -34,7 +34,8 @@ export class DurableRunExecutor {
     const effectContextFor=(stepId:string,owner:string,fence:string,stepSignal:AbortSignal,deadlineAt:number):StepEffectContext=>({stepId,signal:stepSignal,deadlineAt,
       stepFence:{jobId,jobLeaseOwner:claim.leaseOwner,jobFencingToken:claim.fencingToken,retryEpoch:claim.retryEpoch,stepId,stepLeaseOwner:owner,stepFencingToken:fence},
       budgetOperation(name,attempt=1){if(!/^[a-zA-Z0-9:._/-]{1,160}$/.test(name)||attempt!==1)throw new ProviderFailure("invalid_output");
-        const logicalOperationId=stableExecutionId(stepId,name);return{logicalOperationId,reservationId:stableExecutionId(logicalOperationId,"attempt:1"),attempt:1,runStepId:stepId,probe:false};},
+        const logicalOperationId=claim.target.kind==="agent_turn"?agentOperationId(stepId,name,claim.retryEpoch):stableExecutionId(stepId,name);
+        return{logicalOperationId,reservationId:stableExecutionId(logicalOperationId,"attempt:1"),attempt:1,runStepId:stepId,probe:false};},
     });
     const context: RunContext = {
       claim, signal,

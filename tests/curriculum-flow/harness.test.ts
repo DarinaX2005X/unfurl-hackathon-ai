@@ -29,7 +29,7 @@ export function fakeModel(decisions: unknown[]) {
   return { model, calls };
 }
 
-function memoryHarness(decisions: AgentDecision[]) {
+function memoryHarness(decisions: AgentDecision[], planningPolicy?: ContextSnapshot["planningPolicy"]) {
   const { model, calls } = fakeModel(decisions);
   const receipts = new Map<string, unknown>();
   const effects: string[] = [];
@@ -48,6 +48,7 @@ function memoryHarness(decisions: AgentDecision[]) {
     },
     capture: async (_tx, _target, _jobId, index): Promise<ContextSnapshot> => ({
       kind: "context", index, now, currentMessage: message, recentMessages: [], sources: [], artifacts: [], recentTools: [], languageIntent: null,
+      ...(planningPolicy ? { planningPolicy } : {}),
     }),
     receipt: async <T>(_tx: DbTransaction, _jobId: string, index: number, stage: "capture" | "decision" | "tool", schema: z.ZodType<T>) => schema.parse(receipts.get(journalKey(index, stage))),
     authority: async () => ({ ...target, artifactIds, sourceIds: new Set() }),
@@ -62,7 +63,7 @@ function memoryHarness(decisions: AgentDecision[]) {
       effects.push(`effect:${spec.key}`);
       const stepId = stableExecutionId(ids.approval, spec.key);
       const output = spec.outputSchema.parse(await spec.effect({ stepId, deadlineAt: Date.now() + 10000, signal: context.signal,
-        stepFence: { jobId: ids.approval, jobLeaseOwner: "test", jobFencingToken: "1", retryEpoch: 0, stepId, stepLeaseOwner: "test", stepFencingToken: "1" },
+        stepFence: { jobId: ids.approval, jobLeaseOwner: "test", jobFencingToken: "1", retryEpoch: context.claim.retryEpoch, stepId, stepLeaseOwner: "test", stepFencingToken: "1" },
         budgetOperation: (name, attempt = 1) => ({ logicalOperationId: stableExecutionId(stepId, name), reservationId: stableExecutionId(stepId, `${name}:${attempt}`), attempt, runStepId: stepId, probe: false }),
       }, spec.input));
       const result = spec.resultSchema.parse(await spec.commit(tx, output));
@@ -96,6 +97,33 @@ function memoryHarness(decisions: AgentDecision[]) {
 }
 
 describe("adaptive durable agent orchestration", () => {
+  it("binds new planner allowance in the capture while preserving old epoch-zero request bodies", async () => {
+    const decision: AgentDecision = { tool: "respond", input: { text: "A saved reply.", awaitingUser: false } };
+    const old = memoryHarness([decision]);
+    await old.handler.advance(old.context);
+    const oldCapture = JSON.stringify(old.receipts.get(journalKey(0, "capture")));
+    await old.handler.advance(old.context);
+    expect(old.calls[0]!.maxOutputTokens).toBe(4096);
+    expect(old.calls[0]!.untrustedInput).not.toHaveProperty("planningPolicy");
+    expect(JSON.stringify(old.receipts.get(journalKey(0, "capture")))).toBe(oldCapture);
+    const fresh = memoryHarness([decision], { version: "planner-8192-v1", maxOutputTokens: 8192 });
+    await fresh.handler.advance(fresh.context);
+    await fresh.handler.advance(fresh.context);
+    expect(fresh.calls[0]!.maxOutputTokens).toBe(8192);
+    expect(fresh.calls[0]!.untrustedInput).toHaveProperty("planningPolicy.maxOutputTokens", 8192);
+  });
+
+  it("uses 8192 only after the explicit paid retry epoch for a legacy capture", async () => {
+    const test = memoryHarness([{ tool: "respond", input: { text: "A resumed reply.", awaitingUser: false } }]);
+    await test.handler.advance(test.context);
+    const captured = JSON.stringify(test.receipts.get(journalKey(0, "capture")));
+    test.context.claim.retryEpoch = 1;
+    await test.handler.advance(test.context);
+    expect(test.calls[0]!.maxOutputTokens).toBe(8192);
+    expect(test.calls[0]!.instructionVersion).toBe("adaptive-course-agent-v1");
+    expect(JSON.stringify(test.receipts.get(journalKey(0, "capture")))).toBe(captured);
+  });
+
   it("can answer a question with zero course artifacts", async () => {
     const test = memoryHarness([{ tool: "respond", input: { text: "A prerequisite is a skill you need before the next learning step.", awaitingUser: false } }]);
     expect(await test.handler.advance(test.context)).toEqual({ status: "continue" });

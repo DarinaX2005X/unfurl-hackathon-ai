@@ -23,6 +23,7 @@ export const ContextSnapshotSchema = z.object({
   sources: z.array(z.object({ sourceId: IdSchema, title: z.string(), url: z.string() }).strict()),
   recentTools: z.array(z.object({ tool: z.string(), ok: z.boolean(), summary: z.string(), data: JsonValueSchema }).strict()),
   searchMemory: SearchMemorySchema.optional(),
+  planningPolicy: z.object({ version: z.literal("planner-8192-v1"), maxOutputTokens: z.literal(8192) }).strict().optional(),
   omittedRecentMessages: z.number().int().positive().optional(),
   languageIntent: z.object({ courseId: IdSchema, expectedCourseRevision: z.number().int(), draftId: IdSchema,
     expectedDraftRevision: z.number().int(), targetLanguage: z.string() }).strict().nullable(),
@@ -131,6 +132,7 @@ export async function captureContext(tx: DbTransaction, target: ExecutionTarget,
   const searches = searchRows.map((row) => CompactSearchSchema.parse(row.search));
   const intent = (await tx.query<{ course_id: string; expected_course_revision: number; draft_id: string; expected_draft_revision: number; target_language: string }>(`SELECT * FROM unfurl.course_language_revision_intents WHERE run_id=$1 AND owner_id=$2`, [agent.runId, agent.ownerId])).rows[0];
   const snapshot = ContextSnapshotSchema.parse(attachSearchMemory({ kind: "context", index, now, currentMessage, recentMessages, artifacts, sources, recentTools,
+    planningPolicy: { version: "planner-8192-v1", maxOutputTokens: 8192 },
     languageIntent: intent ? { courseId: intent.course_id, expectedCourseRevision: intent.expected_course_revision, draftId: intent.draft_id,
       expectedDraftRevision: intent.expected_draft_revision, targetLanguage: intent.target_language } : null }, searches));
   canonicalJson(snapshot, 220 * 1024);
