@@ -7,6 +7,7 @@ import { commonCopy } from "@/content/common";
 import { Brand } from "./Brand";
 import { Navigation, type ShellDestination } from "./Navigation";
 import { useNavigationMenu } from "./useNavigationMenu";
+import { AccountControl } from "./AccountControl";
 
 export interface AppShellProps {
   active: ShellDestination;
@@ -23,6 +24,7 @@ export function AppShell({ active, children, sidebarContent, contextPanel }: App
     <>
       <Navigation active={active} onNavigate={menu.close} />
       {sidebarContent != null && <div className="uf-shell__history">{sidebarContent}</div>}
+      <AccountControl active={active === "account"} onNavigate={menu.close} />
     </>
   );
 

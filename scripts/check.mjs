@@ -15,7 +15,7 @@ const checks = {
   typecheck: [[bins.next, "typegen"], [bins.typescript, "--noEmit"]],
   lint: [[bins.eslint, "."]],
   test: [[bins.vitest, "run"]],
-  build: [[bins.next, "build"]],
+  build: [[bins.next, "build", "--webpack"]],
 };
 const requested = process.argv.slice(2);
 const selected = requested.length ? requested : Object.keys(checks);

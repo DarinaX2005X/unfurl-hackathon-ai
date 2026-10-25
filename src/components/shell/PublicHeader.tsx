@@ -8,6 +8,7 @@ import { routes } from "@/lib/routes";
 import { Brand } from "./Brand";
 import { Navigation } from "./Navigation";
 import { useNavigationMenu } from "./useNavigationMenu";
+import { AccountControl } from "./AccountControl";
 
 export function PublicHeader() {
   const menu = useNavigationMenu();
@@ -23,6 +24,7 @@ export function PublicHeader() {
             <Link className="uf-public-header__link" href={routes.library}>{commonCopy.navigation.library}</Link>
           </nav>
           <div className="uf-public-header__action">
+            <AccountControl placement="header" />
             <LinkButton href={routes.create()} size="compact">{commonCopy.navigation.create}</LinkButton>
           </div>
           <div className="uf-public-header__menu">
@@ -38,6 +40,7 @@ export function PublicHeader() {
       </header>
       <Drawer open={!menu.desktop && menu.open} onOpenChange={menu.setOpen} title={commonCopy.navigation.menuTitle}>
         <Navigation onNavigate={menu.close} />
+        <AccountControl onNavigate={menu.close} />
       </Drawer>
     </>
   );

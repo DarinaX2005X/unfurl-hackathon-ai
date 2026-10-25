@@ -1,0 +1,69 @@
+.uf-auth { display: flex; flex-direction: column; min-height: 100dvh; }
+.uf-auth__header, .uf-auth__footer { display: flex; align-items: center; justify-content: space-between; gap: 24px; width: min(1184px, calc(100% - 64px)); margin-inline: auto; }
+.uf-auth__header { min-height: 88px; }
+.uf-auth__footer { min-height: 76px; font-size: 14px; color: var(--color-muted); }
+.uf-auth__footer > div { display: flex; gap: 24px; }
+.uf-auth__main { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); align-items: center; gap: clamp(48px, 8vw, 120px); flex: 1; width: min(1016px, calc(100% - 96px)); margin: 32px auto 48px; }
+.uf-auth__main:focus { outline: none; }
+.uf-auth__main:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 8px; }
+.uf-auth__form-region { grid-column: 2; grid-row: 1; width: 100%; max-width: 440px; min-width: 0; }
+.uf-auth__heading { margin-bottom: 32px; }
+.uf-auth__heading h1 { font-size: clamp(30px, 3vw, 38px); letter-spacing: -.045em; }
+.uf-auth__heading p { max-width: 43ch; margin-top: 14px; color: var(--color-muted); }
+.uf-auth__identity { grid-column: 1; grid-row: 1; min-width: 0; align-self: center; }
+.uf-auth__identity > p { font-size: clamp(30px, 3.4vw, 44px); font-weight: 750; line-height: 1.18; letter-spacing: -.045em; }
+.uf-auth-book { width: calc(100% + 48px); max-width: 480px; height: auto; margin: 20px 0 0 -32px; }
+.uf-account-form { display: grid; gap: 22px; min-width: 0; }
+.uf-account-form__submit { width: 100%; margin-top: 2px; }
+.uf-account-form__forgot { justify-self: end; margin-top: -18px; font-size: 14px; }
+.uf-account-switch { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; column-gap: 8px; margin-top: 24px; font-size: 14px; }
+.uf-account-switch > span { color: var(--color-muted); }
+.uf-account-feedback { margin-bottom: 24px; }
+.uf-account-stack { display: grid; gap: 20px; min-width: 0; }
+.uf-account-stack > p { overflow-wrap: anywhere; }
+.uf-account-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; }
+.uf-account-secondary { color: var(--color-muted); }
+.uf-account-password { position: relative; min-width: 0; }
+.uf-account-password__field .uf-field__input { padding-right: 60px; }
+.uf-account-password__toggle { position: absolute; top: 32px; right: 5px; border-radius: 11px; }
+.uf-account-password__toggle[aria-pressed="true"] { color: var(--color-action); }
+.uf-account-password__toggle[aria-pressed="true"] .uf-button__surface { background: var(--color-selected); }
+.uf-account-page { max-width: 1060px; padding: 48px clamp(24px, 5vw, 72px) 72px; margin-inline: auto; }
+.uf-account-page > h1 { margin-bottom: 48px; }
+.uf-account-page__section { display: grid; grid-template-columns: minmax(180px, .8fr) minmax(0, 1.3fr); gap: clamp(32px, 5vw, 72px); }
+.uf-account-page__section h2 { font-size: 22px; }
+.uf-account-page__section-title { min-width: 0; }
+.uf-account-email { margin: 24px 0 0; }
+.uf-account-email dt { color: var(--color-muted); font-size: 14px; }
+.uf-account-email dd { margin: 4px 0 0; overflow-wrap: anywhere; font-weight: 600; }
+.uf-account-page__access { margin-top: 48px; padding-top: 40px; border-top: 1px solid var(--color-line-soft); }
+.uf-account-page__access .uf-account-stack { gap: 8px; }
+.uf-account-page__access .uf-account-signout { margin-top: 16px; }
+.uf-account-saved { color: var(--color-success); font-size: 14px; }
+.uf-account-signout { display: grid; gap: 12px; }
+.uf-account-signout__button { justify-self: start; }
+.uf-account-control { display: grid; gap: 4px; min-width: 0; margin-top: auto; padding-top: 24px; }
+.uf-account-control .uf-account-signout__button { justify-content: flex-start; width: 100%; padding-inline: 12px; }
+.uf-account-control .uf-account-signout__button .uf-button__content { gap: 12px; }
+.uf-public-header__action:has(.uf-button + .uf-button) { align-items: center; gap: 12px; }
+@media (min-width: 960px) { .uf-public-header__action:has(.uf-button + .uf-button) { display: flex; } }
+@media (max-width: 959px) {
+  .uf-auth__main { width: min(820px, calc(100% - 64px)); gap: 40px; }
+  .uf-auth__identity > p { font-size: 32px; }
+  .uf-auth-book { width: calc(100% + 20px); margin-left: -12px; }
+}
+@media (max-width: 719px) {
+  .uf-auth__header, .uf-auth__footer { width: calc(100% - 40px); }
+  .uf-auth__header { min-height: 76px; gap: 12px; }
+  .uf-auth__header > .uf-text-link { font-size: 14px; }
+  .uf-auth__main { display: block; width: min(440px, calc(100% - 40px)); margin-top: 32px; margin-bottom: 40px; }
+  .uf-auth__identity { display: none; }
+  .uf-auth__heading { margin-bottom: 28px; }
+  .uf-auth__footer { flex-wrap: wrap; gap: 12px; padding-block: 12px; }
+  .uf-auth__footer > div { gap: 20px; }
+  .uf-account-page { padding: 32px 24px 48px; }
+  .uf-account-page > h1 { margin-bottom: 32px; }
+  .uf-account-page__section { grid-template-columns: minmax(0, 1fr); gap: 28px; }
+  .uf-account-page__access { margin-top: 36px; padding-top: 28px; }
+}
+@media (prefers-reduced-motion: reduce) { .uf-account-password__toggle { transition: none; } }

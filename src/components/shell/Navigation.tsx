@@ -4,7 +4,7 @@ import { LinkButton } from "@/components/ui";
 import { commonCopy } from "@/content/common";
 import { routes } from "@/lib/routes";
 
-export type ShellDestination = "explore" | "library" | "create" | "chat" | "learn";
+export type ShellDestination = "explore" | "library" | "create" | "chat" | "learn" | "account";
 
 interface NavigationProps {
   active?: ShellDestination;
