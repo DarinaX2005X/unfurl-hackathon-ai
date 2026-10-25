@@ -26,12 +26,13 @@ const envelopeSchema = z.object({
 });
 const recoverySchema = z.object({
   model: z.string(), provider: z.string(), content: z.string().nullable(), finishReason: z.string(),
+  receivedAt: z.iso.datetime(),
   failure: z.enum(["invalid_output", "refused"]).nullable(), rateCardDigest: z.string(),
   usage: z.object({ promptTokens: count, completionTokens: count, totalTokens: count, reasoningTokens: count.nullable(),
     cachedPromptTokens: count.nullable(), searchRequests: count, costUsd: z.string().nullable() }),
   annotations: z.array(z.object({ url: z.string().max(4096), title: z.string().max(1000), content: z.string().max(12000) })),
 });
-export interface PaidCompletion { content: string; evidence: ModelEvidence; annotations: { url: string; title: string; content: string }[] }
+export interface PaidCompletion { content: string; receivedAt: string; evidence: ModelEvidence; annotations: { url: string; title: string; content: string }[] }
 export interface CompletionOptions { schema?: JsonObject; schemaName?: string; search?: boolean; allowedDomains?: string[] }
 
 /** The transport never silently retries. Every new paid attempt needs its own durable reservation. */
@@ -74,13 +75,13 @@ export class OpenRouterModel implements ModelPort {
     };
     const requestDigest = jsonDigest({ body, purpose: request.purpose, instructionVersion: request.instructionVersion });
     const recovered = await this.dependencies.budget.recover(request.budget, requestDigest);
-    if (recovered) return this.replay(request, recovered.reservation, recovered.receipt, true);
     if (signal.aborted) throw new ProviderFailure("cancelled");
+    if (recovered) return this.replay(request, recovered.reservation, recovered.receipt, true);
     const remaining = Math.min(MAX_PROVIDER_DURATION_MS, request.deadlineAt - Date.now());
     if (remaining <= 0) throw new ProviderFailure("timeout");
     const deadline = AbortSignal.timeout(remaining);
     const combined = AbortSignal.any([signal, deadline]);
-    await this.dependencies.gate.assertAvailable(options.search ? "research_search" : options.schema ? "model_structured" : "model_text", { probe: request.budget.probe });
+    await this.dependencies.gate.assertAvailable(options.search ? "research_search" : request.purpose === "rubric_grading" ? "rubric" : options.schema ? "model_structured" : "model_text", { probe: request.budget.probe });
     const key = this.dependencies.apiKey();
     if (!key) throw new ProviderFailure("unavailable");
     const rateCard = await this.dependencies.rateCards.current(combined);
@@ -132,7 +133,7 @@ export class OpenRouterModel implements ModelPort {
         return parsed.success ? [{ url: parsed.data.url_citation.url, title: parsed.data.url_citation.title, content: parsed.data.url_citation.content ?? "" }] : [];
       }).slice(0, 5);
       const result = { model: data.model, provider: data.provider, content: choice.message.content,
-        finishReason: choice.finish_reason, failure, rateCardDigest: rateCard.digest, usage: { ...usage }, annotations };
+        receivedAt: new Date().toISOString(), finishReason: choice.finish_reason, failure, rateCardDigest: rateCard.digest, usage: { ...usage }, annotations };
       const receipt: ProviderResponseReceipt = { providerRequestId: data.id, responseDigest: digestBytes(raw),
         reportedCostUsd: usage.costUsd, usage: { ...usage }, result: result as JsonValue };
       let cost: string | null = null;
@@ -156,7 +157,7 @@ export class OpenRouterModel implements ModelPort {
     const data = result.data;
     if (data.failure) throw new ProviderFailure(data.failure);
     if (data.content === null || data.model !== MODEL_ID || data.provider !== "DigitalOcean") throw new ProviderFailure("invalid_output");
-    return { content: data.content, annotations: data.annotations, evidence: {
+    return { content: data.content, receivedAt: data.receivedAt, annotations: data.annotations, evidence: {
       operationId: request.operationId, reservationId: reserved.id, providerRequestId: receipt.providerRequestId,
       requestedModel: MODEL_ID, returnedModel: data.model, provider: PROVIDER_TAG, finishReason: data.finishReason,
       usage: data.usage, rateCardDigest: data.rateCardDigest, replayed,

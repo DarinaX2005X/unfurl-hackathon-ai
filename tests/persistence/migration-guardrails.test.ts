@@ -54,7 +54,9 @@ describe("migration static guardrails (live PostgreSQL proof still required)", (
 
   it("pins publication and learning authority to immutable versions and saved identities", () => {
     expect(sql).toContain("add column published_version_id uuid");
-    expect(sql).toContain("add column key_version integer not null default 1");
+    expect(sql).toContain("rename column key_version to token_key_version");
+    expect(sql).toContain("share_grant_token_key_version");
+    expect(sql).toContain("course_publication_pointer_iff_public");
     expect(sql).toContain("activity_session_task_unique unique (enrollment_id, task_id, task_version)");
     expect(sql).toContain("primary key (activity_session_id, input_revision)");
     expect(sql).toContain("unique (activity_session_id, client_action_id)");
@@ -66,5 +68,17 @@ describe("migration static guardrails (live PostgreSQL proof still required)", (
     expect(sql).toContain("feedback_acknowledgements");
     expect(sql).toContain("one_live_support");
     expect(sql).toContain("num_nonnulls(agent_turn_run_id, generation_run_id, evaluation_id, activity_action_id) = 1");
+  });
+
+  it("keeps research retrievals, passages and curriculum evidence immutable and private", () => {
+    expect(sql).toContain("create table unfurl.research_source_documents");
+    expect(sql).toContain("create table unfurl.research_passages");
+    expect(sql).toContain("create table unfurl.research_searches");
+    expect(sql).toContain("create table unfurl.source_claims");
+    expect(sql).toContain("create table unfurl.curriculum_revision_evidence");
+    expect(sql).toContain("create table unfurl.course_language_revision_intents");
+    expect(sql).toContain("one_initial_generation_per_approval");
+    expect(sql).toContain("one_staging_version_per_approval");
+    expect(sql).not.toContain("unique (content_digest)");
   });
 });

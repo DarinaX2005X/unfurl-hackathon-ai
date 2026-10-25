@@ -1,8 +1,8 @@
 "use client";
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import type { ApplicationPort } from "@/application/ports";
-import { localApplication } from "@/application/local-adapter";
+import type { CatalogPort } from "@/application/catalog-port";
+import { httpCatalog } from "@/application/http-catalog";
 import { AppShell } from "@/components/shell";
 import { Button, LinkButton, Notice } from "@/components/ui";
 import { routes } from "@/lib/routes";
@@ -13,7 +13,7 @@ import { CourseCard } from "./CourseCard";
 import { EmptyShelfArtwork } from "./EmptyShelfArtwork";
 import "./catalog.css";
 
-export function CatalogPage({ services = localApplication }: { services?: ApplicationPort }) {
+export function CatalogPage({ services = httpCatalog }: { services?: CatalogPort }) {
   const params = useSearchParams(), router = useRouter();
   const { q = "", contentLanguage = "" } = readCourseQuery(params);
   const controller = useMemo(() => new CatalogController(services), [services]);

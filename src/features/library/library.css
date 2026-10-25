@@ -29,6 +29,16 @@
 .uf-learning-course__action { display: flex; align-items: center; flex-wrap: wrap; gap: 12px 20px; }
 .uf-learning-course__action > p { font-size: 14px; color: var(--color-muted); }
 .uf-learning-course__action .uf-button:focus-visible { outline-offset: 5px; }
+.uf-library-account { min-height: 520px; max-width: 660px; margin-inline: auto; display: flex; flex-direction: column; align-items: flex-start; justify-content: center; }
+.uf-library-account h1 { font-size: clamp(32px, 4vw, 46px); letter-spacing: -.045em; }.uf-library-account > p { margin: 16px 0 24px; color: var(--color-muted); }.uf-library-account > div { display: flex; flex-wrap: wrap; gap: 10px; }
+.uf-library-context { margin-bottom: 7px !important; color: var(--color-action-hover) !important; font-size: 13px; font-weight: 800; letter-spacing: .06em; text-transform: uppercase; }
+.uf-owned-courses { display: grid; gap: 18px; }
+.uf-owned-course { display: grid; grid-template-columns: minmax(190px, .6fr) minmax(0, 1.5fr); align-items: center; gap: 24px; padding: 20px 28px 20px 12px; border-radius: 28px; background: var(--color-surface-inset); }
+.uf-owned-course__art { min-width: 0; }.uf-owned-course__body { min-width: 0; }.uf-owned-course__body h3 { font-size: clamp(23px, 2vw, 29px); overflow-wrap: anywhere; }.uf-owned-course__body > p:not(.uf-library-context, .uf-owned-course__note) { margin-top: 10px; color: var(--color-muted); }
+.uf-owned-course__meta { display: flex; flex-wrap: wrap; gap: 8px 18px; margin: 18px 0; color: var(--color-muted); font-size: 14px; text-transform: capitalize; }
+.uf-owned-course__note { color: var(--color-muted); font-size: 14px; }
+.uf-draft-book { position: relative; width: min(100%, 230px); aspect-ratio: 1.45; margin-inline: auto; transform: rotate(-4deg); border: 1px solid #c9c1b2; border-radius: 6px 19px 19px 6px; background: #f4eddf; box-shadow: 8px 8px 0 #d2cabb, 0 18px 28px rgb(37 39 43 / 9%); }
+.uf-draft-book::before { content: ""; position: absolute; inset: 11% 12% 12% 18%; border-radius: 2px 12px 12px 2px; background: #fffefa; }.uf-draft-book span { position: absolute; left: 28%; right: 22%; height: 3px; z-index: 1; border-radius: 3px; background: #d8d1c3; }.uf-draft-book span:first-child { top: 40%; }.uf-draft-book span:nth-child(2) { top: 55%; }.uf-draft-book i { position: absolute; left: 13%; top: 8%; bottom: 9%; width: 2px; background: #b9afa0; }
 @media (hover: hover) and (pointer: fine) {
   .uf-library-views a:hover::before { opacity: 1; transform: scale(1); }
   .uf-learning-course:has(.uf-button:hover) .uf-course-art__cover { transform: translate(-9px, -4px) skewY(-4deg); }
@@ -50,6 +60,7 @@
   .uf-learning-course__art { width: min(80%, 260px); margin-inline: auto; }
   .uf-learning-course__body h3 { font-size: 25px; }
   .uf-learning-course__facts { margin-bottom: 24px; }
+  .uf-owned-course { grid-template-columns: 1fr; padding: 24px; }.uf-owned-course__art { width: min(78%, 250px); margin-inline: auto; }
 }
 @media (prefers-reduced-motion: reduce) {
   .uf-library-views a, .uf-library-views a::before { transition: none; }

@@ -8,6 +8,7 @@ import {
 import { getMechanicManifest } from "@/domain/mechanic-manifest";
 import { RubricRequestSchema, type GradeDecision } from "@/server/evaluation/contracts";
 import { SourceInvestigationConfigSchema } from "@/domain/mechanic-families/v2/investigation";
+import { SourceInvestigationPrivateSchema } from "@/server/evaluation/investigation";
 import {
   MechanicRuntimeCapabilitiesSchema, PreparedTaskCandidateSchema, isAuthoritativeTaskValidationReceipt,
   type PreparedTaskCandidate, type RequiredTaskCheck, type MechanicRuntimeCapabilities,
@@ -17,6 +18,7 @@ import { getAssessmentDimensionIds, getCapabilityCatalogDigest, mechanicRuntimeB
 import { getServerMechanic, type ServerMechanicHandle } from "./registry";
 import { inspectFamilyCandidate } from "./family-checks";
 import { canonicalTaskJson, taskDigest } from "./digest";
+import { verifyAlternativeSpaceEvidence } from "./alternative-space";
 
 export class TaskCandidateError extends Error {
   constructor(readonly status: "invalid" | "unsupported", message: string) { super(message); this.name = "TaskCandidateError"; }
@@ -90,7 +92,7 @@ function verifyCases(candidate: PreparedTaskCandidate, evidence: TaskValidationE
   const handle = getServerMechanic(candidate.task.mechanicId, candidate.task.mechanicVersion)!;
   const dimensions = getAssessmentDimensionIds(candidate.task, candidate.privateTask.evaluatorData);
   const cases = evidence.filter((item) => item.kind === "response_case");
-  if (!(["valid", "alternative", "invalid"] as const).every((category) => cases.some((item) => item.category === category))) return false;
+  if (!(["valid", "invalid"] as const).every((category) => cases.some((item) => item.category === category))) return false;
   if (new Set(cases.map((item) => item.caseId)).size !== cases.length || cases.some((item) => !receipt.testEvidenceRefs.includes(item.caseId))) return false;
   const valid = cases.filter((item) => item.category !== "invalid");
   if (new Set(valid.map((item) => canonicalTaskJson(item.response))).size !== valid.length) return false;
@@ -99,11 +101,14 @@ function verifyCases(candidate: PreparedTaskCandidate, evidence: TaskValidationE
     try { validForm = handle.descriptor.validateSubmission(candidate.task.config, handle.parseResponse(item.response)).length === 0; } catch { /* malformed case is allowed only as an explicitly invalid test */ }
     if (item.category === "invalid") {
       if (item.rejectedAsInvalid) { if (validForm || item.decision !== null) return false; }
-      else if (!validForm || item.decision?.status !== "evaluated" || item.decision.outcome === "correct") return false;
+      else if (!validForm || item.decision?.status !== "evaluated" || item.decision.outcome === "correct" ||
+        item.decision.dimensions.length === 0 || item.decision.dimensions.every((dimension) => dimension.status === "met")) return false;
     } else if (!validForm || item.rejectedAsInvalid || !item.decision || !hasActualSuccessDimensions(item.decision, dimensions)) return false;
     if (!item.rejectedAsInvalid && handle.descriptor.requirements.includes("model") && item.modelCallId === null) return false;
     if (!item.rejectedAsInvalid && handle.descriptor.requirements.includes("activity") && item.activityEvidenceRef === null) return false;
   }
+  if (!cases.some((item) => item.category === "alternative") && !evidence.some((item) => item.kind === "alternative_space" &&
+    verifyAlternativeSpaceEvidence(candidate, item, valid.map((test) => test.response), cases))) return false;
   return true;
 }
 
@@ -117,7 +122,8 @@ function verifyResearch(candidate: PreparedTaskCandidate, evidence: TaskValidati
   if (candidate.privateTask.sourceClaimIds.some((id) => !claims.some((claim) => claim.claimId === id))) return false;
   if (candidate.task.mechanicId === "source_investigation") {
     const config = SourceInvestigationConfigSchema.parse(candidate.task.config);
-    return config.sources.every((source) => sources.some((stored) => canonicalTaskJson(stored) === canonicalTaskJson(source)));
+    const privateSources = SourceInvestigationPrivateSchema.parse(candidate.privateTask.evaluatorData).sources;
+    return [...config.sources, ...privateSources].every((source) => sources.some((stored) => canonicalTaskJson(stored) === canonicalTaskJson(source)));
   }
   return true;
 }
@@ -150,6 +156,11 @@ export function validateTaskReadiness(value: unknown, context: TaskReadinessCont
   let candidate: PreparedTaskCandidate;
   try {
     const submitted = PreparedTaskCandidateSchema.parse(value);
+    const raw = value as PreparedTaskCandidate;
+    // Normalization belongs to preparation. Even a later whitespace-only edit invalidates its receipt.
+    const rawDigest = taskDigest({ task: raw.task, privateTask: raw.privateTask,
+      approvalDigest: raw.approvalDigest, capabilityCatalogDigest: raw.capabilityCatalogDigest });
+    if (rawDigest !== submitted.candidateDigest) return { status: "unreviewed", reasons: ["Authored fields changed after candidate preparation"] };
     candidate = prepareTaskCandidate({ task: submitted.task, privateTask: submitted.privateTask }, { approvalDigest: submitted.approvalDigest });
     if (submitted.candidateDigest !== candidate.candidateDigest || submitted.capabilityCatalogDigest !== candidate.capabilityCatalogDigest ||
       canonicalTaskJson(submitted.requiredChecks) !== canonicalTaskJson(candidate.requiredChecks)) {

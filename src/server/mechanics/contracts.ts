@@ -4,6 +4,7 @@ import { DigestSchema, IdSchema, IsoDateTimeSchema, JsonValueSchema } from "@/do
 import { TaskPrivateCandidateSchema, TaskPublicSchema } from "@/domain/mechanics";
 import { GradeDecisionSchema } from "@/server/evaluation/contracts";
 import { InvestigationSourceSchema } from "@/domain/mechanic-families/v2/investigation";
+import { EdgeSchema, FiniteValuesSchema, LocalIdSchema, QuantitySchema } from "@/domain/mechanic-families/v2/shared";
 
 export const REQUIRED_MECHANIC_MODEL = "moonshotai/kimi-k2.6" as const;
 const actionKind = z.enum(["run", "prediction.commit", "experiment.query", "intervention.apply", "dialogue.turn"]);
@@ -29,8 +30,32 @@ export const PreparedTaskCandidateSchema = z.object({
 }).strict();
 export type PreparedTaskCandidate = z.infer<typeof PreparedTaskCandidateSchema>;
 
+export const AlternativeSpaceProofSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("exact_state_trace"), states: z.array(FiniteValuesSchema).min(1).max(20) }).strict(),
+  z.object({ kind: z.literal("single_prediction_interval"), quantity: QuantitySchema }).strict(),
+  z.object({ kind: z.literal("unique_procedure_order"), stepIds: z.array(LocalIdSchema).min(1).max(20) }).strict(),
+  z.object({ kind: z.literal("exact_metric_quantity"), quantity: QuantitySchema }).strict(),
+  z.object({ kind: z.literal("single_confusion_matrix"), matrix: z.object({
+    tp: z.number().int().nonnegative(), fp: z.number().int().nonnegative(), tn: z.number().int().nonnegative(), fn: z.number().int().nonnegative(),
+  }).strict() }).strict(),
+  z.object({ kind: z.literal("single_accepted_graph"), canonicalEdges: z.array(EdgeSchema).min(1).max(48) }).strict(),
+]);
+export type AlternativeSpaceProof = z.infer<typeof AlternativeSpaceProofSchema>;
+export const AlternativeSpaceEvidenceSchema = z.object({
+  kind: z.literal("alternative_space"), candidateDigest: DigestSchema, approvalDigest: DigestSchema, capabilityCatalogDigest: DigestSchema,
+  analysis: z.discriminatedUnion("method", [
+    z.object({ method: z.literal("deterministic"), proof: AlternativeSpaceProofSchema }).strict(),
+    z.object({ method: z.literal("semantic"), modelId: z.literal(REQUIRED_MECHANIC_MODEL), callId: IdSchema,
+      rationale: z.string().trim().min(1).max(4000), decision: GradeDecisionSchema,
+      trapCaseIds: z.array(IdSchema).min(2).max(24).refine((ids) => new Set(ids).size === ids.length, "Trap cases must be distinct"),
+    }).strict(),
+  ]),
+}).strict();
+export type AlternativeSpaceEvidence = z.infer<typeof AlternativeSpaceEvidenceSchema>;
+
 /** Evidence is loaded with its receipt from the validation store, never from authored task JSON. */
 export const TaskValidationEvidenceSchema = z.discriminatedUnion("kind", [
+  AlternativeSpaceEvidenceSchema,
   z.object({ kind: z.literal("pure"), validatorVersion: z.literal("mechanic-readiness-v1") }).strict(),
   z.object({
     kind: z.literal("model_review"), callId: IdSchema, modelId: z.literal(REQUIRED_MECHANIC_MODEL),

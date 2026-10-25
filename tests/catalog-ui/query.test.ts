@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { languageName, readCourseQuery, readLibraryView, studyTime, updateCollectionQuery } from "../../src/features/catalog/query";
+import { languageName, readCourseQuery, readLibraryView, resetLibraryFilters, showAllLibraryCourses, studyTime, updateCollectionQuery } from "../../src/features/catalog/query";
 
 describe("collection URL state", () => {
   it("restores title/summary query and content language independently of the interface", () => {
@@ -12,8 +12,13 @@ describe("collection URL state", () => {
     expect(readCourseQuery(new URLSearchParams({ q: "a".repeat(240) })).q).toHaveLength(200);
   });
   it("resets only query/filter/pagination while preserving the selected view and unrelated state", () => {
-    const reset = updateCollectionQuery("q=algebra&contentLanguage=fr&cursor=next&view=courses&context=shared", { q: "", contentLanguage: "" });
+    const reset = resetLibraryFilters("q=algebra&contentLanguage=fr&cursor=next&view=courses&context=shared");
     expect(new URLSearchParams(reset)).toEqual(new URLSearchParams("view=courses&context=shared"));
+  });
+  it("leaves a current empty tab by clearing filters, pagination and the selected view", () => {
+    const reset = showAllLibraryCourses("q=algebra&contentLanguage=fr&cursor=next&view=in_progress&context=shared");
+    expect(new URLSearchParams(reset)).toEqual(new URLSearchParams("context=shared"));
+    expect(readLibraryView(new URLSearchParams(reset))).toBe("all");
   });
   it("round-trips supported views and gives an unknown view the safe all default", () => {
     for (const view of ["courses", "in_progress"] as const) {

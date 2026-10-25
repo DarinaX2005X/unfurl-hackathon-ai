@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
-import type { CourseQuery, ServiceResult } from "../../src/application/ports";
+import type { ServiceResult } from "../../src/application/ports";
+import type { CatalogQuery } from "../../src/domain/catalog";
 import type { CourseSummary, Page } from "../../src/domain";
 import { CatalogController } from "../../src/features/catalog/catalog-controller";
-import { localApplication } from "../../src/application/local-adapter";
 import { ids } from "../domain/fixtures";
 import { course, deferred, failure, page, service } from "./fixtures";
 
 describe("catalog request lifecycle", () => {
-  it("uses the actual empty local catalog without inventing records", async () => {
-    const controller = new CatalogController(localApplication);
+  it("renders an authoritative empty catalog without inventing records", async () => {
+    const controller = new CatalogController(service(async () => page([])));
     await controller.search({});
     expect(controller.getSnapshot()).toMatchObject({ status: "ready", items: [], nextCursor: null, error: null });
   });
@@ -16,7 +16,7 @@ describe("catalog request lifecycle", () => {
   it("aborts the previous search and ignores its result even if the service does not honor abort", async () => {
     const oldResponse = deferred<ServiceResult<Page<CourseSummary>>>();
     const latestResponse = deferred<ServiceResult<Page<CourseSummary>>>();
-    const requests: Array<{ query: CourseQuery; signal?: AbortSignal }> = [];
+    const requests: Array<{ query: CatalogQuery; signal?: AbortSignal }> = [];
     const controller = new CatalogController(service((query, signal) => {
       requests.push({ query, ...(signal ? { signal } : {}) });
       return query.q === "old" ? oldResponse.promise : latestResponse.promise;
@@ -60,7 +60,7 @@ describe("catalog request lifecycle", () => {
     expect(controller.getSnapshot()).toMatchObject({ status: "ready", items: [first], nextCursor: "page-two", loadingMore: false });
     expect(controller.getSnapshot().pageError).toBeTruthy();
     await controller.retry();
-    expect(listPublic.mock.calls[1]![0]).toEqual({ q: "evidence", contentLanguage: "en", limit: 12, cursor: "page-two" });
+    expect(listPublic.mock.calls[1]![0]).toEqual({ q: "evidence", contentLanguage: "en", limit: 24, cursor: "page-two" });
     expect(listPublic.mock.calls[2]![0]).toEqual(listPublic.mock.calls[1]![0]);
     expect(controller.getSnapshot()).toMatchObject({ items: [first, second], nextCursor: null, pageError: null });
   });

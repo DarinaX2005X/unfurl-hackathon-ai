@@ -36,9 +36,9 @@ try {
     application_name: "unfurl-learning-schema-proof" });
   await client.connect();
   const receipts = await client.query("SELECT version FROM unfurl_meta.schema_migrations WHERE version = ANY($1::text[])", [
-    ["202610250005_catalog_and_learning.sql", "202610250006_learning_traversal.sql"],
+    ["202610250005_catalog_and_learning.sql", "202610250006_learning_traversal.sql", "202610250007_share_contract_repairs.sql", "202610250008_research_provenance.sql"],
   ]);
-  check("learning_migration_receipts", receipts.rowCount === 2);
+  check("learning_migration_receipts", receipts.rowCount === 4);
 
   phase = "fixture_graph";
   await client.query("BEGIN");
@@ -50,20 +50,70 @@ try {
     "conversation", "branch", "message", "course", "draft", "approval", "turnRun", "generationRun", "version", "validation",
     "lesson", "outcome", "module", "task", "taskValidation", "enrollment", "activity", "action", "attempt", "evaluation",
     "evidence", "award", "adjustment", "review", "support", "jobEvaluation", "jobAction",
+    "source", "passage", "search", "claim", "languageIntent", "searchOperation", "badSearchOperation",
   ].map((name) => [name, randomUUID()]));
 
   phase = "course_graph";
   await client.query("INSERT INTO unfurl.conversations(id,owner_id,title,active_branch_id) VALUES($1,$2,'Learning rollback proof',$3)", [ids.conversation, owner, ids.branch]);
   await client.query("INSERT INTO unfurl.conversation_branches(id,conversation_id) VALUES($1,$2)", [ids.branch, ids.conversation]);
   await client.query("INSERT INTO unfurl.messages(id,conversation_id,branch_id,role,status,parts,client_request_id) VALUES($1,$2,$3,'user','complete','[]',$4)", [ids.message, ids.conversation, ids.branch, randomUUID()]);
+  await client.query(`INSERT INTO unfurl.agent_turn_runs
+    (id,owner_id,conversation_id,branch_id,input_message_id,status)
+    VALUES($1,$2,$3,$4,$5,'awaiting_user')`, [ids.turnRun, owner, ids.conversation, ids.branch, ids.message]);
   await client.query("INSERT INTO unfurl.courses(id,owner_id,slug,title,summary,content_language,cover) VALUES($1,$2,$3,'Learning proof','Rollback-only course','en',$4)", [ids.course, owner, `learning-proof-${randomUUID()}`, { motifId: "proof", alt: "Proof cover" }]);
   await client.query("INSERT INTO unfurl.curriculum_drafts(id,course_id,conversation_id,revision,document) VALUES($1,$2,$3,1,'{}')", [ids.draft, ids.course, ids.conversation]);
   await client.query("INSERT INTO unfurl.curriculum_revisions(draft_id,revision,content_digest,document) VALUES($1,1,$2,'{}')", [ids.draft, digest]);
+  const budgetId = (await client.query("SELECT id FROM unfurl.ai_budgets")).rows[0]?.id;
+  if (!budgetId) throw new Error("ai_budget_required");
+  await client.query(`INSERT INTO unfurl.ai_provider_operations
+    (id,budget_id,logical_operation_id,attempt,request_digest,purpose,state,reserved_micro_usd,model_id,provider_tag,rate_card_digest,rate_card,dispatched_at,provider_request_id)
+    VALUES($1,$2,$3,1,$4,'web_search','unknown',1000,'moonshotai/kimi-k2.6','digitalocean',$4,'{}',now(),$5)`,
+  [ids.searchOperation, budgetId, randomUUID(), digest, `research-proof-${randomUUID()}`]);
+  await client.query(`INSERT INTO unfurl.ai_provider_operations
+    (id,budget_id,logical_operation_id,attempt,request_digest,purpose,state,reserved_micro_usd,model_id,provider_tag,rate_card_digest,rate_card,dispatched_at,provider_request_id)
+    VALUES($1,$2,$3,1,$4,'curriculum','unknown',1000,'moonshotai/kimi-k2.6','digitalocean',$4,'{}',now(),$5)`,
+  [ids.badSearchOperation, budgetId, randomUUID(), digest, `research-proof-${randomUUID()}`]);
+  await client.query(`INSERT INTO unfurl.research_source_documents
+    (id,requested_url,final_url,title,retrieved_at,media_type,raw_digest,extractor_version,content_digest,blocks,extraction_state)
+    VALUES($1,'https://example.com/requested','https://example.com/final','Research proof',now(),'text/html',$2,'html-v1',$2,$3,'complete')`,
+  [ids.source, digest, JSON.stringify([{ id: "main", text: "Held-out evidence checks generalization." }])]);
+  await client.query(`INSERT INTO unfurl.research_passages
+    (id,source_id,block_id,start_utf16,end_utf16,quote)
+    VALUES($1,$2,'main',0,18,'Held-out evidence')`, [ids.passage, ids.source]);
+  await client.query(`INSERT INTO unfurl.research_searches
+    (id,operation_id,requested_query,executed_query,content_language,retrieved_at,hits,limitations,request_digest,provider_request_id)
+    VALUES($1,$2,'held-out evaluation','held-out evaluation','en',now(),$3,'[]',$4,$5)`,
+  [ids.search, ids.searchOperation, JSON.stringify([{ id: randomUUID(), url: "https://example.com/final", title: "Research proof", snippet: "Held-out evidence", publishedAt: null }]), digest, `research-result-${randomUUID()}`]);
+  await rejected("research_search_requires_search_purpose", `INSERT INTO unfurl.research_searches
+    (id,operation_id,requested_query,content_language,retrieved_at,hits,limitations,request_digest,provider_request_id)
+    VALUES($1,$2,'bad purpose','en',now(),'[]','[]',$3,$4)`,
+  [randomUUID(), ids.badSearchOperation, digest, `research-result-${randomUUID()}`], ["23514"]);
+  await client.query(`INSERT INTO unfurl.source_claims
+    (id,owner_id,text,passage_ids,outcome_ids,scope,support,unresolved_conflicts)
+    VALUES($1,$2,'Held-out evidence is distinct from fit.',$3,$4,$5,'direct','[]')`,
+  [ids.claim, owner, [ids.passage], [ids.outcome], { version: "research-v1", topic: "evaluation" }]);
+  await rejected("source_claim_requires_existing_passages", `INSERT INTO unfurl.source_claims
+    (id,owner_id,text,passage_ids,scope,support)
+    VALUES($1,$2,'Missing passage',$3,'{}','direct')`, [randomUUID(), owner, [randomUUID()]], ["23503"]);
+  await client.query(`INSERT INTO unfurl.curriculum_revision_evidence(draft_id,revision,document)
+    VALUES($1,1,$2)`, [ids.draft, {
+    claimIds: [ids.claim], rationale: "Evidence is sufficient for the planned distinction.",
+    outcomeEvidence: [{ outcomeId: ids.outcome, claimIds: [ids.claim], rationale: "Direct support" }],
+    moduleEstimates: [{ moduleId: ids.module, minMinutes: 8, maxMinutes: 12, assumptions: ["One focused attempt"] }],
+    questionAnswers: [],
+  }]);
+  await client.query(`INSERT INTO unfurl.course_language_revision_intents
+    (run_id,owner_id,course_id,expected_course_revision,draft_id,expected_draft_revision,target_language)
+    VALUES($1,$2,$3,1,$4,1,'ru')`, [ids.turnRun, owner, ids.course, ids.draft]);
   await client.query("INSERT INTO unfurl.curriculum_approvals(id,draft_id,draft_revision,content_digest,approved_by) VALUES($1,$2,1,$3,$4)", [ids.approval, ids.draft, digest, owner]);
   await client.query(`INSERT INTO unfurl.generation_runs
     (id,owner_id,course_id,conversation_id,branch_id,input_message_id,source_draft_revision,approval_id,phase,status)
     VALUES($1,$2,$3,$4,$5,$6,1,$7,'validating','running')`,
   [ids.generationRun, owner, ids.course, ids.conversation, ids.branch, ids.message, ids.approval]);
+  await rejected("one_initial_generation_per_approval", `INSERT INTO unfurl.generation_runs
+    (id,owner_id,course_id,conversation_id,branch_id,input_message_id,source_draft_revision,approval_id,phase,status)
+    VALUES($1,$2,$3,$4,$5,$6,1,$7,'validating','queued')`,
+  [randomUUID(), owner, ids.course, ids.conversation, ids.branch, ids.message, ids.approval], ["23505"]);
   const outcome = [{ id: ids.outcome, title: "Outcome", demonstration: "Show the distinction", prerequisiteOutcomeIds: [], requirement: "core" }];
   const modules = [{ id: ids.module, title: "Module", summary: "One module", outcomeIds: [ids.outcome], prerequisiteModuleIds: [], estimatedStudyMinutes: 10 }];
   await client.query(`INSERT INTO unfurl.course_versions
@@ -87,6 +137,13 @@ try {
   await client.query("SET CONSTRAINTS ALL IMMEDIATE");
   check("ready_published_version_graph", (await client.query("SELECT published_version_id=current_ready_version_id AS ok FROM unfurl.courses WHERE id=$1", [ids.course])).rows[0]?.ok === true);
   await rejected("public_course_requires_pointer", "UPDATE unfurl.courses SET published_version_id=null WHERE id=$1", [ids.course], ["23514"]);
+  await rejected("nonpublic_course_forbids_pointer", "UPDATE unfurl.courses SET visibility='unlisted' WHERE id=$1", [ids.course], ["23514"]);
+  await client.query(`INSERT INTO unfurl.share_grants
+    (id,course_id,course_version_id,created_by,token_hash,token_key_version)
+    VALUES($1,$2,$3,$4,$5,'1')`, [randomUUID(), ids.course, ids.version, owner, "d".repeat(64)]);
+  await rejected("share_key_version_is_bounded_ascii", `INSERT INTO unfurl.share_grants
+    (id,course_id,course_version_id,created_by,token_hash,token_key_version)
+    VALUES($1,$2,$3,$4,$5,'bad key')`, [randomUUID(), ids.course, ids.version, owner, "e".repeat(64)], ["23514"]);
 
   phase = "activity_graph";
   await client.query(`INSERT INTO unfurl.enrollments
@@ -162,11 +219,18 @@ try {
     ["evaluation_revision_immutable", "evaluation_revisions", "feedback", { changed: true }],
     ["xp_adjustment_immutable", "xp_award_adjustments", "delta", -10],
     ["traversal_immutable", "enrollment_lesson_traversal", "completed_at", new Date().toISOString()],
-  ]) await rejected(name, `UPDATE unfurl.${table} SET ${column}=$2 WHERE ${table === "activity_inputs" ? "activity_session_id" : table === "evaluation_revisions" ? "evaluation_id" : table === "xp_award_adjustments" ? "id" : "enrollment_id"}=$1`,
-    [table === "activity_inputs" ? ids.activity : table === "evaluation_revisions" ? ids.evaluation : table === "xp_award_adjustments" ? ids.adjustment : ids.enrollment, value], ["23514"]);
+    ["research_source_immutable", "research_source_documents", "title", "Changed"],
+    ["source_claim_immutable", "source_claims", "text", "Changed"],
+    ["curriculum_evidence_immutable", "curriculum_revision_evidence", "document", { changed: true }],
+  ]) await rejected(name, `UPDATE unfurl.${table} SET ${column}=$2 WHERE ${table === "activity_inputs" ? "activity_session_id" : table === "evaluation_revisions" ? "evaluation_id"
+    : table === "xp_award_adjustments" || table === "research_source_documents" || table === "source_claims" ? "id"
+      : table === "curriculum_revision_evidence" ? "draft_id" : "enrollment_id"}=$1`,
+    [table === "activity_inputs" ? ids.activity : table === "evaluation_revisions" ? ids.evaluation : table === "xp_award_adjustments" ? ids.adjustment
+      : table === "research_source_documents" ? ids.source : table === "source_claims" ? ids.claim : table === "curriculum_revision_evidence" ? ids.draft : ids.enrollment, value], ["23514"]);
 
   const protectedTables = ["activity_inputs", "activity_actions", "evaluation_revisions", "xp_award_adjustments", "assessment_review_requests",
-    "feedback_acknowledgements", "support_offers", "support_offer_tasks", "enrollment_lesson_traversal"];
+    "feedback_acknowledgements", "support_offers", "support_offer_tasks", "enrollment_lesson_traversal", "research_source_documents",
+    "research_passages", "research_searches", "source_claims", "curriculum_revision_evidence", "course_language_revision_intents"];
   const protection = await client.query(`SELECT count(*)::int AS count FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
     WHERE n.nspname='unfurl' AND c.relname=ANY($1::text[]) AND c.relrowsecurity AND c.relforcerowsecurity`, [protectedTables]);
   check("learning_tables_force_rls", protection.rows[0]?.count === protectedTables.length);

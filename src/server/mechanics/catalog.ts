@@ -24,7 +24,7 @@ export function getMechanicAuthoringContract(id: string, version: number) {
 
 let catalogDigest: string | undefined;
 export function getCapabilityCatalogDigest(): string {
-  return catalogDigest ??= taskDigest({ catalogVersion: 1, validatorVersion: "mechanic-readiness-v1",
+  return catalogDigest ??= taskDigest({ catalogVersion: 1, validatorVersion: "mechanic-readiness-v1", alternativeSpaceProofVersion: 1,
     mechanics: productionMechanicManifest.map((metadata) => ({ metadata,
       authoring: getMechanicAuthoringContract(metadata.id, metadata.version) })),
   });

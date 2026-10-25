@@ -64,6 +64,26 @@ const assessmentDimensionId = z.string().min(1).max(128).regex(/^[A-Za-z0-9][A-Z
   .refine((id) => !["__proto__", "prototype", "constructor"].includes(id), "Reserved identifier");
 const uniqueIds = <T extends z.ZodType<string>>(schema: T, max: number) => z.array(schema).max(max)
   .refine((ids) => new Set(ids).size === ids.length, "Identifiers must be unique");
+/** Bound untrusted private JSON before Zod's recursive parser visits it. */
+function boundedPrivateJson(value: unknown): boolean {
+  const ancestors = new WeakSet<object>();
+  let nodes = 0;
+  const visit = (item: unknown, depth: number): boolean => {
+    if (++nodes > 10_000 || depth > 32) return false;
+    if (item === null || typeof item === "boolean") return true;
+    if (typeof item === "number") return Number.isFinite(item);
+    if (typeof item === "string") return item.length <= 128 * 1024;
+    if (typeof item !== "object" || ancestors.has(item)) return false;
+    if (!Array.isArray(item) && Object.getPrototypeOf(item) !== Object.prototype && Object.getPrototypeOf(item) !== null) return false;
+    ancestors.add(item);
+    const descriptors = Object.getOwnPropertyDescriptors(item);
+    const result = Object.values(descriptors).every((descriptor) => "value" in descriptor && visit(descriptor.value, depth + 1));
+    ancestors.delete(item);
+    return result;
+  };
+  try { return visit(value, 0) && new TextEncoder().encode(JSON.stringify(value)).byteLength <= 128 * 1024; }
+  catch { return false; }
+}
 export const TaskAssessmentSchema = z.object({
   evidenceGroupId: IdSchema,
   role: z.enum(["required", "practice", "diagnostic", "challenge"]),
@@ -76,12 +96,13 @@ export const TaskAssessmentSchema = z.object({
       "Canonical criteria must be unique within an outcome"),
   }).strict()).min(1).max(24).refine((items) => new Set(items.map((item) => item.outcomeId)).size === items.length,
     "Assessment outcomes must be unique"),
-}).strict();
+}).strict().refine(boundedPrivateJson, "Assessment exceeds the private JSON bounds");
 export type TaskAssessment = z.infer<typeof TaskAssessmentSchema>;
 
 /** The family-specific private schema is enforced by the server registry after this envelope. */
-export const TaskEvaluatorDataSchema = JsonObjectSchema.refine((data) =>
-  new TextEncoder().encode(JSON.stringify(data)).byteLength <= 128 * 1024, "Private evaluator data exceeds 128 KiB");
+export const TaskEvaluatorDataSchema = z.unknown().superRefine((data, context) => {
+  if (!boundedPrivateJson(data)) context.addIssue({ code: "custom", message: "Private evaluator data must be bounded finite JSON within 128 KiB" });
+}).pipe(JsonObjectSchema);
 export const TaskPrivateSchema = z.object({
   taskId: IdSchema, taskVersion: z.number().int().positive(), evaluationSpec: EvaluationSpecSchema,
   evaluatorData: TaskEvaluatorDataSchema, assessment: TaskAssessmentSchema,
@@ -109,6 +130,9 @@ const privateKeys = new Set([
   "evaluationSpec", "secretConfig", "expectedAnswer", "referenceAnswer", "answerKey",
   "privateResearch", "sourceClaimIds", "validationReceiptId",
   "evaluatorData", "assessment", "hints", "workedExample", "privateData",
+  "rubric", "basisRubric", "explanationRubric", "acceptedEvidence", "acceptedGraphs",
+  "reviewedClaim", "hiddenHypothesisId", "referenceQuantity", "requiredFinalFacts",
+  "acceptedLocationSets", "oracle", "hiddenFacts", "disclosureRules", "scenarioConstraints", "permittedOutcomes",
 ]);
 
 function assertPublicConfig(value: JsonValue): void {

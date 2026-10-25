@@ -1,105 +1,99 @@
 import { describe, expect, it, vi } from "vitest";
 import { IDBFactory } from "fake-indexeddb";
-import { localApplication } from "../../src/application/local-adapter";
-import type { ApplicationPort, LibraryItem, ServiceResult } from "../../src/application/ports";
+import type { CatalogPort } from "../../src/application/catalog-port";
+import type { ServiceResult } from "../../src/application/ports";
 import type { Page } from "../../src/domain";
+import type { EnrolledCourseProjection, LibraryCourseItem, OwnedCourseProjection } from "../../src/domain/catalog";
+import { AccountScope } from "../../src/features/account/account-scope";
 import { createDraftStore } from "../../src/lib/drafts";
-import { LibraryController, selectLibraryItems } from "../../src/features/library/library-controller";
-import { course, deferred } from "./fixtures";
+import { LibraryController } from "../../src/features/library/library-controller";
+import { catalogService, course, deferred } from "./fixtures";
 import { ids, timestamp } from "../domain/fixtures";
 
-const owned: LibraryItem = { kind: "owned", course: course() };
-const enrolled: LibraryItem = { kind: "enrolled", course: course({ id: "00000000-0000-4000-8000-000000000099", title: "Reading Japanese", summary: "Read short stories with confidence.", contentLanguage: "ja" }), enrollmentId: "00000000-0000-4000-8000-000000000097", lastStudiedAt: timestamp };
-const newEnrollment: LibraryItem = { ...enrolled, enrollmentId: "00000000-0000-4000-8000-000000000098", lastStudiedAt: null };
-const page = (items: LibraryItem[]): ServiceResult<Page<LibraryItem>> => ({ ok: true, data: { items, nextCursor: null } });
-const failure = (): ServiceResult<Page<LibraryItem>> => ({ ok: false, error: { error: { code: "service_unavailable", messageKey: "library.unavailable", requestId: ids.request, retryable: true } } });
-function service(listLibrary: ApplicationPort["listLibrary"]): ApplicationPort {
-  return { ...localApplication, capabilities: async () => ({ generation: false, cloudIdentity: true, cloudPersistence: true }), listLibrary };
+const enrollmentId = "00000000-0000-4000-8000-000000000097";
+const owned: OwnedCourseProjection = {
+  id: ids.course, slug: "model-evaluation", title: "Model evaluation", summary: "Compare evidence from training and validation data.",
+  contentLanguage: "en", visibility: "public", currentReadyVersionId: ids.draft, publishedVersionId: ids.draft,
+  updatedAt: timestamp, revision: 2, cover: { motifId: "model-capacity", alt: "Model capacity and evidence" },
+  latestVersion: { id: ids.draft, number: 1, state: "ready" }, conversationId: null,
+};
+const enrolledCourse = course({ id: ids.missing, slug: "reading-japanese", title: "Reading Japanese", summary: "Read short stories with confidence.", contentLanguage: "ja" });
+const enrolled: EnrolledCourseProjection = {
+  course: enrolledCourse, version: { id: ids.source, number: 2 },
+  enrollment: { id: enrollmentId, learnerId: ids.actor, courseId: enrolledCourse.id, courseVersionId: ids.source, status: "active", routeRevision: 1,
+    currentLessonId: null, currentTaskId: null, createdAt: timestamp, lastStudiedAt: timestamp },
+};
+const ownedGroup: LibraryCourseItem = { courseId: owned.id, owned, enrollments: [] };
+const enrolledGroup: LibraryCourseItem = { courseId: enrolledCourse.id, owned: null, enrollments: [enrolled] };
+const page = (items: LibraryCourseItem[], nextCursor: string | null = null): ServiceResult<Page<LibraryCourseItem>> => ({ ok: true, data: { items, nextCursor } });
+const failure = (): ServiceResult<Page<LibraryCourseItem>> => ({ ok: false, error: { error: { code: "service_unavailable", messageKey: "library.unavailable", requestId: ids.request, retryable: true } } });
+function controller(listLibrary: CatalogPort["listLibrary"]) {
+  const scope = new AccountScope();
+  scope.replaceActor(ids.actor);
+  return new LibraryController(catalogService({ listLibrary }), ids.actor, scope);
 }
 
-describe("course-only library boundary", () => {
-  it("distinguishes unavailable capability from an empty library and does not fetch a fictional account", async () => {
-    const listLibrary = vi.fn(async () => page([]));
-    const unavailable = new LibraryController({ ...localApplication, listLibrary });
-    await unavailable.refresh();
-    expect(unavailable.getSnapshot()).toMatchObject({ status: "unavailable", items: [], refreshing: false });
-    expect(listLibrary).not.toHaveBeenCalled();
-    const empty = new LibraryController(service(listLibrary));
-    await empty.refresh();
-    expect(empty.getSnapshot()).toMatchObject({ status: "ready", items: [] });
+describe("grouped course library boundary", () => {
+  it("renders an authoritative empty library and sends the selected server filters", async () => {
+    const listLibrary = vi.fn<CatalogPort["listLibrary"]>().mockResolvedValue(page([]));
+    const subject = controller(listLibrary);
+    await subject.search({ q: "evidence", contentLanguage: "en", view: "courses" });
+    expect(subject.getSnapshot()).toMatchObject({ status: "ready", items: [], nextCursor: null, refreshing: false });
+    expect(listLibrary.mock.calls[0]![0]).toEqual({ q: "evidence", contentLanguage: "en", view: "courses", limit: 24 });
   });
 
-  it("never turns a saved legacy conversation into a course or deletes its data during visits or reload", async () => {
+  it("never turns a saved legacy conversation into a course or deletes its data", async () => {
     const store = createDraftStore({ indexedDB: new IDBFactory(), databaseName: "legacy-library-isolation" });
     const saved = { id: ids.draft, kind: "course_request" as const, title: "Learn astronomy", text: "I want to understand the night sky", contentLanguage: "en", updatedAt: timestamp, schemaVersion: 1 as const, intendedConversationId: null };
-    const controller = new LibraryController(service(async () => page([])));
-    await controller.refresh();
-    expect(controller.getSnapshot().items).toEqual([]);
+    const subject = controller(async () => page([]));
     await store.put(saved);
-    await controller.refresh();
-    expect(controller.getSnapshot().items).toEqual([]);
-    await store.put({ ...saved, text: `${saved.text}. Start with constellations.` });
-    const reloaded = new LibraryController(service(async () => page([])));
-    await reloaded.refresh();
-    expect(reloaded.getSnapshot().items).toEqual([]);
-    expect(await store.get(saved.id)).toEqual({ ...saved, text: `${saved.text}. Start with constellations.` });
+    await subject.search({});
+    expect(subject.getSnapshot().items).toEqual([]);
+    expect(await store.get(saved.id)).toEqual(saved);
   });
 
   it("rejects a chat-shaped result at the service boundary instead of rendering it as a course", async () => {
     const invalid = { kind: "conversation", id: ids.draft, title: "A chat is not a course", text: "Explain gravity" };
-    const controller = new LibraryController(service(async () => page([invalid as unknown as LibraryItem])));
-    await controller.refresh();
-    expect(controller.getSnapshot()).toMatchObject({ status: "error", items: [] });
+    const subject = controller(async () => page([invalid as unknown as LibraryCourseItem]));
+    await subject.search({});
+    expect(subject.getSnapshot()).toMatchObject({ status: "error", items: [] });
   });
 
-  it("uses only authoritative courses and retains them if a refresh fails", async () => {
-    const listLibrary = vi.fn<ApplicationPort["listLibrary"]>().mockResolvedValueOnce(page([owned, enrolled])).mockResolvedValueOnce(failure()).mockResolvedValueOnce(page([enrolled]));
-    const controller = new LibraryController(service(listLibrary));
-    await controller.refresh();
-    expect(controller.getSnapshot().items).toEqual([owned, enrolled]);
-    await controller.refresh();
-    expect(controller.getSnapshot()).toMatchObject({ status: "error", items: [owned, enrolled], refreshing: false });
-    await controller.refresh();
-    expect(controller.getSnapshot()).toMatchObject({ status: "ready", items: [enrolled] });
+  it("uses only grouped authoritative courses and retains them if a refresh fails", async () => {
+    const listLibrary = vi.fn<CatalogPort["listLibrary"]>().mockResolvedValueOnce(page([ownedGroup, enrolledGroup])).mockResolvedValueOnce(failure()).mockResolvedValueOnce(page([enrolledGroup]));
+    const subject = controller(listLibrary);
+    await subject.search({});
+    expect(subject.getSnapshot().items).toEqual([ownedGroup, enrolledGroup]);
+    await subject.refresh();
+    expect(subject.getSnapshot()).toMatchObject({ status: "error", items: [ownedGroup, enrolledGroup], refreshing: false });
+    await subject.refresh();
+    expect(subject.getSnapshot()).toMatchObject({ status: "ready", items: [enrolledGroup] });
   });
 
   it("aborts an older load and ignores its late response", async () => {
-    const old = deferred<ServiceResult<Page<LibraryItem>>>();
+    const old = deferred<ServiceResult<Page<LibraryCourseItem>>>();
     const signals: AbortSignal[] = [];
-    const listLibrary = vi.fn<ApplicationPort["listLibrary"]>().mockImplementationOnce((signal) => { signals.push(signal!); return old.promise; }).mockResolvedValueOnce(page([enrolled]));
-    const controller = new LibraryController(service(listLibrary));
-    const first = controller.refresh();
+    const listLibrary = vi.fn<CatalogPort["listLibrary"]>().mockImplementationOnce((_query, signal) => { signals.push(signal!); return old.promise; }).mockResolvedValueOnce(page([enrolledGroup]));
+    const subject = controller(listLibrary);
+    const first = subject.search({ q: "old" });
     await Promise.resolve();
-    await controller.refresh();
+    await subject.search({ q: "new" });
     expect(signals[0]?.aborted).toBe(true);
-    old.resolve(page([owned]));
+    old.resolve(page([ownedGroup]));
     await first;
-    expect(controller.getSnapshot().items).toEqual([enrolled]);
+    expect(subject.getSnapshot().items).toEqual([enrolledGroup]);
   });
 
-  it("does not accept a capability response after unmount", async () => {
-    const capabilities = deferred<Awaited<ReturnType<ApplicationPort["capabilities"]>>>();
-    const listLibrary = vi.fn(async () => page([owned]));
-    const controller = new LibraryController({ ...service(listLibrary), capabilities: () => capabilities.promise });
-    const pending = controller.refresh();
-    controller.dispose();
-    capabilities.resolve({ generation: false, cloudIdentity: true, cloudPersistence: true });
-    await pending;
-    expect(listLibrary).not.toHaveBeenCalled();
-    expect(controller.getSnapshot().items).toEqual([]);
-  });
-});
-
-describe("course library views", () => {
-  const items = [owned, enrolled, newEnrollment];
-  it("keeps created courses separate from actual started enrollments", () => {
-    expect(selectLibraryItems(items, {}, "courses")).toEqual([owned]);
-    expect(selectLibraryItems(items, {}, "in_progress")).toEqual([enrolled]);
-    expect(selectLibraryItems(items, {}, "all")).toEqual(items);
-  });
-  it("searches title and summary and filters course language without changing the records", () => {
-    expect(selectLibraryItems(items, { q: "confidence", contentLanguage: "ja" }, "all")).toEqual([enrolled, newEnrollment]);
-    expect(selectLibraryItems(items, { q: "evaluation", contentLanguage: "ja" }, "all")).toEqual([]);
-    expect(selectLibraryItems(items, {}, "all")).toEqual(items);
+  it("keeps loaded groups when pagination fails and retries the same cursor", async () => {
+    const listLibrary = vi.fn<CatalogPort["listLibrary"]>().mockResolvedValueOnce(page([ownedGroup], "next")).mockResolvedValueOnce(failure()).mockResolvedValueOnce(page([enrolledGroup]));
+    const subject = controller(listLibrary);
+    await subject.search({ view: "all" });
+    await subject.loadMore();
+    expect(subject.getSnapshot()).toMatchObject({ items: [ownedGroup], nextCursor: "next", loadingMore: false });
+    expect(subject.getSnapshot().pageError).toBeTruthy();
+    await subject.loadMore();
+    expect(listLibrary.mock.calls[1]![0]).toEqual({ view: "all", limit: 24, cursor: "next" });
+    expect(listLibrary.mock.calls[2]![0]).toEqual(listLibrary.mock.calls[1]![0]);
+    expect(subject.getSnapshot()).toMatchObject({ items: [ownedGroup, enrolledGroup], nextCursor: null, pageError: null });
   });
 });

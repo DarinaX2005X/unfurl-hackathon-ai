@@ -14,11 +14,15 @@ export const MechanicManifestEntrySchema = z.object({
   accessibility: z.object({ keyboardEquivalent: z.boolean(), nonVisualSummary: z.boolean() }).strict(),
 }).strict();
 export type MechanicManifestEntry = z.infer<typeof MechanicManifestEntrySchema>;
+function freezeMetadata(entry: MechanicManifestEntry): MechanicManifestEntry {
+  Object.values(entry).forEach((value) => { if (value !== null && typeof value === "object") Object.freeze(value); });
+  return Object.freeze(entry);
+}
 
 /** Public metadata only. No evaluator, private schema, source claims or authored task data. */
 export const productionMechanicManifest: readonly MechanicManifestEntry[] = Object.freeze(
   [...foundations, ...investigation, ...construction, ...communication].map((descriptor) =>
-    Object.freeze(MechanicManifestEntrySchema.parse({
+    freezeMetadata(MechanicManifestEntrySchema.parse({
       id: descriptor.id, version: descriptor.version, responseSchemaVersion: descriptor.responseSchemaVersion,
       rendererKey: descriptor.rendererKey, requiredAffordances: descriptor.requiredAffordances,
       supportedEvaluators: descriptor.supportedEvaluators, actions: descriptor.actions,

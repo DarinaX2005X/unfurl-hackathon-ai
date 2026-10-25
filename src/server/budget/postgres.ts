@@ -174,6 +174,16 @@ export class PostgresBudget implements BudgetPort {
       await tx.query("UPDATE unfurl.ai_budgets SET halted=true,revision=revision+1,updated_at=now() WHERE id=$1", [this.budgetId]);
     });
   }
+  async reconciliationTarget(operationId: string): Promise<{
+    reservation: BudgetReservation; rateCard: unknown; purpose: string; receipt: ProviderResponseReceipt | null;
+  } | null> {
+    return this.transaction(async (tx) => {
+      const row = (await tx.query<OperationRow>("SELECT * FROM unfurl.ai_provider_operations WHERE id=$1 AND budget_id=$2", [operationId, this.budgetId])).rows[0];
+      if (!row) return null;
+      const saved = (await tx.query<ReceiptRow>("SELECT * FROM unfurl.ai_provider_responses WHERE operation_id=$1", [row.id])).rows[0];
+      return { reservation: reservation(row), rateCard: row.rate_card, purpose: row.purpose, receipt: saved ? receipt(saved) : null };
+    });
+  }
   /** Evidence must come from authenticated generation accounting, never a timer or estimate. */
   async reconcile(value: BudgetReservation, evidence: { providerRequestId: string; digest: string; finalCostMicroUsd: string }): Promise<void> {
     const actual = readMicroUsd(evidence.finalCostMicroUsd);

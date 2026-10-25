@@ -90,6 +90,10 @@ export function useAccountSession() {
   return useSyncExternalStore(subscribe, () => snapshot, () => initialSnapshot);
 }
 
+export function useAccountEpoch(): number {
+  return useSyncExternalStore(subscribe, () => epoch, () => 0);
+}
+
 export function acceptProfile(profile: Profile) {
   if (snapshot.status !== "ready" || snapshot.session?.identity.id !== profile.id) return;
   const session: AccountSession = { ...snapshot.session, profile };

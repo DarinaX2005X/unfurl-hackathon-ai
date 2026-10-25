@@ -1,51 +1,64 @@
-import { LibraryItemSchema, type ApplicationPort, type LibraryItem, type CourseQuery } from "@/application/ports";
-import type { LibraryView } from "@/features/catalog/query";
+import type { CatalogPort } from "@/application/catalog-port";
+import { LibraryCourseItemSchema, type LibraryCourseItem, type LibraryQuery } from "@/domain/catalog";
+import { accountScope, type AccountScope } from "@/features/account/account-scope";
 
 export interface LibraryState {
-  status: "idle" | "loading" | "ready" | "unavailable" | "error";
-  items: LibraryItem[];
+  status: "idle" | "loading" | "ready" | "error";
+  items: LibraryCourseItem[];
+  nextCursor: string | null;
   refreshing: boolean;
+  loadingMore: boolean;
+  pageError: string | null;
 }
 
-/** The library accepts course records only. Conversation storage is outside this boundary. */
 export class LibraryController {
-  private state: LibraryState = { status: "idle", items: [], refreshing: false };
+  private state: LibraryState = { status: "idle", items: [], nextCursor: null, refreshing: false, loadingMore: false, pageError: null };
   private listeners = new Set<() => void>();
-  private request: AbortController | null = null;
+  private request: ReturnType<AccountScope["request"]> | null = null;
   private revision = 0;
-  constructor(private readonly service: ApplicationPort) {}
+  private query: LibraryQuery = {};
+  constructor(private readonly service: CatalogPort, private readonly actorId: string | null = null,
+    private readonly scope: AccountScope = accountScope) {}
   getSnapshot = (): LibraryState => this.state;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   private update(patch: Partial<LibraryState>) { this.state = { ...this.state, ...patch }; this.listeners.forEach((listener) => listener()); }
-  async refresh(): Promise<void> {
+
+  async search(query: LibraryQuery, preserve = false): Promise<void> {
     this.request?.abort();
-    const request = this.request = new AbortController();
+    this.query = { ...query, limit: query.limit ?? 24 };
+    delete this.query.cursor;
+    const request = this.request = this.scope.request(this.actorId);
     const revision = ++this.revision;
-    this.update({ status: this.state.items.length ? this.state.status : "loading", refreshing: true });
+    this.update({ status: preserve && this.state.items.length ? this.state.status : "loading", refreshing: true,
+      ...(preserve ? {} : { items: [], nextCursor: null }), loadingMore: false, pageError: null });
     try {
-      const capabilities = await this.service.capabilities();
-      if (request.signal.aborted || revision !== this.revision) return;
-      if (!capabilities.cloudPersistence) { this.update({ status: "unavailable", items: [], refreshing: false }); return; }
-      const result = await this.service.listLibrary(request.signal);
-      if (request.signal.aborted || revision !== this.revision) return;
+      const result = await this.service.listLibrary(this.query, request.signal);
+      if (!request.isCurrent() || revision !== this.revision) return;
       if (!result.ok) { this.update({ status: "error", refreshing: false }); return; }
-      const records = LibraryItemSchema.array().safeParse(result.data.items);
+      const records = LibraryCourseItemSchema.array().safeParse(result.data.items);
       if (!records.success) { this.update({ status: "error", refreshing: false }); return; }
-      this.update({ status: "ready", items: records.data, refreshing: false });
-    } catch {
-      if (!request.signal.aborted && revision === this.revision) this.update({ status: "error", refreshing: false });
-    }
+      this.update({ status: "ready", items: records.data, nextCursor: result.data.nextCursor, refreshing: false });
+    } catch { if (request.isCurrent() && revision === this.revision) this.update({ status: "error", refreshing: false }); }
+    finally { request.release(); }
+  }
+  refresh = () => this.search(this.query, true);
+  async loadMore(): Promise<void> {
+    if (!this.state.nextCursor || this.state.loadingMore || this.state.status !== "ready") return;
+    const cursor = this.state.nextCursor;
+    const request = this.request = this.scope.request(this.actorId);
+    const revision = this.revision;
+    this.update({ loadingMore: true, pageError: null });
+    try {
+      const result = await this.service.listLibrary({ ...this.query, cursor }, request.signal);
+      if (!request.isCurrent() || revision !== this.revision) return;
+      if (!result.ok) { this.update({ loadingMore: false, pageError: "The next courses couldn’t be loaded. Your library above is still available." }); return; }
+      const records = LibraryCourseItemSchema.array().safeParse(result.data.items);
+      if (!records.success) { this.update({ loadingMore: false, pageError: "The next courses couldn’t be loaded. Your library above is still available." }); return; }
+      const items = new Map(this.state.items.map((item) => [item.courseId, item]));
+      records.data.forEach((item) => items.set(item.courseId, item));
+      this.update({ items: [...items.values()], nextCursor: result.data.nextCursor, loadingMore: false });
+    } catch { if (request.isCurrent() && revision === this.revision) this.update({ loadingMore: false, pageError: "The next courses couldn’t be loaded. Your library above is still available." }); }
+    finally { request.release(); }
   }
   dispose = () => { this.request?.abort(); this.revision += 1; };
-}
-
-export function selectLibraryItems(items: LibraryItem[], query: CourseQuery, view: LibraryView): LibraryItem[] {
-  const q = query.q?.trim().toLocaleLowerCase("en") ?? "";
-  return items.filter((item) => {
-    if (view === "courses" && item.kind !== "owned") return false;
-    if (view === "in_progress" && (item.kind !== "enrolled" || item.lastStudiedAt === null)) return false;
-    const course = item.course;
-    return (!q || `${course.title} ${course.summary}`.toLocaleLowerCase("en").includes(q)) &&
-      (!query.contentLanguage || course.contentLanguage.toLowerCase() === query.contentLanguage.toLowerCase());
-  });
 }

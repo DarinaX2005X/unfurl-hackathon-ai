@@ -1,8 +1,8 @@
 import { ContentLanguageSchema } from "@/domain";
-import type { CourseQuery } from "@/application/ports";
+import type { CatalogQuery, LibraryView } from "@/domain/catalog";
 
-export type LibraryView = "all" | "courses" | "in_progress";
-export function readCourseQuery(params: Pick<URLSearchParams, "get">): CourseQuery {
+export type { LibraryView } from "@/domain/catalog";
+export function readCourseQuery(params: Pick<URLSearchParams, "get">): CatalogQuery {
   const q = params.get("q")?.trim().slice(0, 200);
   const language = params.get("contentLanguage");
   return { ...(q ? { q } : {}), ...(language && ContentLanguageSchema.safeParse(language).success ? { contentLanguage: language } : {}) };
@@ -21,6 +21,12 @@ export function updateCollectionQuery(current: string, values: { q?: string; con
   params.delete("cursor");
   const query = params.toString();
   return query ? `?${query}` : "";
+}
+export function resetLibraryFilters(current: string): string {
+  return updateCollectionQuery(current, { q: "", contentLanguage: "" });
+}
+export function showAllLibraryCourses(current: string): string {
+  return updateCollectionQuery(current, { q: "", contentLanguage: "", view: "all" });
 }
 export function languageName(code: string): string {
   try { return new Intl.DisplayNames(["en"], { type: "language" }).of(code) ?? code; } catch { return code; }

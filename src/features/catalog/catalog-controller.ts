@@ -1,4 +1,5 @@
-import type { ApplicationPort, CourseQuery } from "@/application/ports";
+import type { CatalogPort } from "@/application/catalog-port";
+import type { CatalogQuery } from "@/domain/catalog";
 import type { CourseSummary } from "@/domain";
 
 export interface CatalogState {
@@ -15,15 +16,15 @@ export class CatalogController {
   private state: CatalogState = { status: "idle", items: [], nextCursor: null, loadingMore: false, error: null, pageError: null };
   private listeners = new Set<() => void>();
   private request: AbortController | null = null;
-  private query: CourseQuery = {};
+  private query: CatalogQuery = {};
   private revision = 0;
-  constructor(private readonly service: ApplicationPort) {}
+  constructor(private readonly service: CatalogPort) {}
   getSnapshot = (): CatalogState => this.state;
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
   private update(patch: Partial<CatalogState>) { this.state = { ...this.state, ...patch }; this.listeners.forEach((listener) => listener()); }
-  async search(query: CourseQuery): Promise<void> {
+  async search(query: CatalogQuery): Promise<void> {
     this.request?.abort();
-    this.query = { ...query, limit: query.limit ?? 12 };
+    this.query = { ...query, limit: query.limit ?? 24 };
     delete this.query.cursor;
     const revision = ++this.revision;
     const request = this.request = new AbortController();

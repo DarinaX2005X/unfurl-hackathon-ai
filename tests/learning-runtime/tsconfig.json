@@ -1,0 +1,6 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "incremental": false },
+  "include": ["../../next-env.d.ts", "../../src/server/learning/**/*.ts", "../../src/server/adaptation/**/*.ts", "../../src/application/learning-port.ts", "../../src/application/http-learning.ts", "./*.ts", "../adaptation/*.ts"],
+  "exclude": ["../../node_modules"]
+}

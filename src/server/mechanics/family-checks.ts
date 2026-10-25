@@ -53,7 +53,11 @@ function gridWitness(variables: readonly BoundedVariable[], accepts: (input: Rec
     if (index === variables.length) return accepts(input);
     const variable = variables[index]!;
     for (let step = 0; step < counts[index]!; step++) {
-      input[variable.id] = variable.min + step * variable.step;
+      const nominal = variable.min + step * variable.step;
+      // Preserve an authored decimal endpoint (0.3), rather than the rounded product 3 * 0.1.
+      const value = step === counts[index]! - 1 && Math.abs((variable.max - nominal) / variable.step) <= 1e-9 ? variable.max : nominal;
+      if (value > variable.max) continue;
+      input[variable.id] = value;
       if (search(index + 1)) return true;
     }
     return false;
