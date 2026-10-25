@@ -1,4 +1,5 @@
 export * from "./common";
+export * from "./account";
 export * from "./chat";
 export * from "./course";
 export * from "./drafts";
