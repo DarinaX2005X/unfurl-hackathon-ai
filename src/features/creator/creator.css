@@ -113,6 +113,18 @@
 .creator-artifacts__metadata { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; color: var(--color-muted); font-size: 14px; }
 .creator-artifacts__no-program { padding: 28px; color: var(--color-muted); font-size: 14px; }
 .creator-metadata-form { display: grid; gap: 20px; }
+.creator-history__import { margin: 18px 4px 0; text-align: left; white-space: normal; }
+.creator-import, .creator-conflict { display: grid; gap: 20px; line-height: 1.65; }
+.creator-import fieldset { display: grid; gap: 8px; min-width: 0; padding: 0; border: 0; }
+.creator-import legend { margin-bottom: 12px; font-weight: 700; }
+.creator-import__choice { display: flex; align-items: flex-start; gap: 12px; padding: 14px; border: 1px solid var(--color-line-soft); border-radius: 12px; cursor: pointer; }
+.creator-import__choice:has(input:checked) { border-color: var(--color-ink); background: var(--color-surface-inset); }
+.creator-import__choice input { flex: 0 0 auto; margin-top: 5px; }
+.creator-import__choice span { display: grid; min-width: 0; overflow-wrap: anywhere; }
+.creator-import__choice span span { color: var(--color-muted); font-size: 14px; }
+.creator-conflict h3 { font-size: 16px; margin-bottom: 10px; }
+.creator-conflict pre, .creator-recovered-input pre { max-height: 220px; overflow: auto; padding: 16px; background: var(--color-surface-inset); border-radius: 12px; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 14px; }
+.creator-recovered-input { display: grid !important; gap: 12px; min-width: 0; }
 @media (hover: hover) and (pointer: fine) {
   .creator-history li a:hover { background: var(--color-surface); color: var(--color-ink); }
   .creator-scenario:hover { background: var(--color-surface); border-color: var(--color-border); }

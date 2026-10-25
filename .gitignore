@@ -10,3 +10,4 @@ coverage/
 *.tsbuildinfo
 .vercel
 .env*
+/.swc

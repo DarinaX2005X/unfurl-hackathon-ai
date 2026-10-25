@@ -1,8 +1,11 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ChatSession } from "../../src/features/creator/chat-session";
 import { createChatRecovery } from "../../src/features/creator/chat-recovery";
-import { ChatStoreError, type ChatStore, type CourseArtifactRef, type LocalConversation, type LocalMessage } from "../../src/domain/chat";
+import { AccountScope } from "../../src/features/account/account-scope";
+import type { ConversationPort } from "../../src/application/conversation-port";
 import type { ApplicationPort, SendMessageInput, SendMessageResult, ServiceResult } from "../../src/application/ports";
+import type { ConversationDetail } from "../../src/domain/conversations";
+import type { CourseArtifactRef } from "../../src/domain/chat";
 import type { RunSnapshot } from "../../src/domain/generation";
 import { localApplication } from "../../src/application/local-adapter";
 import { curriculumDigest } from "../../src/domain/course";
@@ -11,245 +14,206 @@ import { curriculum, ids, timestamp } from "../domain/fixtures";
 
 const branchId = "20000000-0000-4000-8000-000000000002";
 const runId = "20000000-0000-4000-8000-000000000003";
+const allSessions: ChatSession[] = [];
+afterEach(() => { for (const session of allSessions.splice(0)) session.dispose(); });
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason: unknown) => void;
   const promise = new Promise<T>((yes, no) => { resolve = yes; reject = no; });
   return { promise, resolve, reject };
 }
-function conversation(): LocalConversation {
-  return { id: ids.conversation, schemaVersion: 1, title: "A learning question", titleSource: "user", composerText: "",
-    messages: [], artifacts: [], selectedCourseId: null, revision: 1, createdAt: timestamp, updatedAt: timestamp, legacySource: null };
+function detail(text = ""): ConversationDetail {
+  return { conversation: { id: ids.conversation, ownerId: ids.actor, title: "A learning question", activeBranchId: branchId, revision: 1, createdAt: timestamp, updatedAt: timestamp },
+    messages: [], artifacts: [], activeTurn: null, composerDraft: { conversationId: ids.conversation, revision: 1, text, pendingMessages: [], updatedAt: timestamp } };
 }
-function userMessage(): LocalMessage {
-  return { id: ids.question, conversationId: ids.conversation, role: "user", text: "Explain the difference.", delivery: "accepted", status: "complete",
-    requestId: ids.request, runId, branchId, userLocale: "en", createdAt: timestamp, updatedAt: timestamp, error: null };
+const ok = <T,>(data: T): ServiceResult<T> => ({ ok: true, data: structuredClone(data) });
+const conflict = (): Extract<ServiceResult<never>, { ok: false }> => ({ ok: false, error: { error: { code: "revision_conflict", messageKey: "chat.changed", retryable: false, requestId: ids.request } } });
+function cloud(initial?: ConversationDetail) {
+  const records = new Map(initial ? [[initial.conversation.id, structuredClone(initial)]] : []);
+  const receipts = new Map<string, unknown>();
+  const port: ConversationPort = {
+    list: vi.fn(async () => ok({ items: [...records.values()].map((item) => item.conversation), nextCursor: null })),
+    get: vi.fn<ConversationPort["get"]>(async (id) => records.has(id) ? ok(records.get(id)!) : { ok: false, error: { error: { code: "not_found", messageKey: "chat.notFound", retryable: false, requestId: ids.request } } }),
+    create: vi.fn(async (input, key) => {
+      if (receipts.has(key)) return ok(receipts.get(key) as ConversationDetail);
+      const value = detail(input.composerText); records.set(ids.conversation, value); receipts.set(key, value); return ok(value);
+    }),
+    saveComposer: vi.fn(async (id, input, key) => {
+      if (receipts.has(key)) return ok(receipts.get(key) as ConversationDetail["composerDraft"]);
+      const value = records.get(id)!;
+      if (input.expectedRevision !== value.composerDraft.revision) return conflict();
+      value.composerDraft = { conversationId: id, revision: input.expectedRevision + 1, text: input.text, pendingMessages: structuredClone(input.pendingMessages), updatedAt: timestamp };
+      receipts.set(key, structuredClone(value.composerDraft)); return ok(value.composerDraft);
+    }),
+    rename: vi.fn(async (id, input) => {
+      const value = records.get(id)!;
+      if (input.expectedRevision !== value.conversation.revision) return conflict();
+      value.conversation = { ...value.conversation, revision: input.expectedRevision + 1, title: input.title }; return ok(value.conversation);
+    }),
+    remove: vi.fn(async (id) => { records.delete(id); return ok(null); }),
+    importLocal: vi.fn(async () => { throw new Error("Import is not part of the session"); }),
+  };
+  return { port, records };
+}
+function sessionFor(port: ConversationPort, services: ApplicationPort = localApplication, id: string | null = null, recovery = createChatRecovery(), scope = new AccountScope()) {
+  scope.replaceActor(ids.actor);
+  const session = new ChatSession(port, services, id, { actorId: ids.actor, scope, now: () => timestamp, userLocale: () => "en", recovery, autosaveDelay: 60_000 });
+  allSessions.push(session); return session;
+}
+function accepted(input: SendMessageInput, currentRunId = runId): SendMessageResult {
+  return { message: { id: input.messageId, conversationId: input.conversationId, branchId: input.branchId, parentMessageId: input.parentMessageId, role: "user", status: "complete",
+    parts: [{ type: "text", text: input.text }], clientRequestId: input.requestId, createdAt: timestamp },
+    run: { id: currentRunId, conversationId: input.conversationId, branchId: input.branchId, inputMessageId: input.messageId, ownerId: ids.actor, status: "queued", lastSeq: 1, error: null, createdAt: timestamp, updatedAt: timestamp } };
 }
 function artifact(courseId: string = ids.course): CourseArtifactRef {
   const draft = { ...curriculum(), courseId, id: courseId === ids.course ? ids.draft : ids.missing };
-  return { courseId, title: draft.title, summary: draft.goal, contentLanguage: "en", revision: 1, curriculum: draft,
-    approval: null, approvalRequestedRevision: 1, readyVersionId: null, updatedAt: timestamp };
-}
-function memoryStore(initial?: LocalConversation) {
-  const records = new Map(initial ? [[initial.id, structuredClone(initial)]] : []);
-  const deleted = new Set<string>();
-  const store: ChatStore = {
-    list: vi.fn(async () => [...records.values()]), get: vi.fn(async (id) => records.get(id) ?? null),
-    put: vi.fn(async (value) => { if (deleted.has(value.id)) throw new ChatStoreError("deleted", "Deleted"); records.set(value.id, structuredClone(value)); }),
-    remove: vi.fn(async (id) => { deleted.add(id); records.delete(id); }), wasDeleted: vi.fn(async (id) => deleted.has(id)),
-    migrateLegacy: vi.fn(async () => ({ importedIds: [], issues: [] })),
-  };
-  return { store, records, deleted };
-}
-function sessionFor(store: ChatStore, services: ApplicationPort = localApplication, id: string | null = null) {
-  let idCount = 0;
-  return new ChatSession(store, services, id, { createId: () => idCount++ === 0 && id === null ? ids.conversation : crypto.randomUUID(), now: () => timestamp, userLocale: () => "en", recovery: createChatRecovery() });
-}
-function accepted(input: SendMessageInput, currentRunId = runId): ServiceResult<SendMessageResult> {
-  return { ok: true, data: { message: { id: input.messageId, conversationId: input.conversationId, branchId, parentMessageId: null, role: "user", status: "complete",
-    parts: [{ type: "text", text: input.text }], clientRequestId: input.requestId, createdAt: timestamp },
-    run: { id: currentRunId, conversationId: input.conversationId, branchId, inputMessageId: input.messageId, ownerId: ids.actor,
-      status: "queued", lastSeq: 0, error: null, createdAt: timestamp, updatedAt: timestamp } } };
+  return { courseId, title: draft.title, summary: draft.goal, contentLanguage: "en", revision: 1, curriculum: draft, approval: null, approvalRequestedRevision: 1, readyVersionId: null, updatedAt: timestamp };
 }
 
-describe("local chat autosave", () => {
-  it("creates no record for a visit, then serializes edits and waits for the final transaction", async () => {
-    const { store, records } = memoryStore();
-    const writes: Array<{ value: LocalConversation; ack: ReturnType<typeof deferred<void>> }> = [];
-    store.put = vi.fn((value) => { const ack = deferred<void>(); writes.push({ value: structuredClone(value), ack }); return ack.promise.then(() => { records.set(value.id, value); }); });
-    const session = sessionFor(store);
-    await session.open();
-    expect(store.put).not.toHaveBeenCalled();
-    session.setComposer("First");
-    session.setComposer("First with a later edit");
-    expect(writes).toHaveLength(1);
+describe("account-owned chat input", () => {
+  it("creates no record for an empty visit and only calls a server save acknowledged", async () => {
+    const { port, records } = cloud();
+    const session = sessionFor(port);
+    await session.open(); await session.flush();
+    session.setComposer("   "); await session.flush();
+    expect(port.create).not.toHaveBeenCalled();
+    const create = port.create;
+    const gate = deferred<void>();
+    port.create = vi.fn<ConversationPort["create"]>(async (...args) => { await gate.promise; return create(...args); });
+    session.setComposer("First question");
+    const writing = session.flush();
+    session.setComposer("First question with a later edit");
     expect(session.getSnapshot().saveStatus).toBe("saving");
-    const navigating = session.flush();
-    writes[0]!.ack.resolve();
-    await vi.waitFor(() => expect(writes).toHaveLength(2));
-    expect(session.getSnapshot().saveStatus).toBe("saving");
-    expect(writes[1]!.value.composerText).toBe("First with a later edit");
-    writes[1]!.ack.resolve();
-    expect(await navigating).toBe(true);
+    gate.resolve(); expect(await writing).toBe(true);
+    expect(records.get(ids.conversation)?.composerDraft.text).toBe("First question with a later edit");
     expect(session.getSnapshot().saveStatus).toBe("saved");
-    expect(records.get(ids.conversation)?.composerText).toBe("First with a later edit");
-    const reopened = sessionFor(store, localApplication, ids.conversation);
-    await reopened.open();
-    expect(reopened.getSnapshot().conversation?.composerText).toBe("First with a later edit");
+    expect(port.create).toHaveBeenCalledOnce();
   });
 
-  it("recovers the newest unacknowledged text on navigation without calling it saved", async () => {
-    const { store } = memoryStore();
-    const recovery = createChatRecovery();
-    const pending = deferred<void>();
-    store.put = vi.fn(() => pending.promise);
-    const original = new ChatSession(store, localApplication, null, { createId: () => ids.conversation, recovery });
-    original.setComposer("Keep this while storage is pending.");
-    const reopened = new ChatSession(store, localApplication, ids.conversation, { recovery });
-    await reopened.open();
-    expect(reopened.getSnapshot().conversation?.composerText).toBe("Keep this while storage is pending.");
-    expect(reopened.getSnapshot().saveStatus).toBe("saving");
-    pending.resolve();
-    await Promise.all([original.flush(), reopened.flush()]);
+  it("replays a lost create acknowledgement with its original body after reload", async () => {
+    const { port, records } = cloud();
+    const saved = new Map<string, string>(); const recovery = createChatRecovery(() => ({ getItem: (key) => saved.get(key) ?? null, setItem: (key, value) => { saved.set(key, value); }, removeItem: (key) => { saved.delete(key); } }));
+    const create = port.create; let lose = true;
+    port.create = vi.fn<ConversationPort["create"]>(async (...args) => { const result = await create(...args); if (lose) { lose = false; throw new Error("lost response"); } return result; });
+    const original = sessionFor(port, localApplication, null, recovery);
+    original.setComposer("Original request"); expect(await original.flush()).toBe(false);
+    original.setComposer("Keep this later text too"); original.dispose();
+    const restored = sessionFor(port, localApplication, null, recovery);
+    await restored.open();
+    expect(port.create).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(port.create).mock.calls[1]?.slice(0, 2)).toEqual(vi.mocked(port.create).mock.calls[0]?.slice(0, 2));
+    expect(records.size).toBe(1); expect(restored.getSnapshot().composerText).toBe("Keep this later text too");
+    expect(restored.getSnapshot().saveStatus).toBe("saved");
   });
 
-  it("never claims a save or sends externally when storage fails", async () => {
-    const { store } = memoryStore();
-    store.put = vi.fn(async () => { throw new ChatStoreError("quota_exceeded", "Full"); });
-    const services = { ...localApplication, sendMessage: vi.fn(localApplication.sendMessage) };
-    const session = sessionFor(store, services);
-    session.setComposer("Keep my question.");
-    await session.send();
-    expect(session.getSnapshot().saveStatus).toBe("error");
-    expect(session.getSnapshot().conversation?.messages[0]).toMatchObject({ text: "Keep my question.", delivery: "not_sent" });
-    expect(services.sendMessage).not.toHaveBeenCalled();
-    store.put = vi.fn(async () => undefined);
-    expect(await session.flush()).toBe(true);
-    expect(session.getSnapshot().saveStatus).toBe("saved");
+  it("preserves input across a failed save and reuses that command before saving later edits", async () => {
+    const { port, records } = cloud(detail());
+    const save = port.saveComposer; let lose = true;
+    port.saveComposer = vi.fn<ConversationPort["saveComposer"]>(async (...args) => { const result = await save(...args); if (lose) { lose = false; throw new Error("lost"); } return result; });
+    const session = sessionFor(port, localApplication, ids.conversation); await session.open();
+    session.setComposer("First edit"); expect(await session.flush()).toBe(false);
+    session.setComposer("A later edit"); expect(await session.flush()).toBe(true);
+    const calls = vi.mocked(port.saveComposer).mock.calls;
+    expect(calls[1]?.slice(0, 3)).toEqual(calls[0]?.slice(0, 3));
+    expect(records.get(ids.conversation)?.composerDraft.text).toBe("A later edit");
   });
 
-  it("keeps a renamed chat name independent of later composer text", async () => {
-    const { store } = memoryStore();
-    const session = sessionFor(store);
-    session.setComposer("Automatic title");
-    expect(await session.rename("My research")).toBe(true);
-    session.setComposer("A different question");
-    await session.flush();
-    expect(session.getSnapshot().conversation?.title).toBe("My research");
+  it("keeps both conflicting versions and requires an explicit resolution even after reload", async () => {
+    const { port, records } = cloud(detail());
+    const saved = new Map<string, string>(); const recovery = createChatRecovery(() => ({ getItem: (key) => saved.get(key) ?? null, setItem: (key, value) => { saved.set(key, value); }, removeItem: (key) => { saved.delete(key); } }));
+    const session = sessionFor(port, localApplication, ids.conversation, recovery); await session.open();
+    session.setComposer("My unfinished paragraph");
+    records.get(ids.conversation)!.composerDraft = { ...records.get(ids.conversation)!.composerDraft, revision: 2, text: "Another tab’s paragraph" };
+    expect(await session.flush()).toBe(false);
+    expect(session.getSnapshot()).toMatchObject({ composerText: "My unfinished paragraph", composerConflict: { text: "Another tab’s paragraph" }, saveStatus: "conflict" });
+    session.dispose();
+    const restored = sessionFor(port, localApplication, ids.conversation, recovery); await restored.open();
+    expect(restored.getSnapshot().saveStatus).toBe("conflict");
+    expect(await restored.resolveComposerConflict("mine")).toBe(true);
+    expect(records.get(ids.conversation)?.composerDraft.text).toBe("My unfinished paragraph");
   });
 
-  it("does not recover deleted conversations or silently replace invalid identities", async () => {
-    const { store, deleted } = memoryStore();
-    const recovery = createChatRecovery();
-    recovery.write(conversation());
-    deleted.add(ids.conversation);
-    const missing = new ChatSession(store, localApplication, ids.conversation, { recovery });
-    await missing.open();
-    expect(missing.getSnapshot().loadStatus).toBe("missing");
-    expect(recovery.read(ids.conversation)).toBeNull();
-    const invalid = sessionFor(store, localApplication, "invalid");
-    await invalid.open();
-    expect(invalid.getSnapshot().loadStatus).toBe("invalid");
-    expect(store.put).not.toHaveBeenCalled();
+  it("invalidates in-flight work and clears rendered text on an account switch", async () => {
+    const { port } = cloud(); const scope = new AccountScope(); const gate = deferred<ServiceResult<ConversationDetail>>();
+    port.create = vi.fn(() => gate.promise);
+    const session = sessionFor(port, localApplication, null, createChatRecovery(), scope);
+    session.setComposer("Account A private input"); const saving = session.flush();
+    scope.replaceActor(ids.sample); gate.resolve(ok(detail("Account A private input"))); await saving;
+    expect(session.getSnapshot()).toMatchObject({ conversation: null, composerText: "", pendingMessages: [] });
+    expect(vi.mocked(port.create).mock.calls[0]?.[2]?.aborted).toBe(true);
+    expect(port.saveComposer).not.toHaveBeenCalled();
+  });
+
+  it("rejects an unexpected account projection and does not rewrite partial server messages on reload", async () => {
+    const value = detail(); const receipt = accepted({ conversationId: ids.conversation, messageId: ids.question, requestId: ids.request, text: "A question", branchId, expectedRevision: 1, parentMessageId: null });
+    value.messages = [receipt.message, { ...receipt.message, id: ids.evaluation, role: "assistant", clientRequestId: null, status: "streaming", parts: [{ type: "text", text: "Partial answer" }] }]; value.activeTurn = { ...receipt.run, status: "running" };
+    const { port } = cloud(value); const session = sessionFor(port, localApplication, ids.conversation); await session.open();
+    expect(session.getSnapshot().conversation?.messages[1]?.status).toBe("streaming");
+    expect(session.getSnapshot().run?.status).toBe("running"); expect(port.saveComposer).not.toHaveBeenCalled();
+    const foreign = detail(); foreign.conversation.ownerId = ids.sample;
+    port.get = vi.fn(async () => ok(foreign));
+    const wrong = sessionFor(port, localApplication, ids.conversation); await wrong.open();
+    expect(wrong.getSnapshot().conversation).toBeNull(); expect(wrong.getSnapshot().loadStatus).toBe("error");
   });
 });
 
-describe("message delivery is distinct from a generation turn", () => {
-  it("persists one failed user message and creates no assistant, run, or course; retries use the same identity", async () => {
-    const { store, records } = memoryStore();
-    const services = { ...localApplication, sendMessage: vi.fn(localApplication.sendMessage) };
-    const session = sessionFor(store, services);
-    session.setComposer("Teach me AI deeply.");
-    await session.send();
-    const state = session.getSnapshot();
-    expect(state.conversation?.messages).toHaveLength(1);
-    expect(state.conversation?.messages[0]).toMatchObject({ role: "user", delivery: "failed", text: "Teach me AI deeply.", runId: null });
-    expect(state.run).toBeNull();
-    expect(state.conversation?.artifacts).toEqual([]);
-    expect(records.get(ids.conversation)?.messages).toEqual(state.conversation?.messages);
-    await session.retry(state.conversation!.messages[0]!.id);
-    expect(services.sendMessage).toHaveBeenCalledTimes(2);
-    expect(services.sendMessage.mock.calls[1]![0]).toEqual(services.sendMessage.mock.calls[0]![0]);
-    expect(session.getSnapshot().conversation?.messages).toHaveLength(1);
+describe("pending input and canonical delivery", () => {
+  it("saves one intent before sending and never invents a message or run on unavailable generation", async () => {
+    const { port, records } = cloud(); const services = { ...localApplication, sendMessage: vi.fn(localApplication.sendMessage) }; const session = sessionFor(port, services);
+    session.setComposer("Teach me AI deeply."); await session.send();
+    expect(records.get(ids.conversation)?.messages).toEqual([]);
+    expect(records.get(ids.conversation)?.composerDraft.pendingMessages).toHaveLength(1);
+    expect(session.getSnapshot().conversation?.messages[0]).toMatchObject({ delivery: "failed", text: "Teach me AI deeply." });
+    expect(session.getSnapshot().run).toBeNull();
+    const input = services.sendMessage.mock.calls[0]![0];
+    expect(input).toMatchObject({ branchId, expectedRevision: 1, parentMessageId: null });
+    await session.retry(input.messageId);
+    expect(services.sendMessage.mock.calls[1]![0]).toEqual(input);
+    expect(records.get(ids.conversation)?.composerDraft.pendingMessages).toHaveLength(1);
   });
 
-  it("assigns new message and request identities to edited failed content", async () => {
-    const { store } = memoryStore();
-    const services = { ...localApplication, sendMessage: vi.fn(localApplication.sendMessage) };
-    const session = sessionFor(store, services);
-    session.setComposer("Original wording");
-    await session.send();
-    const old = session.getSnapshot().conversation!.messages[0]!;
-    expect(session.editMessage(old.id)).toBe(true);
-    session.setComposer("Revised wording");
-    await session.send();
-    const next = session.getSnapshot().conversation!.messages[0]!;
-    expect(next.id).not.toBe(old.id);
-    expect(next.requestId).not.toBe(old.requestId);
-    expect(next.text).toBe("Revised wording");
-    expect(session.getSnapshot().conversation?.messages).toHaveLength(1);
-    session.setComposer("Unfinished later message");
-    expect(session.editMessage(next.id)).toBe(false);
-    expect(session.getSnapshot().conversation?.composerText).toBe("Unfinished later message");
+  it("does not send if the pending intent cannot be saved", async () => {
+    const { port } = cloud(detail()); port.saveComposer = vi.fn(async () => { throw new Error("offline"); });
+    const services = { ...localApplication, sendMessage: vi.fn(localApplication.sendMessage) }; const session = sessionFor(port, services, ids.conversation);
+    await session.open(); session.setComposer("Retain my input"); await session.send();
+    expect(session.getSnapshot().composerText).toBe("Retain my input"); expect(services.sendMessage).not.toHaveBeenCalled();
   });
 
-  it("retains concurrent composer input when an earlier send fails", async () => {
-    const { store } = memoryStore();
-    const reply = deferred<ServiceResult<SendMessageResult>>();
-    const services = { ...localApplication, sendMessage: vi.fn(() => reply.promise) };
-    const session = sessionFor(store, services);
-    session.setComposer("First question");
-    const sending = session.send();
-    await vi.waitFor(() => expect(services.sendMessage).toHaveBeenCalledOnce());
-    session.setComposer("A second thought");
-    reply.reject(new Error("Connection dropped"));
-    await sending;
-    expect(session.getSnapshot().conversation?.composerText).toBe("A second thought");
+  it("keeps later typing and exact retry identity after an unknown delivery", async () => {
+    const { port } = cloud(); const gate = deferred<ServiceResult<SendMessageResult>>(); const services = { ...localApplication, sendMessage: vi.fn<ApplicationPort["sendMessage"]>(() => gate.promise) };
+    const session = sessionFor(port, services); session.setComposer("First question"); const sending = session.send();
+    await vi.waitFor(() => expect(services.sendMessage).toHaveBeenCalledOnce()); session.setComposer("A second thought");
+    gate.reject(new Error("Connection dropped")); await sending;
+    expect(session.getSnapshot().composerText).toBe("A second thought");
     expect(session.getSnapshot().conversation?.messages[0]?.error?.messageKey).toBe("chat.deliveryUnknown");
+    const first = services.sendMessage.mock.calls[0]![0]; await session.retry(first.messageId);
+    expect(services.sendMessage.mock.calls[1]![0]).toEqual(first);
+    expect(session.editMessage(first.messageId)).toBe(false);
   });
 
-  it("rejects a delayed previous-turn snapshot after a newer message was accepted", async () => {
-    const { store } = memoryStore();
-    let count = 0;
-    const services = { ...localApplication, sendMessage: vi.fn(async (input: SendMessageInput) => accepted(input, count++ === 0 ? runId : ids.attempt)) };
-    const session = sessionFor(store, services);
-    session.setComposer("First turn");
-    await session.send();
-    const first = session.getSnapshot().stream!;
-    session.receiveEvent({ id: ids.evaluation, type: "run.completed", runId, branchId, seq: 1, at: timestamp });
-    session.setComposer("Second turn");
-    await session.send();
-    const current = session.getSnapshot().stream!;
-    const late: RunSnapshot = { run: { ...first.run, status: "succeeded", lastSeq: 1 }, messages: first.messages, artifacts: [artifact()], lastSeq: 1, retainedActionEvents: [] };
-    session.receiveSnapshot(late);
-    expect(session.getSnapshot().stream).toBe(current);
-    expect(session.getSnapshot().run?.id).toBe(ids.attempt);
-    expect(session.getSnapshot().conversation?.artifacts).toEqual([]);
-    session.receiveSnapshot({ ...late, run: { ...current.run, branchId: ids.missing } });
-    expect(session.getSnapshot().stream).toBe(current);
-    session.setComposer("Queued while agent works");
-    await session.send();
-    expect(services.sendMessage).toHaveBeenCalledTimes(2);
-    expect(session.getSnapshot().conversation?.composerText).toBe("Queued while agent works");
-  });
-
-  it("reload marks partial assistant text interrupted and preserves acceptance of the user message", async () => {
-    const saved = conversation();
-    const user = userMessage();
-    saved.messages = [user, { ...user, id: ids.evaluation, role: "assistant", text: "Partial but useful", requestId: null, status: "streaming" }];
-    const { store } = memoryStore(saved);
-    const session = sessionFor(store, localApplication, saved.id);
-    await session.open();
-    expect(session.getSnapshot().conversation?.messages[0]?.delivery).toBe("accepted");
-    expect(session.getSnapshot().conversation?.messages[1]).toMatchObject({ text: "Partial but useful", delivery: "accepted", status: "interrupted" });
-    expect(session.getSnapshot().run).toBeNull();
-    expect(session.getSnapshot().stream).toBeNull();
-    const restored: RunSnapshot = { run: { id: runId, ownerId: ids.actor, conversationId: saved.id, branchId, inputMessageId: user.id, status: "succeeded", lastSeq: 1, error: null, createdAt: timestamp, updatedAt: timestamp }, messages: [], artifacts: [], lastSeq: 1, retainedActionEvents: [] };
-    session.receiveSnapshot(restored);
-    expect(session.getSnapshot().run).toBeNull();
-    session.restoreSnapshot(restored);
-    expect(session.getSnapshot().run?.id).toBe(runId);
-    await session.flush();
-  });
-
-  it("a confirmed approval remains scoped to A when selection changes to B during the acknowledgement", async () => {
-    const saved = conversation();
-    saved.artifacts = [artifact(), artifact(ids.sample)];
-    saved.selectedCourseId = ids.course;
-    saved.messages = [userMessage()];
-    const { store } = memoryStore(saved);
-    const session = sessionFor(store, localApplication, saved.id);
-    await session.open();
-    const snapshot: RunSnapshot = { run: { id: runId, ownerId: ids.actor, conversationId: saved.id, branchId, inputMessageId: ids.question, status: "awaiting_user", lastSeq: 1, error: null, createdAt: timestamp, updatedAt: timestamp }, messages: [], artifacts: saved.artifacts, lastSeq: 1, retainedActionEvents: [] };
-    session.restoreSnapshot(snapshot);
+  it("uses a new identity for edited rejected content and keeps course selection independent of approval", async () => {
+    const saved = detail(); saved.artifacts = [artifact(), artifact(ids.sample)]; const { port } = cloud(saved);
+    const session = sessionFor(port, localApplication, ids.conversation); await session.open();
+    session.setComposer("Original wording"); await session.send(); const old = session.getSnapshot().pendingMessages[0]!;
+    expect(session.editMessage(old.messageId)).toBe(true); session.setComposer("Revised wording"); await session.send();
+    const next = session.getSnapshot().pendingMessages[0]!; expect(next.messageId).not.toBe(old.messageId); expect(next.requestId).not.toBe(old.requestId);
     const receipt = { id: ids.approval, draftId: ids.draft, draftRevision: 1, contentDigest: await curriculumDigest(saved.artifacts[0]!.curriculum!), approvedBy: ids.actor, approvedAt: timestamp };
-    const approving = session.acknowledgeApproval(ids.course, receipt);
-    session.selectCourse(ids.sample);
-    expect(await approving).toBe(true);
-    expect(session.getSnapshot().conversation?.selectedCourseId).toBe(ids.sample);
-    expect(session.getSnapshot().conversation?.artifacts[0]?.approval).toEqual(receipt);
+    const approving = session.acknowledgeApproval(ids.course, receipt); session.selectCourse(ids.sample); expect(await approving).toBe(true);
+    expect(session.getSnapshot().conversation?.selectedCourseId).toBe(ids.sample); expect(session.getSnapshot().conversation?.artifacts[0]?.approval).toEqual(receipt);
     expect(session.getSnapshot().conversation?.artifacts[1]?.approval).toBeNull();
+  });
+
+  it("accepts server history without persisting stream projections and rejects a stale branch", async () => {
+    const value = detail(); const receipt = accepted({ conversationId: ids.conversation, messageId: ids.question, requestId: ids.request, text: "A question", branchId, expectedRevision: 1, parentMessageId: null });
+    value.messages = [receipt.message]; value.activeTurn = receipt.run; value.artifacts = [artifact(), artifact(ids.sample)];
+    const { port } = cloud(value); const session = sessionFor(port, localApplication, ids.conversation); await session.open();
+    const snapshot: RunSnapshot = { run: { ...receipt.run, status: "awaiting_user", lastSeq: 1 }, messages: [receipt.message], artifacts: value.artifacts, lastSeq: 1, retainedActionEvents: [] };
+    session.restoreSnapshot(snapshot); const before = session.getSnapshot().stream;
+    session.receiveSnapshot({ ...snapshot, run: { ...snapshot.run, branchId: ids.missing } });
+    expect(session.getSnapshot().stream).toBe(before);
+    const approval = { id: ids.approval, draftId: ids.draft, draftRevision: 1, contentDigest: await curriculumDigest(value.artifacts[0]!.curriculum!), approvedBy: ids.actor, approvedAt: timestamp };
+    await session.acknowledgeApproval(ids.course, approval);
     expect(canApproveCurriculum(session.getSnapshot().stream!, ids.course, ids.draft, 1)).toBe(false);
-    expect(canApproveCurriculum(session.getSnapshot().stream!, ids.sample, ids.missing, 1)).toBe(true);
+    expect(port.saveComposer).not.toHaveBeenCalled();
   });
 });

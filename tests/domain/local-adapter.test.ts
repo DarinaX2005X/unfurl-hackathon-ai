@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { localApplication } from "../../src/application/local-adapter";
 import { ids } from "./fixtures";
 
-const input = { requestId: ids.request, conversationId: ids.conversation, messageId: ids.draft, text: "Teach me how to assess an AI model.", userLocale: "en" };
+const input = { requestId: ids.request, conversationId: ids.conversation, messageId: ids.draft, text: "Teach me how to assess an AI model.", userLocale: "en", expectedRevision: 1, branchId: ids.question, parentMessageId: null };
 
 describe("local application capabilities", () => {
   it("exposes actual empty collections without creating cloud records", async () => {

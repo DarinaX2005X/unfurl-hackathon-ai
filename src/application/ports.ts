@@ -1,9 +1,10 @@
 import { z } from "zod";
 import {
   ContentLanguageSchema, CourseSummarySchema, IdSchema, IsoDateTimeSchema,
-  type ApiError, type ChatMessage, type ContentLanguage, type CourseDetailPublic,
-  type CourseSummary, type AgentTurnRun, type Id, type Page,
+  type ApiError, type ChatMessage, type CourseDetailPublic,
+  type CourseSummary, type AgentTurnRun, type Page,
 } from "../domain";
+import { CloudSendMessageInputSchema, type CloudSendMessageInput } from "../domain/conversations";
 
 export interface CapabilitySet {
   generation: boolean;
@@ -19,20 +20,8 @@ export const CourseQuerySchema = z.object({
 export type CourseQuery = z.infer<typeof CourseQuerySchema>;
 export type ServiceResult<T> = { ok: true; data: T } | { ok: false; error: ApiError };
 
-export const SendMessageInputSchema = z.object({
-  requestId: IdSchema,
-  conversationId: IdSchema,
-  messageId: IdSchema,
-  text: z.string().max(20_000).refine((text) => text.trim().length > 0, "Write a message first"),
-  userLocale: ContentLanguageSchema.optional(),
-}).strict();
-export interface SendMessageInput {
-  requestId: Id;
-  conversationId: Id;
-  messageId: Id;
-  text: string;
-  userLocale?: ContentLanguage | undefined;
-}
+export const SendMessageInputSchema = CloudSendMessageInputSchema;
+export type SendMessageInput = CloudSendMessageInput;
 export interface SendMessageResult {
   message: ChatMessage;
   run: AgentTurnRun;

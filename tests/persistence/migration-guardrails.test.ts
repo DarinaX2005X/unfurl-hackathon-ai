@@ -37,4 +37,18 @@ describe("migration static guardrails (live PostgreSQL proof still required)", (
     expect(sql).toContain("Ready course versions are immutable");
     expect(sql).toContain("Completed generation requires its saved ready version");
   });
+
+  it("keeps one fixed campaign and immutable provider/accounting receipts", () => {
+    expect(sql).toContain("one_ai_budget_campaign on unfurl.ai_budgets ((true))");
+    expect(sql).toContain("check (hard_limit_micro_usd = 10000000)");
+    expect(sql).toContain("check (spendable_limit_micro_usd = 9500000)");
+    expect(sql).toContain("model_id = 'moonshotai/kimi-k2.6'");
+    expect(sql).toContain("provider_tag = 'digitalocean'");
+    expect(sql).toContain("unique (logical_operation_id, attempt)");
+    expect(sql).toContain("ai_response_immutable before update or delete");
+    expect(sql).toContain("ai_budget_entry_immutable before update or delete");
+    expect(sql).toContain("ai_budget_no_delete before delete");
+    expect(sql).toContain("old.state = 'unknown' and new.state = 'settled'");
+    expect(sql).not.toContain("old.state = 'unknown' and new.state = 'released'");
+  });
 });

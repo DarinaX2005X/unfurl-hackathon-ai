@@ -39,6 +39,7 @@ describe("conversation HTTP clients", () => {
   it("refuses legacy input without server context instead of inventing branch or revision IDs", async () => {
     const fetcher = vi.fn<typeof fetch>();
     const app = createHttpApplication(fetcher);
+    // @ts-expect-error Deliberately exercise a pre-migration caller at the runtime boundary.
     expect(await app.sendMessage({ requestId: ids.request, conversationId: ids.conversation, messageId: ids.message, text: "A local draft" }))
       .toMatchObject({ ok: false, error: { error: { code: "invalid_input" } } });
     expect(fetcher).not.toHaveBeenCalled();

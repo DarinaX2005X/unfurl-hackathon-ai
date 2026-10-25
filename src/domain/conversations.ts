@@ -21,7 +21,7 @@ export const PendingUserMessageSchema = z.object({
 }).strict();
 export type PendingUserMessage = z.infer<typeof PendingUserMessageSchema>;
 
-/** Strict server command; promoted to ApplicationPort with the connected creator. */
+/** A message is sent against the observed server conversation and branch. */
 export const CloudSendMessageInputSchema = PendingUserMessageSchema.extend({
   conversationId: IdSchema,
   expectedRevision: RevisionSchema,
