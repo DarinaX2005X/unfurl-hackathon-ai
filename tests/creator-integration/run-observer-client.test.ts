@@ -18,9 +18,9 @@ describe("agent run observer transport", () => {
     await expect(cancelRun(runId, new AbortController().signal, cancel)).resolves.toEqual(snapshot());
   });
 
-  it("retries with a stable command identity and requires a new run", async () => {
-    const fetcher = vi.fn(async (_url, init) => { expect(init).toMatchObject({ headers: expect.objectContaining({ "Idempotency-Key": ids.request }) }); return new Response(JSON.stringify({ data: snapshot(nextRunId) }), { status: 202 }); }) as unknown as typeof fetch;
-    await expect(retryRun(runId, ids.request, new AbortController().signal, fetcher)).resolves.toMatchObject({ run: { id: nextRunId } });
+  it.each([runId, nextRunId])("retries with a stable command identity and accepts an authoritative same-run or successor receipt", async (returnedRunId) => {
+    const fetcher = vi.fn(async (_url, init) => { expect(init).toMatchObject({ headers: expect.objectContaining({ "Idempotency-Key": ids.request }), body: "{}" }); return new Response(JSON.stringify({ data: snapshot(returnedRunId) }), { status: 202 }); }) as unknown as typeof fetch;
+    await expect(retryRun(runId, ids.request, new AbortController().signal, fetcher)).resolves.toMatchObject({ run: { id: returnedRunId } });
   });
 
   it("parses fragmented events and turns a mismatched SSE id into snapshot repair", async () => {

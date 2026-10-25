@@ -79,9 +79,28 @@ describe("paid completion boundary (simulated provider, no live quality claim)",
     expect(h.fetcher).toHaveBeenCalledTimes(1);
     expect(h.rateCards.current).toHaveBeenCalledTimes(1);
   });
+  it("returns a saved success when only the transport timer expires during persistence",async()=>{
+    const h=harness(),transport=new AbortController();
+    const timer=vi.spyOn(AbortSignal,"timeout").mockReturnValue(transport.signal);
+    const save=vi.mocked(h.budget.recordResponse).getMockImplementation()!;
+    vi.mocked(h.budget.recordResponse).mockImplementationOnce(async(...args)=>{transport.abort();return save(...args);});
+    try{await expect(h.model.complete(request(),new AbortController().signal)).resolves.toMatchObject({content:'{"answer":"ok"}'});
+      expect(h.fetcher).toHaveBeenCalledTimes(1);expect(h.saved()).not.toBeNull();
+    }finally{timer.mockRestore();}
+  });
+  it("still rejects caller cancellation after saving a complete response",async()=>{
+    const h=harness(),caller=new AbortController();
+    const save=vi.mocked(h.budget.recordResponse).getMockImplementation()!;
+    vi.mocked(h.budget.recordResponse).mockImplementationOnce(async(...args)=>{caller.abort();return save(...args);});
+    await expect(h.model.complete(request(),caller.signal)).rejects.toThrow("provider.cancelled");
+    expect(h.saved()).not.toBeNull();expect(h.budget.markUnknown).not.toHaveBeenCalled();
+  });
   it("retains actual cost of invalid structured output and refuses domain success", async () => {
     const h = harness();
-    await expect(h.model.generateStructured({ ...request(), schema: z.object({ required: z.number() }), schemaId: "answer", schemaVersion: 1 }, new AbortController().signal)).rejects.toThrow("provider.invalid_output");
+    const invalid={ ...request(), schema: z.object({ required: z.number() }), schemaId: "answer", schemaVersion: 1 };
+    await expect(h.model.generateStructured(invalid, new AbortController().signal)).rejects.toThrow("provider.invalid_output");
+    await expect(h.model.generateStructured(invalid, new AbortController().signal)).rejects.toThrow("provider.invalid_output");
+    expect(h.fetcher).toHaveBeenCalledTimes(1);
     expect(h.budget.recordResponse).toHaveBeenCalledTimes(1);
     expect(h.budget.markUnknown).not.toHaveBeenCalled();
   });

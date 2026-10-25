@@ -155,6 +155,27 @@ describe("account-owned chat input", () => {
     const wrong = sessionFor(port, localApplication, ids.conversation); await wrong.open();
     expect(wrong.getSnapshot().conversation).toBeNull(); expect(wrong.getSnapshot().loadStatus).toBe("error");
   });
+
+  it("hydrates retained activity once when a reload opens directly on a terminal turn", async () => {
+    const input = { conversationId: ids.conversation, messageId: ids.question, requestId: ids.request, text: "Research this topic", branchId, expectedRevision: 1, parentMessageId: null };
+    const receipt = accepted(input);
+    const failure = { code: "generation_failed" as const, messageKey: "generation.timeout", retryable: true, requestId: ids.request };
+    const failedRun = { ...receipt.run, status: "failed" as const, lastSeq: 3, error: failure };
+    const value = detail(); value.messages = [receipt.message]; value.activeTurn = failedRun;
+    const { port } = cloud(value); const session = sessionFor(port, localApplication, ids.conversation); await session.open();
+    expect(session.getSnapshot().stream?.actionEvents).toEqual([]);
+    const retained: RunSnapshot["retainedActionEvents"] = [
+      { id: "90000000-0000-4000-8000-000000000001", runId, branchId, seq: 1, at: timestamp, type: "action.started", invocationId: ids.evaluation, action: "search", labelKey: "actions.search" },
+      { id: "90000000-0000-4000-8000-000000000002", runId, branchId, seq: 2, at: timestamp, type: "action.completed", invocationId: ids.evaluation, resultSummary: "Sources saved.", sourceIds: [ids.source] },
+    ];
+    const snapshot: RunSnapshot = { run: failedRun, messages: value.messages, artifacts: [], lastSeq: 3, retainedActionEvents: retained };
+    session.receiveSnapshot(snapshot); session.receiveSnapshot(snapshot);
+    const hydrated = session.getSnapshot();
+    expect(hydrated.stream?.actionEvents).toEqual(retained);
+    expect(hydrated.stream?.lastAppliedSeq).toBe(3);
+    expect(hydrated.conversation?.messages.filter((message) => message.role === "user")).toHaveLength(1);
+    expect(hydrated.run?.status).toBe("failed");
+  });
 });
 
 describe("pending input and canonical delivery", () => {
@@ -215,5 +236,38 @@ describe("pending input and canonical delivery", () => {
     await session.acknowledgeApproval(ids.course, approval);
     expect(canApproveCurriculum(session.getSnapshot().stream!, ids.course, ids.draft, 1)).toBe(false);
     expect(port.saveComposer).not.toHaveBeenCalled();
+  });
+
+  it("keeps one accepted user message while a failed turn resumes in place and completes", async () => {
+    const { port, records } = cloud();
+    const services = { ...localApplication, sendMessage: vi.fn<ApplicationPort["sendMessage"]>(async (input) => {
+      const receipt = accepted(input);
+      const value = records.get(input.conversationId)!;
+      value.messages = [receipt.message]; value.activeTurn = receipt.run;
+      value.conversation = { ...value.conversation, revision: value.conversation.revision + 1 };
+      value.composerDraft = { ...value.composerDraft, revision: value.composerDraft.revision + 1, pendingMessages: [] };
+      return ok(receipt);
+    }) };
+    const session = sessionFor(port, services);
+    session.setComposer("Explain durable retries."); await session.send();
+    const acceptedState = session.getSnapshot();
+    expect(acceptedState.pendingMessages).toEqual([]);
+    expect(acceptedState.conversation?.messages).toHaveLength(1);
+    const run = acceptedState.stream!.run;
+    session.receiveSnapshot({ run, messages: records.get(ids.conversation)!.messages, artifacts: [], lastSeq: 1, retainedActionEvents: [] });
+    session.receiveEvent({ id: ids.missing, runId: run.id, branchId, seq: 2, at: timestamp, type: "run.failed",
+      error: { code: "generation_failed", messageKey: "generation.timeout", retryable: true, requestId: ids.request } });
+    expect(session.getSnapshot().run?.status).toBe("failed");
+    expect(session.resumeRun(run.id, { run: { ...run, status: "queued", error: null, lastSeq: 3 }, messages: records.get(ids.conversation)!.messages,
+      artifacts: [], lastSeq: 3, retainedActionEvents: [] })).toBe(true);
+    session.receiveEvent({ id: "90000000-0000-4000-8000-000000000004", runId: run.id, branchId, seq: 4, at: timestamp, type: "message.started", messageId: ids.evaluation });
+    session.receiveEvent({ id: "90000000-0000-4000-8000-000000000005", runId: run.id, branchId, seq: 5, at: timestamp, type: "message.delta", messageId: ids.evaluation, text: "A durable retry resumes saved work." });
+    session.receiveEvent({ id: "90000000-0000-4000-8000-000000000006", runId: run.id, branchId, seq: 6, at: timestamp, type: "message.completed", messageId: ids.evaluation });
+    session.receiveEvent({ id: "90000000-0000-4000-8000-000000000007", runId: run.id, branchId, seq: 7, at: timestamp, type: "run.completed" });
+    const complete = session.getSnapshot();
+    expect(complete.run?.status).toBe("succeeded");
+    expect(complete.pendingMessages).toEqual([]);
+    expect(complete.conversation?.messages.filter((message) => message.role === "user")).toHaveLength(1);
+    expect(complete.conversation?.messages.at(-1)).toMatchObject({ role: "assistant", text: "A durable retry resumes saved work.", status: "complete" });
   });
 });

@@ -296,7 +296,7 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
     return request.abort;
     // The immutable authoring intent owns this observer lifetime.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [actorId, observableAuthoringRun?.id, selected?.courseId, selected?.curriculum?.id, selected?.curriculum?.conversationId]);
+  }, [actorId, observableAuthoringRun?.id, observableAuthoringRun?.status, selected?.courseId, selected?.curriculum?.id, selected?.curriculum?.conversationId]);
 
   if (!selected) return null;
   const selectedAuthoring = authoring[selected.courseId];

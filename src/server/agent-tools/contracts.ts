@@ -10,7 +10,7 @@ export type SourceSelection = z.infer<typeof SourceSelectionSchema>;
 const selections = z.array(SourceSelectionSchema).min(1);
 
 /** No owner, approval, publish, enrollment, delete, code execution or tool-extension operation exists. */
-export const AgentDecisionSchema = z.discriminatedUnion("tool", [
+export const LegacyAgentDecisionSchema = z.discriminatedUnion("tool", [
   z.object({ tool: z.literal("search"), input: SearchInputSchema }).strict(),
   z.object({ tool: z.literal("read_source"), input: z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("url"), url: SourceUrlSchema }).strict(),
@@ -40,6 +40,16 @@ export const AgentDecisionSchema = z.discriminatedUnion("tool", [
   z.object({ tool: z.literal("respond"), input: z.object({
     text: z.string().trim().min(1).max(20000), awaitingUser: z.boolean(),
   }).strict() }).strict(),
+]);
+/** Old saved captures retain their exact paid request schema; only new captures expose this retrieval variant. */
+export const AgentDecisionSchema = z.discriminatedUnion("tool", [
+  LegacyAgentDecisionSchema.options[0],
+  z.object({ tool: z.literal("read_source"), input: z.discriminatedUnion("kind", [
+    ...LegacyAgentDecisionSchema.options[1].shape.input.options,
+    z.object({ kind: z.literal("search_result"), searchId: IdSchema, offset: z.number().int().min(0).max(5),
+      limit: z.number().int().min(1).max(5) }).strict(),
+  ]) }).strict(),
+  ...LegacyAgentDecisionSchema.options.slice(2),
 ]);
 export type AgentDecision = z.infer<typeof AgentDecisionSchema>;
 

@@ -1,4 +1,5 @@
 import "server-only";
+import { dispatchOwnedExecution } from "../runs/dispatcher";
 import { NextResponse, type NextRequest } from "next/server";
 import { IdSchema } from "../../domain/common";
 import {
@@ -46,7 +47,7 @@ export async function createConversationRoute(request: NextRequest) {
   } catch (error) { return failure(error, request); }
 }
 export async function getConversationRoute(request: NextRequest, id: string) {
-  try { return success(await conversationService.get(await requireActor(), idFor(id))); }
+  try { const actor=await requireActor();const data=await conversationService.get(actor,idFor(id));await dispatchOwnedExecution(actor);return success(data); }
   catch (error) { return failure(error, request); }
 }
 export async function renameConversationRoute(request: NextRequest, id: string) {
@@ -66,6 +67,7 @@ export async function deleteConversationRoute(request: NextRequest, id: string) 
     const key = keyFor(request);
     const body = await readInput(request, DeleteConversationInputSchema);
     await conversationService.remove(actor, idFor(id), body, key);
+    await dispatchOwnedExecution(actor);
     return privateResponse(new NextResponse(null, { status: 204 }));
   } catch (error) { return failure(error, request); }
 }
@@ -97,6 +99,7 @@ export async function sendMessageRoute(request: NextRequest, id: string) {
     const body = await readInput(request, CloudSendMessageInputSchema, { maxBytes: MESSAGE_BODY_LIMIT });
     if (body.conversationId !== idFor(id)) throw new ServiceFault(400, "invalid_input", "chat.invalidInput");
     const receipt = await conversationService.sendMessage(actor, body, key);
+    await dispatchOwnedExecution(actor,receipt.data.run.id);
     return success(receipt.data, receipt.status);
   } catch (error) { return failure(error, request); }
 }

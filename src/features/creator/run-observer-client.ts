@@ -5,10 +5,10 @@ import { ChatEventSchema, RunSnapshotSchema, type ChatEvent, type RunSnapshot } 
 const SnapshotResponseSchema = z.object({ data: RunSnapshotSchema }).strict();
 const target = (runId: string) => encodeURIComponent(IdSchema.parse(runId));
 
-async function snapshotResponse(response: Response, oldRunId?: string): Promise<RunSnapshot> {
+async function snapshotResponse(response: Response): Promise<RunSnapshot> {
   if (!response.ok) throw new Error(`run_snapshot_${response.status}`);
   const parsed = SnapshotResponseSchema.safeParse(await response.json());
-  if (!parsed.success || (oldRunId === undefined ? false : parsed.data.data.run.id === oldRunId)) throw new Error("run_snapshot_invalid");
+  if (!parsed.success) throw new Error("run_snapshot_invalid");
   return parsed.data.data;
 }
 
@@ -31,7 +31,9 @@ export async function retryRun(runId: string, idempotencyKey: string, signal: Ab
   const key = IdSchema.parse(idempotencyKey);
   const response = await fetcher(`/api/v1/runs/${target(runId)}/retry`, { method: "POST", credentials: "same-origin", cache: "no-store", signal,
     headers: { "Content-Type": "application/json", Accept: "application/json", "Idempotency-Key": key }, body: "{}" });
-  return snapshotResponse(response, runId);
+  // Most retries create a successor run. A timeout after a settled provider
+  // response can safely resume the same durable run and advances its cursor.
+  return snapshotResponse(response);
 }
 
 export interface RunEventHandlers { onEvent(event: ChatEvent): void; onSnapshotRequired(): void }

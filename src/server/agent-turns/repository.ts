@@ -9,6 +9,7 @@ import { canonicalJson } from "../ai/json";
 import type { ExecutionTarget } from "../runs/ports";
 import { requireCourseDraft } from "../curricula/repository";
 import { PostgresResearchRepository } from "../research/repository";
+import { attachSearchMemory, CompactSearchSchema, SearchMemorySchema } from "./search-memory";
 import { ToolObservationSchema, type AgentToolAuthority } from "../agent-tools/contracts";
 
 export function jsonValue(value: unknown): JsonValue { return JsonValueSchema.parse(JSON.parse(JSON.stringify(value))); }
@@ -21,6 +22,8 @@ export const ContextSnapshotSchema = z.object({
     title: z.string(), goal: z.string(), language: z.string(), readyVersionId: IdSchema.nullable() }).strict()),
   sources: z.array(z.object({ sourceId: IdSchema, title: z.string(), url: z.string() }).strict()),
   recentTools: z.array(z.object({ tool: z.string(), ok: z.boolean(), summary: z.string(), data: JsonValueSchema }).strict()),
+  searchMemory: SearchMemorySchema.optional(),
+  omittedRecentMessages: z.number().int().positive().optional(),
   languageIntent: z.object({ courseId: IdSchema, expectedCourseRevision: z.number().int(), draftId: IdSchema,
     expectedDraftRevision: z.number().int(), targetLanguage: z.string() }).strict().nullable(),
 }).strict();
@@ -77,6 +80,17 @@ export async function loadToolAuthority(tx: DbTransaction, target: ExecutionTarg
   return { ...agent, artifactIds, sourceIds };
 }
 
+/** A saved search is readable only through a successful tool receipt in this authorized job. */
+export async function readSavedSearch(tx: DbTransaction, jobId: string, searchId: string) {
+  const allowed = (await tx.query(`SELECT id FROM unfurl.run_steps WHERE job_id=$1 AND status='succeeded'
+    AND step_key LIKE 'agent.v1:%:tool' AND result_reference->>'tool'='search' AND result_reference->>'ok'='true'
+    AND result_reference->'data'->>'id'=$2 LIMIT 1`, [jobId, searchId])).rows[0];
+  if (!allowed) throw new ServiceFault(404, "not_found", "curriculum.notFound");
+  const result = await new PostgresResearchRepository().getSearch(tx, searchId);
+  if (!result) throw new ServiceFault(404, "not_found", "curriculum.notFound");
+  return result;
+}
+
 export async function captureContext(tx: DbTransaction, target: ExecutionTarget, jobId: string, index: number, now: string): Promise<ContextSnapshot> {
   const agent = asAgentTarget(target);
   const input = (await tx.query<{ parts: unknown }>("SELECT parts FROM unfurl.messages WHERE id=$1 AND conversation_id=$2 AND branch_id=$3 AND role='user'", [agent.inputMessageId, agent.conversationId, agent.branchId])).rows[0];
@@ -107,10 +121,18 @@ export async function captureContext(tx: DbTransaction, target: ExecutionTarget,
     const observation = ToolObservationSchema.parse(row.result_reference);
     return { tool: observation.tool, ok: observation.ok, summary: observation.summary, data: order === 0 ? observation.data : null };
   }).reverse();
+  const searchRows = (await tx.query<{ search: unknown }>(`SELECT jsonb_build_object(
+    'id',result_reference->'data'->'id', 'requestedQuery',result_reference->'data'->'requestedQuery',
+    'executedQuery',result_reference->'data'->'executedQuery',
+    'hits',COALESCE((SELECT jsonb_agg(jsonb_build_object('id',hit.value->'id','url',hit.value->'url','title',hit.value->'title') ORDER BY hit.ordinality)
+      FROM jsonb_array_elements(result_reference->'data'->'hits') WITH ORDINALITY AS hit(value,ordinality)), '[]'::jsonb)) AS search
+    FROM unfurl.run_steps WHERE job_id=$1 AND status='succeeded' AND step_key LIKE 'agent.v1:%:tool'
+      AND result_reference->>'tool'='search' AND result_reference->>'ok'='true' ORDER BY step_key`, [jobId])).rows;
+  const searches = searchRows.map((row) => CompactSearchSchema.parse(row.search));
   const intent = (await tx.query<{ course_id: string; expected_course_revision: number; draft_id: string; expected_draft_revision: number; target_language: string }>(`SELECT * FROM unfurl.course_language_revision_intents WHERE run_id=$1 AND owner_id=$2`, [agent.runId, agent.ownerId])).rows[0];
-  const snapshot = ContextSnapshotSchema.parse({ kind: "context", index, now, currentMessage, recentMessages, artifacts, sources, recentTools,
+  const snapshot = ContextSnapshotSchema.parse(attachSearchMemory({ kind: "context", index, now, currentMessage, recentMessages, artifacts, sources, recentTools,
     languageIntent: intent ? { courseId: intent.course_id, expectedCourseRevision: intent.expected_course_revision, draftId: intent.draft_id,
-      expectedDraftRevision: intent.expected_draft_revision, targetLanguage: intent.target_language } : null });
+      expectedDraftRevision: intent.expected_draft_revision, targetLanguage: intent.target_language } : null }, searches));
   canonicalJson(snapshot, 220 * 1024);
   return snapshot;
 }

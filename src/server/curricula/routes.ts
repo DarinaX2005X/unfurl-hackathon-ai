@@ -1,4 +1,5 @@
 import "server-only";
+import { dispatchOwnedExecution } from "../runs/dispatcher";
 import type { NextRequest } from "next/server";
 import { IdSchema } from "../../domain/common";
 import { ApproveCurriculumInputSchema, EditCourseMetadataInputSchema, PatchCurriculumInputSchema, RequestCourseLanguageInputSchema } from "../../domain/curriculum-authoring";
@@ -14,7 +15,7 @@ function identity(value: unknown): string {
 }
 const key = (request: Request) => identity(request.headers.get("Idempotency-Key"));
 export async function getCurriculumRoute(request: NextRequest, id: string) {
-  try { return success(await curriculumService.get(await requireActor(), identity(id))); }
+  try { const actor=await requireActor();const data=await curriculumService.get(actor,identity(id));await dispatchOwnedExecution(actor);return success(data); }
   catch (error) { return failure(error, request); }
 }
 export async function patchCurriculumRoute(request: NextRequest, id: string) {
@@ -23,6 +24,7 @@ export async function patchCurriculumRoute(request: NextRequest, id: string) {
     const actor = await requireActor();
     const input = await readInput(request, PatchCurriculumInputSchema, { maxBytes: 2_000_000 });
     const receipt = await curriculumService.patch(actor, identity(id), input, key(request));
+    if("run" in receipt.data)await dispatchOwnedExecution(actor,receipt.data.run.id);
     return success(receipt.data, receipt.status);
   } catch (error) { return failure(error, request); }
 }
@@ -32,6 +34,7 @@ export async function approveCurriculumRoute(request: NextRequest, id: string) {
     const actor = await requireActor();
     const input = await readInput(request, ApproveCurriculumInputSchema);
     const receipt = await curriculumService.approve(actor, identity(id), input, key(request));
+    await dispatchOwnedExecution(actor,receipt.data.run.id);
     return success(receipt.data, receipt.status);
   } catch (error) { return failure(error, request); }
 }
@@ -50,6 +53,7 @@ export async function requestCourseLanguageRoute(request: NextRequest, id: strin
     const actor = await requireActor();
     const input = await readInput(request, RequestCourseLanguageInputSchema);
     const receipt = await curriculumService.language(actor, identity(id), input, key(request));
+    await dispatchOwnedExecution(actor,receipt.data.run.id);
     return success(receipt.data, receipt.status);
   } catch (error) { return failure(error, request); }
 }

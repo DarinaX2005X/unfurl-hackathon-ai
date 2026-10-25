@@ -401,6 +401,19 @@ export class ChatSession {
       || snapshot.run.id !== current.run.id || snapshot.run.branchId !== current.run.branchId) return;
     this.applyStream(creatorStreamReducer(current, { type: "snapshot", snapshot }));
   }
+  resumeRun(previousRunId: string, snapshot: RunSnapshot): boolean {
+    const current = this.state.stream;
+    if (!this.current() || !this.detail || !current || current.run.id !== previousRunId || current.pending
+      || !["failed", "cancelled"].includes(current.run.status) || snapshot.run.ownerId !== this.options.actorId
+      || snapshot.run.conversationId !== this.detail.conversation.id || snapshot.run.branchId !== current.run.branchId
+      || snapshot.run.inputMessageId !== current.run.inputMessageId
+      || (snapshot.run.id === previousRunId && snapshot.lastSeq <= current.lastAppliedSeq)) return false;
+    const base = snapshot.run.id === previousRunId ? current : createStreamState({ ...snapshot.run, lastSeq: 0 }, [], current.artifacts);
+    const resumed = creatorStreamReducer(base, { type: "snapshot", snapshot });
+    if (resumed === current) return false;
+    this.applyStream(resumed);
+    return true;
+  }
   restoreSnapshot(snapshot: RunSnapshot): void {
     if (!this.current() || !this.detail || this.sending || snapshot.run.id !== this.detail.activeTurn?.id
       || snapshot.run.ownerId !== this.options.actorId || snapshot.run.conversationId !== this.detail.conversation.id || snapshot.run.branchId !== this.detail.conversation.activeBranchId) return;
@@ -417,7 +430,7 @@ export class ChatSession {
       if (index < 0) messages.push(incoming); else messages[index] = incoming;
     }
     this.detail = { ...this.detail, messages, artifacts: stream.artifacts, activeTurn: stream.run };
-    this.publish({ stream, run: stream.run }); this.project();
+    this.publish({ stream, run: stream.run, pendingMessages: unacceptedIntents(this.state.pendingMessages, messages) }); this.project();
   }
 }
 

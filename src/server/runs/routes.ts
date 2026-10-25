@@ -1,4 +1,5 @@
 import "server-only";
+import { dispatchOwnedExecution } from "../runs/dispatcher";
 import { z } from "zod";
 import { NextResponse, type NextRequest } from "next/server";
 import { randomUUID } from "node:crypto";
@@ -17,12 +18,12 @@ const invalid = () => new ServiceFault(400, "invalid_input", "generation.invalid
 export async function retryRunRoute(request: NextRequest, id: string, kind: ObservedRunKind) {
   try { assertSameOrigin(request);const actor=await requireActor();const target=runId(id);const key=IdSchema.safeParse(request.headers.get("Idempotency-Key"));
     if(!key.success)throw invalid();await readInput(request,z.object({}).strict(),{maxBytes:128});
-    const result=await retryRun(actor,target,kind,key.data);return success(result.data,result.status);
+    const result=await retryRun(actor,target,kind,key.data);await dispatchOwnedExecution(actor,result.data.run.id);return success(result.data,result.status);
   }catch(error){return failure(error,request);}
 }
 function runId(value: string) { const id = IdSchema.safeParse(value); if (!id.success) throw invalid(); return id.data; }
 export async function runSnapshotRoute(request: NextRequest, id: string, kind: ObservedRunKind) {
-  try { const actor = await requireActor(); return success(await withSystemTransaction("run_execution", tx => readRunSnapshot(tx, actor, runId(id), kind))); }
+  try { const actor = await requireActor(); const target=runId(id);const data=await withSystemTransaction("run_execution", tx => readRunSnapshot(tx, actor, target, kind));await dispatchOwnedExecution(actor,target);return success(data); }
   catch (error) { return failure(error, request); }
 }
 export async function runEventsRoute(request: NextRequest, id: string, kind: ObservedRunKind) {
@@ -33,6 +34,7 @@ export async function runEventsRoute(request: NextRequest, id: string, kind: Obs
     if (!/^(0|[1-9][0-9]{0,9})$/.test(raw)) throw invalid();
     let after = Number(raw);
     let batch = await withSystemTransaction("run_execution", tx => readRunEvents(tx, actor, target, kind, after));
+    await dispatchOwnedExecution(actor,target);
     const encoder = new TextEncoder(); let closed = false;
     const stream = new ReadableStream<Uint8Array>({
       async start(controller) {
@@ -76,6 +78,7 @@ export async function cancelRunRoute(request: NextRequest, id: string, kind: Obs
       }
       return readRunSnapshot(tx, actor, target, kind);
     });
+    await dispatchOwnedExecution(actor,target);
     return success(snapshot);
   } catch (error) { return failure(error, request); }
 }

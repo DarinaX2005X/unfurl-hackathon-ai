@@ -4,7 +4,7 @@ import { MODEL_ID, MODEL_POLICY_VERSION } from "../ai/constants";
 import { jsonDigest } from "../ai/json";
 import type { DbTransaction } from "../db";
 import type { ExecutionTarget, RunContext, RunHandler } from "../runs/ports";
-import { AgentDecisionReceiptSchema, AgentDecisionSchema, type AgentDecision, type AgentDecisionReceipt, type AgentToolAuthority, type ToolObservation } from "../agent-tools/contracts";
+import { AgentDecisionReceiptSchema, AgentDecisionSchema, LegacyAgentDecisionSchema, type AgentDecision, type AgentDecisionReceipt, type AgentToolAuthority, type ToolObservation } from "../agent-tools/contracts";
 import { executeAgentTool, prepareAgentDecision, type AgentToolDependencies } from "../agent-tools/executor";
 import * as repository from "./repository";
 import { ContextSnapshotSchema, type ContextSnapshot } from "./repository";
@@ -31,6 +31,7 @@ For a new course, infer its content language and audience from the user's stated
 Make requiredCapabilities cover the user's full intended result, including foundations, prerequisites and distinct requested branches. Do not impose a fixed number of modules, a short survey, hardcoded subject sequence or padding. Course depth must support the intended abilities. Use revise_curriculum with typed changes for edits; an empty changes list researches the current draft. Use the same tool to repair needs_research evidence before suggesting approval. A title/summary edit uses update_metadata. Language changes require revise_language and new researched approval/build; old lessons remain unchanged.
 If languageIntent is present, it is the current explicit action, while currentMessage is historical context: only research/read that target course, create its requested language revision at the captured revisions, or respond/clarify. Never create another course for this intent.
 After a useful saved result, respond with concise, concrete guidance in the conversation's language. State limitations or missing input plainly. awaitingUser is for a real clarification, not because one course awaits approval; other courses can continue independently. If a tool fails, inspect the result and adjust; do not repeat an identical failed request indefinitely. You may never fabricate a tool result or source.`;
+const searchMemoryInstructions = `searchMemory preserves searches from the entire current turn, including exact search and candidate IDs. Use the saved candidate URLs instead of repeating a search just because its result is no longer the latest tool. A null query/title/URL means bounded context overflow, not a missing search: retrieve that original search with read_source {kind:"search_result",searchId,offset,limit}. This retrieval is read-only and makes no new web search. Search candidates/snippets are never read sources or evidence. Read their URL before selecting source blocks. A latest tool payload marked payloadOmitted is an explicit reference; retrieve the saved blocks or artifact with a smaller selection. Do not infer omitted text.`;
 
 export function createAgentTurnHandler(dependencies: AgentToolDependencies, options: {
   journal?: AgentJournal;
@@ -68,22 +69,26 @@ export function createAgentTurnHandler(dependencies: AgentToolDependencies, opti
       }
       const snapshot = await context.read((tx) => journal.receipt(tx, context.claim.jobId, position.index, "capture", ContextSnapshotSchema));
       if (position.stage === "decision") {
+        const hasSearchMemory = snapshot.searchMemory !== undefined;
+        const decisionSchema: z.ZodType<AgentDecision> = hasSearchMemory ? AgentDecisionSchema : LegacyAgentDecisionSchema;
         await context.step({ key: repository.journalKey(position.index, "decision"), input: repository.jsonValue(snapshot),
-          digests: { ...commonDigests, schema: jsonDigest({ version: "agent-decision-v1" }) },
-          outputSchema: repository.jsonSchema(AgentDecisionSchema), resultSchema: repository.jsonSchema(AgentDecisionReceiptSchema),
+          executionProfile: "longform_curriculum",
+          digests: { ...commonDigests, schema: jsonDigest({ version: hasSearchMemory ? "agent-decision-v2" : "agent-decision-v1" }) },
+          outputSchema: repository.jsonSchema(decisionSchema), resultSchema: repository.jsonSchema(AgentDecisionReceiptSchema),
           effect: async (step) => {
             if (position.index >= AGENT_MAX_DECISIONS_PER_TURN) return repository.jsonValue({ tool: "respond", input: {
               text: "I paused this research sequence after a long run. Your saved courses and research are preserved. Continue when you are ready, or narrow the next step.", awaitingUser: true,
             } });
             const budget = step.budgetOperation("agent_decision");
             const result = await dependencies.model.generateStructured({ operationId: budget.logicalOperationId, purpose: "turn_planning",
-              instructionVersion: AGENT_INSTRUCTION_VERSION, trustedInstructions: instructions, untrustedInput: repository.jsonValue(snapshot),
-              model: MODEL_ID, maxOutputTokens: 4096, deadlineAt: step.deadlineAt, budget,
-              schema: AgentDecisionSchema, schemaId: "agent_decision", schemaVersion: 1 }, step.signal);
+              instructionVersion: hasSearchMemory ? "adaptive-course-agent-v2" : AGENT_INSTRUCTION_VERSION,
+              trustedInstructions: hasSearchMemory ? `${instructions}\n${searchMemoryInstructions}` : instructions, untrustedInput: repository.jsonValue(snapshot),
+              model: MODEL_ID, maxOutputTokens: 4096, executionProfile: "longform_curriculum", deadlineAt: step.deadlineAt, budget,
+              schema: decisionSchema, schemaId: "agent_decision", schemaVersion: hasSearchMemory ? 2 : 1 }, step.signal);
             return repository.jsonValue(result.data);
           },
           commit: async (tx, output) => {
-            const decision = AgentDecisionSchema.parse(output);
+            const decision = decisionSchema.parse(output);
             const authority = await journal.authority(tx, target, context.claim.jobId);
             const receipt = await journal.prepare(tx, authority, decision, position.index, snapshot.languageIntent);
             if (decision.tool !== "respond") await context.emitChat(tx, { type: "action.started", invocationId: receipt.invocationId,

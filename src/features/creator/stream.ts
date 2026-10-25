@@ -110,8 +110,9 @@ function drain(state: CreatorStreamState): CreatorStreamState {
 
 function applySnapshot(state: CreatorStreamState, snapshot: RunSnapshot): CreatorStreamState {
   const incoming = snapshot.run;
+  const resumed = terminal(state.run) && snapshot.lastSeq > state.lastAppliedSeq;
   if (incoming.id !== state.run.id || incoming.branchId !== state.run.branchId || incoming.conversationId !== state.run.conversationId
-    || snapshot.lastSeq < state.lastAppliedSeq || (terminal(state.run) && incoming.status !== state.run.status)) return state;
+    || snapshot.lastSeq < state.lastAppliedSeq || (terminal(state.run) && incoming.status !== state.run.status && !resumed)) return state;
   const artifacts = [...state.artifacts];
   for (const candidate of snapshot.artifacts) {
     if (candidate.curriculum && candidate.curriculum.conversationId !== incoming.conversationId) continue;

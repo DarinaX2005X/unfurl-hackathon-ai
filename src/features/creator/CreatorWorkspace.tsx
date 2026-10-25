@@ -23,6 +23,7 @@ import { CourseArtifactsPanel } from "./CourseArtifactsPanel";
 import type { ApproveCurriculum } from "./CurriculumPanel";
 import { chatScenarios } from "./scenarios";
 import { LegacyChatImport } from "./LegacyChatImport";
+import { cancelRun, getRunSnapshot, readRunEvents, retryRun } from "./run-observer-client";
 import "./creator.css";
 
 const sessions = new Map<string, WeakMap<ConversationPort, WeakMap<ApplicationPort, Map<string, ChatSession>>>>();
@@ -48,6 +49,13 @@ function sessionFor(actorId: string, conversations: ConversationPort, services: 
 }
 
 const compactQuery = "(max-width: 1279px)";
+function observerPause(signal: AbortSignal, delay: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(done, delay);
+    function done() { window.clearTimeout(timer); signal.removeEventListener("abort", done); resolve(); }
+    signal.addEventListener("abort", done, { once: true });
+  });
+}
 function subscribeCompact(listener: () => void) {
   const query = window.matchMedia(compactQuery);
   query.addEventListener("change", listener);
@@ -101,6 +109,13 @@ function AccountCreator({ actorId, conversationId = null, store = chatStore, con
   const [dialogError, setDialogError] = useState<string | null>(null);
   const [replaceScenario, setReplaceScenario] = useState<(typeof chatScenarios)[number] | null>(null);
   const [editNotice, setEditNotice] = useState(false);
+  const [runConnectionError, setRunConnectionError] = useState(false);
+  const [runCancelPending, setRunCancelPending] = useState(false);
+  const [runCancelError, setRunCancelError] = useState(false);
+  const [runRetryPending, setRunRetryPending] = useState(false);
+  const [runRetryError, setRunRetryError] = useState(false);
+  const runRetryKeys = useRef(new Map<string, string>());
+  const terminalSnapshotSeq = useRef(new Map<string, number>());
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const restored = useRef(false);
   const conversation = state.conversation;
@@ -109,6 +124,8 @@ function AccountCreator({ actorId, conversationId = null, store = chatStore, con
   const hasArtifacts = artifacts.length > 0;
   const pending = state.transmittingId !== null || Boolean(state.stream?.pending);
   const composerText = state.composerText;
+  const observedRunId = state.stream?.run.id ?? null;
+  const observedRunStatus = state.stream?.run.status ?? null;
 
   useEffect(() => {
     void session.open();
@@ -155,6 +172,67 @@ function AccountCreator({ actorId, conversationId = null, store = chatStore, con
     session.restoreSnapshot(initialSnapshot);
   }, [session, initialSnapshot, conversation, state.loadStatus]);
 
+  useEffect(() => {
+    if (!observedRunId) return;
+    const runId = observedRunId;
+    const initial = session.getSnapshot().stream;
+    if (!initial || initial.run.id !== runId) return;
+    if (!initial.pending && (terminalSnapshotSeq.current.get(runId) ?? -1) >= initial.lastAppliedSeq) return;
+    const request = accountScope.request(actorId);
+    const observe = async () => {
+      let repair = true;
+      let reconnectDelay = 750;
+      while (request.isCurrent()) {
+        const current = session.getSnapshot().stream;
+        if (!current || current.run.id !== runId) return;
+        try {
+          if (!current.pending) {
+            const snapshot = await getRunSnapshot(runId, request.signal);
+            session.receiveSnapshot(snapshot);
+            const hydrated = session.getSnapshot().stream;
+            if (!hydrated || hydrated.run.id !== runId || hydrated.lastAppliedSeq < snapshot.lastSeq) throw new Error("run_snapshot_scope");
+            if (!hydrated.pending) terminalSnapshotSeq.current.set(runId, hydrated.lastAppliedSeq);
+            setRunConnectionError(false);
+            return;
+          }
+          if (repair || current.needsSnapshot || current.replayAfterSeq !== null) {
+            const snapshot = await getRunSnapshot(runId, request.signal);
+            session.receiveSnapshot(snapshot);
+            const repaired = session.getSnapshot().stream;
+            if (!repaired || repaired.run.id !== runId || repaired.lastAppliedSeq < snapshot.lastSeq) throw new Error("run_snapshot_scope");
+            repair = false;
+          }
+          const ready = session.getSnapshot().stream;
+          if (!ready || ready.run.id !== runId) return;
+          if (!ready.pending) {
+            terminalSnapshotSeq.current.set(runId, ready.lastAppliedSeq);
+            setRunConnectionError(false);
+            return;
+          }
+          let snapshotRequired = false;
+          await readRunEvents(runId, ready.lastAppliedSeq, request.signal, {
+            onEvent(event) { session.receiveEvent(event); },
+            onSnapshotRequired() { snapshotRequired = true; },
+          });
+          if (!request.isCurrent()) return;
+          setRunConnectionError(false);
+          reconnectDelay = 750;
+          const updated = session.getSnapshot().stream;
+          if (updated && updated.run.id === runId && !updated.pending) continue;
+          repair = snapshotRequired || Boolean(updated?.needsSnapshot || updated?.replayAfterSeq !== null);
+        } catch (error) {
+          if (!request.isCurrent() || (error instanceof Error && error.name === "AbortError")) return;
+          setRunConnectionError(true);
+          await observerPause(request.signal, reconnectDelay);
+          reconnectDelay = Math.min(reconnectDelay * 2, 12_000);
+          repair = true;
+        }
+      }
+    };
+    void observe().finally(request.release);
+    return request.abort;
+  }, [actorId, observedRunId, observedRunStatus, session]);
+
   function applyScenario(scenario: (typeof chatScenarios)[number]) {
     if (composerText.trim()) { setReplaceScenario(scenario); return; }
     session.setComposer(scenario.text);
@@ -177,6 +255,55 @@ function AccountCreator({ actorId, conversationId = null, store = chatStore, con
     if (!success) { setDialogError("The change couldn’t be saved. Try again."); return; }
     if (dialog === "delete") window.location.assign(routes.chat());
     else setDialog(null);
+  }
+
+  async function retryFailedRun() {
+    const run = session.getSnapshot().stream?.run;
+    if (!run || !["failed", "cancelled"].includes(run.status) || runRetryPending) return;
+    const key = runRetryKeys.current.get(run.id) ?? crypto.randomUUID();
+    runRetryKeys.current.set(run.id, key);
+    setRunRetryPending(true); setRunRetryError(false);
+    const request = accountScope.request(actorId);
+    try {
+      const snapshot = await retryRun(run.id, key, request.signal);
+      if (!request.isCurrent() || !session.resumeRun(run.id, snapshot)) throw new Error("run_retry_scope");
+      runRetryKeys.current.delete(run.id);
+      setRunConnectionError(false);
+    } catch (error) {
+      if (request.isCurrent() && !(error instanceof Error && error.name === "AbortError")) setRunRetryError(true);
+    } finally {
+      if (request.isCurrent()) setRunRetryPending(false);
+      request.release();
+    }
+  }
+
+  async function stopActiveRun() {
+    const run = session.getSnapshot().stream?.run;
+    if (!run || !["queued", "running"].includes(run.status) || runCancelPending) return;
+    setRunCancelPending(true); setRunCancelError(false);
+    const request = accountScope.request(actorId);
+    const matches = (snapshot: RunSnapshot) => snapshot.run.id === run.id && snapshot.run.ownerId === actorId
+      && snapshot.run.conversationId === run.conversationId && snapshot.run.branchId === run.branchId
+      && snapshot.run.inputMessageId === run.inputMessageId;
+    try {
+      let snapshot: RunSnapshot;
+      try { snapshot = await cancelRun(run.id, request.signal); }
+      catch (error) {
+        if (!request.isCurrent() || (error instanceof Error && error.name === "AbortError")) throw error;
+        snapshot = await getRunSnapshot(run.id, request.signal);
+      }
+      if (!request.isCurrent() || !matches(snapshot)) throw new Error("run_cancel_scope");
+      if (session.getSnapshot().stream?.run.id !== run.id) throw new Error("run_cancel_stale");
+      session.receiveSnapshot(snapshot);
+      const reconciled = session.getSnapshot().stream?.run;
+      if (!reconciled || reconciled.id !== run.id || reconciled.status !== snapshot.run.status) throw new Error("run_cancel_unconfirmed");
+      if (["queued", "running"].includes(reconciled.status)) setRunCancelError(true);
+    } catch (error) {
+      if (request.isCurrent() && !(error instanceof Error && error.name === "AbortError")) setRunCancelError(true);
+    } finally {
+      if (request.isCurrent()) setRunCancelPending(false);
+      request.release();
+    }
   }
 
   const visibleHistory = conversation ? [conversation, ...history.filter((item) => item.id !== conversation.id)] : history;
@@ -204,6 +331,9 @@ function AccountCreator({ actorId, conversationId = null, store = chatStore, con
         {state.saveStatus === "error" && <Notice tone="error"><p>{chatStorageMessage(state.storageError)}</p><Button variant="quiet" size="compact" onClick={() => void session.flush()}>Retry saving</Button></Notice>}
         {state.composerConflict && <Notice tone="warning"><p>Your saved input changed in another session. Both versions have been kept.</p><Button variant="quiet" size="compact" onClick={() => setConflictOpen(true)}>Review both versions</Button></Notice>}
         {editNotice && <Notice tone="info">Finish your current message first. If delivery wasn’t confirmed, retry that message before editing it.</Notice>}
+        {runConnectionError && state.stream?.pending && <Notice tone="warning">Live response updates were interrupted. Reconnecting…</Notice>}
+        {state.stream?.pending && <Notice tone="info" action={<Button variant="quiet" size="compact" pending={runCancelPending} onClick={() => void stopActiveRun()}>Stop response</Button>}><p>Your message is saved. Stopping ends only this response.</p>{runCancelError && <p>The stop wasn’t confirmed. Try again to check this same response.</p>}</Notice>}
+        {state.run && ["failed", "cancelled"].includes(state.run.status) && <Notice tone="error" action={<Button variant="quiet" size="compact" pending={runRetryPending} onClick={() => void retryFailedRun()}>Retry response</Button>}><p>{state.run.status === "failed" ? "The response stopped before it was complete." : "The response was stopped."} Your message is already saved and won’t be sent again.</p>{runRetryError && <p>The retry wasn’t confirmed. Try again to check the same retry.</p>}</Notice>}
       </div>
       {!hasMessages && <div className="creator-scenarios" aria-label="Ideas to start with">{chatScenarios.map((scenario) => <button type="button" className="creator-scenario" key={scenario.id} onClick={() => applyScenario(scenario)}><strong>{scenario.title}</strong><span>{scenario.preview}</span></button>)}</div>}
     </div>

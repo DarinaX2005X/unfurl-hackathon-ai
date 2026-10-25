@@ -17,7 +17,7 @@ import { composeDurableCurriculum } from "../curriculum-research/durable-compose
 import { commitResearchedRevision } from "../curriculum-research/persistence";
 import { createResearchedCourse, curriculumConflict, readArtifact, requireCourseDraft, requireDraft } from "../curricula/repository";
 import { editMetadataInTransaction, readAuthoringSnapshot } from "../curricula/service";
-import { asAgentTarget, jsonSchema, jsonValue, journalKey, loadToolAuthority, type ContextSnapshot } from "../agent-turns/repository";
+import { asAgentTarget, jsonSchema, jsonValue, journalKey, loadToolAuthority, readSavedSearch, type ContextSnapshot } from "../agent-turns/repository";
 import { AgentDecisionReceiptSchema, ToolObservationSchema, type AgentDecision, type AgentDecisionReceipt, type AgentToolAuthority, type ToolObservation } from "./contracts";
 
 const ReadResultSchema = z.union([
@@ -26,6 +26,7 @@ const ReadResultSchema = z.union([
 ]);
 const ToolOutputSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("search"), result: SearchResultSchema }).strict(),
+  z.object({ kind: z.literal("saved_search"), result: SearchResultSchema, offset: z.number().int(), limit: z.number().int() }).strict(),
   z.object({ kind: z.literal("source"), result: ReadResultSchema }).strict(),
   z.object({ kind: z.literal("blocks"), sourceId: IdSchema, blocks: z.array(SourceBlockSchema), overview: z.boolean() }).strict(),
   z.object({ kind: z.literal("artifact"), snapshot: CurriculumAuthoringSnapshotSchema }).strict(),
@@ -139,6 +140,11 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
           case "search": output = { kind: "search", result: await dependencies.researchForStep(step).search(decision.input, step.signal) }; break;
           case "read_source": {
             if (decision.input.kind === "url") output = { kind: "source", result: await dependencies.researchForStep(step).read({ url: decision.input.url }, step.signal) };
+            else if (decision.input.kind === "search_result") {
+              const selection = decision.input;
+              output = { kind: "saved_search", result: await context.read((tx) => readSavedSearch(tx, context.claim.jobId, selection.searchId)),
+                offset: selection.offset, limit: selection.limit };
+            }
             else {
               const selection = decision.input;
               if (!authority.sourceIds.has(selection.sourceId)) throw notInScope();
@@ -182,6 +188,12 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
           await new PostgresResearchRepository().saveSearch(tx, output.result);
           result = observation(decision.tool, true, `Found ${output.result.hits.length} source candidates. These search results still need to be read.`, output.result); break;
         }
+        case "saved_search": result = observation(decision.tool, true, "Read saved search candidates. Their snippets are not read sources or research evidence.", {
+          searchId: output.result.id, requestedQuery: output.result.requestedQuery, executedQuery: output.result.executedQuery,
+          hits: output.result.hits.slice(output.offset, output.offset + output.limit), offset: output.offset, totalHits: output.result.hits.length,
+          nextOffset: output.offset + output.limit < output.result.hits.length ? output.offset + output.limit : null,
+          limitations: output.result.limitations, snippetsAreReadSources: false,
+        }); break;
         case "source": {
           if (output.result.status !== "success") { result = observation(decision.tool, false, `This source could not be read (${output.result.status}).`, output.result); break; }
           const source = await new PostgresResearchRepository().saveSource(tx, output.result.document);

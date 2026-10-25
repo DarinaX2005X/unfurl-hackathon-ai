@@ -11,6 +11,7 @@ import { executeIdempotentInTransaction } from "../idempotency";
 import { getRuntimeAdmission } from "./composition";
 import { enqueueAcceptedRun } from "./enqueue";
 import { readRunSnapshot, requireObservedRun, type ObservedRunKind } from "./observer";
+import { resumeSavedAgentDecision } from "./receipt-resume";
 
 const conflict=()=>new ServiceFault(409,"revision_conflict","generation.changed");
 export async function retryRunInTransaction(tx:DbTransaction,actor:Actor,id:string,kind:ObservedRunKind){
@@ -38,6 +39,7 @@ export async function retryRunInTransaction(tx:DbTransaction,actor:Actor,id:stri
         WHERE c.id=$1 AND c.owner_id=$2 AND c.revision=$3 AND d.id=$4 AND d.revision=$5`,[intent.course_id,actor.id,intent.expected_course_revision,intent.draft_id,intent.expected_draft_revision])).rowCount;
       if(valid!==1)throw conflict();
     }
+    if(await resumeSavedAgentDecision(tx,actor,run))return{runId:id};
     await tx.query("INSERT INTO unfurl.agent_turn_runs(id,owner_id,conversation_id,branch_id,input_message_id,status,retry_of_run_id) VALUES($1,$2,$3,$4,$5,'queued',$6)",[next,actor.id,run.conversation_id,run.branch_id,run.input_message_id,id]);
     if(intent)await tx.query(`INSERT INTO unfurl.course_language_revision_intents(run_id,owner_id,course_id,expected_course_revision,draft_id,expected_draft_revision,target_language)
       VALUES($1,$2,$3,$4,$5,$6,$7)`,[next,actor.id,intent.course_id,intent.expected_course_revision,intent.draft_id,intent.expected_draft_revision,intent.target_language]);

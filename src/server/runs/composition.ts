@@ -35,7 +35,9 @@ function pythonProjectId():string|null{
 function createRuntime() {
   const budgetId=z.uuid().safeParse(process.env.AI_BUDGET_ID);if(!budgetId.success)throw unavailable("generation.unavailable");
   const budget=new PostgresBudget(budgetId.data);const gate=new PersistedCapabilityGate(process.env.VERCEL?"vercel":"local",budget);
-  const rates=new OpenRouterRateCards();const model=new OpenRouterModel({apiKey:()=>process.env.OPENROUTER_API_KEY,budget,gate,rateCards:rates});
+  const metadata=new OpenRouterRateCards();
+  const rates={async current(signal:AbortSignal){const card=await metadata.current(signal);await gate.assertEndpointCompatible(card.snapshot.endpointName);return card;}};
+  const model=new OpenRouterModel({apiKey:()=>process.env.OPENROUTER_API_KEY,budget,gate,rateCards:rates});
   const researchForStep=(step:StepEffectContext)=>new OpenRouterResearch(model,{budget:step.budgetOperation("research_search"),deadlineAt:step.deadlineAt});
   const projectId=pythonProjectId();const python=projectId?createPythonExecutionPort({persistence:new PostgresPythonExecutionPersistence(),projectId}):undefined;
   const pythonGate=projectId?new VercelOidcPythonCapabilityGate(projectId):null;
@@ -44,17 +46,19 @@ function createRuntime() {
 }
 export function getRuntime(){return runtime??=createRuntime();}
 export async function getRuntimeCapabilityProjection(){
-  try{const runtime=getRuntime();const available=await runtime.gate.refresh();
+  try{await (await import("./dispatcher")).ensureDispatchReady();const runtime=getRuntime();const available=await runtime.gate.refresh();
     if(!runtime.registry.has("agent_turn")||!runtime.registry.has("generation")||!["budget_accounting","dispatcher","run_recovery","model_structured","research_search","rubric"].every(key=>available.has(key as Parameters<typeof available.has>[0])))return{generation:false};
     await runtime.budget.assertAvailable({probe:false});return{generation:true};
   }catch{return{generation:false};}
 }
 export function getRuntimeAdmission(){return {async assertAvailable(kind:ExecutionKind){
+  await (await import("./dispatcher")).ensureDispatchReady();
   const runtime=getRuntime();if(!runtime.registry.has(kind))throw unavailable("generation.unavailable");
   await runtime.gate.assertExecutionAvailable(kind==="agent_turn"?["model_structured","research_search"]:["model_structured","research_search","rubric"]);
   await runtime.rates.current(AbortSignal.timeout(10000));
 }};}
 export function getLearningRuntimeAdmission():LearningAdmission{return {async assertAvailable(input){
+  await (await import("./dispatcher")).ensureDispatchReady();
   const runtime=getRuntime();if(!runtime.registry.has(input.kind))throw unavailable("learning.unavailable");
   const needed=learningCapabilityRequirements(input);
   if(needed.model){await runtime.gate.assertExecutionAvailable(needed.rubric?["model_structured","rubric"]:["model_structured"]);await runtime.rates.current(AbortSignal.timeout(10000));}
@@ -63,7 +67,9 @@ export function getLearningRuntimeAdmission():LearningAdmission{return {async as
 }};}
 export async function getMechanicRuntimeCapabilities():Promise<MechanicRuntimeCapabilities>{
   const runtime=getRuntime();const capabilities=await runtime.gate.refresh();
-  const durable=capabilities.has("dispatcher")&&capabilities.has("run_recovery")&&runtime.registry.has("activity_action");
+  // This port is injected only into an already claimed generation handler. Native Workflow
+  // continuation is independent of a recent HTTP dispatcher request or an open browser.
+  const durable=capabilities.has("run_recovery")&&runtime.registry.has("activity_action");
   const model=capabilities.has("model_structured")&&capabilities.has("rubric");
   let budget=false;try{await runtime.budget.assertAvailable({probe:false});budget=true;}catch{/* Retain unavailable capability. */}
   const sandbox=runtime.pythonGate?(await runtime.pythonGate.inspect(AbortSignal.timeout(10000))).status==="available":false;

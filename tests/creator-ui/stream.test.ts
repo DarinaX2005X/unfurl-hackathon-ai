@@ -232,6 +232,43 @@ describe("conversation turns and independently versioned course artifacts", () =
 });
 
 describe("stream snapshot recovery", () => {
+  it("resumes a failed run in place from its advanced acceptance cursor without duplicating the user message", () => {
+    const researched = apply(initial(), event(1, { type: "action.started", invocationId, action: "research_module", labelKey: "actions.researchModule" }),
+      event(2, { type: "action.completed", invocationId, resultSummary: "Research saved.", sourceIds: [ids.source] }));
+    const failed = apply(researched, event(3, { type: "run.failed", error: { code: "generation_failed", messageKey: "generation.timeout", retryable: true, requestId: ids.request } }));
+    const resumed = creatorStreamReducer(failed, { type: "snapshot", snapshot: snapshot(failed, {
+      run: { ...failed.run, status: "queued", error: null, lastSeq: 4 }, lastSeq: 4,
+      messages: [userMessage()], retainedActionEvents: researched.actionEvents,
+    }) });
+    expect(resumed.run).toMatchObject({ id: runId, status: "queued", error: null });
+    expect(resumed.lastAppliedSeq).toBe(4);
+    expect(resumed.pending).toBe(true);
+    expect(resumed.messages).toEqual([userMessage()]);
+    expect(resumed.actionEvents).toEqual(researched.actionEvents);
+    const completed = apply(resumed, event(5, { type: "message.started", messageId }), event(6, { type: "message.delta", messageId, text: "Recovered answer." }),
+      event(7, { type: "message.completed", messageId }), event(8, { type: "run.completed" }));
+    expect(completed.run.status).toBe("succeeded");
+    expect(completed.lastAppliedSeq).toBe(8);
+    expect(completed.messages.filter((message) => message.role === "user")).toEqual([userMessage()]);
+    expect(text(completed)).toBe("Recovered answer.");
+  });
+
+  it("adopts an authoritative same-run resume that advanced before reconnect reached queued", () => {
+    const failed = apply(initial(), event(1, { type: "run.failed", error: { code: "generation_failed", messageKey: "generation.timeout", retryable: true, requestId: ids.request } }));
+    const running = creatorStreamReducer(failed, { type: "snapshot", snapshot: snapshot(failed, {
+      run: { ...failed.run, status: "running", error: null, lastSeq: 3 }, lastSeq: 3,
+    }) });
+    expect(running.run.status).toBe("running");
+    expect(running.lastAppliedSeq).toBe(3);
+    const completed = creatorStreamReducer(running, { type: "snapshot", snapshot: snapshot(running, {
+      run: { ...running.run, status: "succeeded", error: null, lastSeq: 5 }, lastSeq: 5,
+    }) });
+    expect(completed.run.status).toBe("succeeded");
+    expect(completed.lastAppliedSeq).toBe(5);
+    expect(completed.messages.filter((message) => message.role === "user")).toEqual([userMessage()]);
+    expect(creatorStreamReducer(completed, { type: "snapshot", snapshot: snapshot(failed) })).toBe(completed);
+  });
+
   it("restores only retained action events in the current scope and continues in order", () => {
     const working = apply(initial(), event(1, { type: "action.started", invocationId, action: "read_source", labelKey: "actions.readSource" }), event(2, { type: "action.completed", invocationId, resultSummary: "Read the source.", sourceIds: [ids.source] }));
     const foreign = { ...event(3, { type: "action.started", invocationId: ids.missing, action: "search", labelKey: "actions.search" }), branchId: ids.missing };

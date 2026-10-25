@@ -14,6 +14,7 @@ import { ServiceFault, unavailable } from "../auth/errors";
 import { withActorTransaction, withSystemTransaction, type DbTransaction } from "../db";
 import { executeIdempotentInTransaction, requestDigest, type MutationReceipt } from "../idempotency";
 import type { ConversationExecution } from "./execution";
+import { getConversationExecution } from "../runs/composition";
 import * as repository from "./repository";
 
 export interface ConversationTransactions {
@@ -175,6 +176,7 @@ export function createConversationService(options: ServiceOptions = {}) {
   };
 }
 
-// The real execution producer is composed here after its explicit handoff.
-export const conversationService = createConversationService();
+// Keep runtime construction lazy inside the execution adapter, while ensuring
+// the production singleton can actually admit and enqueue accepted turns.
+export const conversationService = createConversationService({ execution: getConversationExecution() });
 export type ConversationService = ReturnType<typeof createConversationService>;

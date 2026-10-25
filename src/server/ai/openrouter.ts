@@ -59,7 +59,7 @@ export class OpenRouterModel implements ModelPort {
   }
   async complete(request: ModelRequestBase, signal: AbortSignal, options: CompletionOptions = {}): Promise<PaidCompletion> {
     const longform=request.executionProfile==="longform_curriculum"||request.executionProfile==="longform_content";
-    const profilePurpose=request.executionProfile==="longform_curriculum"?request.purpose==="curriculum":
+    const profilePurpose=request.executionProfile==="longform_curriculum"?["curriculum","turn_planning"].includes(request.purpose):
       request.executionProfile==="longform_content"?["source_extraction","module_knowledge","task_authoring","content_review"].includes(request.purpose):true;
     if (request.model !== MODEL_ID || !Number.isSafeInteger(request.maxOutputTokens) || request.maxOutputTokens < 1 ||
       (request.executionProfile!==undefined&&!longform)||(longform&&(!profilePurpose||options.search))||
@@ -148,7 +148,11 @@ export class OpenRouterModel implements ModelPort {
       await this.dependencies.budget.recordResponse(reserved, receipt, cost);
       responseSaved = true;
       if (exceeded) await this.dependencies.budget.halt("usage_bound_exceeded");
-      if (combined.aborted) throw new ProviderFailure(signal.aborted ? "cancelled" : "timeout");
+      // The transport timer bounds receiving the response. Once its complete receipt is
+      // durably saved, only the caller's effect deadline/cancellation can reject delivery.
+      // A slow DB commit must not discard a successful, already charged response.
+      if (signal.aborted) throw new ProviderFailure("cancelled");
+      if (Date.now()>=request.deadlineAt) throw new ProviderFailure("timeout");
       if(options.search&&cost===null)throw new ProviderFailure("unavailable");
       return this.replay(request, {...reserved,state:cost===null?"unknown":"settled"}, receipt, false);
     } catch (error) {
