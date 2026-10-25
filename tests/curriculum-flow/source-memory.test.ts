@@ -57,7 +57,8 @@ it("recovers a failed-read overflow reference only through its current job's rec
   const tx = { query } as unknown as DbTransaction;
   expect(await readSavedSourceResult(tx, ids.approval, ids.task)).toEqual(saved);
   await expect(readSavedSourceResult(tx, ids.missing, ids.task)).rejects.toMatchObject({ status: 404 });
-  expect(query.mock.calls[0]![0]).toContain("job_id=$1 AND id=$2");
+  expect(query.mock.calls[0]![0]).toContain("current_job.id=$1");
+  expect(query.mock.calls[0]![0]).toContain("WHERE id=$2");
 });
 
 it("exposes a paged history instead of failing when even all source headers exceed the context budget", async () => {

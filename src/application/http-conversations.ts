@@ -4,6 +4,7 @@ import { ConversationSchema } from "../domain/generation";
 import { ApiErrorSchema, type ApiError } from "../domain/errors";
 import {
   ComposerDraftSchema, ConversationDetailSchema, ConversationPageSchema,
+  ConversationActionPageSchema, ConversationActionQuerySchema,
   ConversationQuerySchema, CreateConversationInputSchema, DeleteConversationInputSchema,
   ImportConversationInputSchema, ImportConversationResultSchema,
   RenameConversationInputSchema, SaveComposerInputSchema,
@@ -78,6 +79,17 @@ export function createHttpConversations(fetcher: typeof fetch = (...args) => fet
       if (!path) return conversationFailure(crypto.randomUUID(), true);
       const result = await request(path, "GET", ConversationDetailSchema, { ...(signal ? { signal } : {}) });
       return result.ok && result.data.conversation.id !== id ? conversationFailure(crypto.randomUUID()) : result;
+    },
+    async getActions(id, query = {}, signal) {
+      signal?.throwIfAborted();
+      const path = pathFor(id);
+      const parsed = ConversationActionQuerySchema.safeParse(query);
+      if (!path || !parsed.success) return conversationFailure(crypto.randomUUID(), true);
+      const params = new URLSearchParams();
+      if (parsed.data.cursor) params.set("cursor", parsed.data.cursor);
+      if (parsed.data.limit) params.set("limit", String(parsed.data.limit));
+      const result = await request(`${path}/actions${params.size ? `?${params}` : ""}`, "GET", ConversationActionPageSchema, { ...(signal ? { signal } : {}) });
+      return result.ok && result.data.conversationId !== id ? conversationFailure(crypto.randomUUID()) : result;
     },
     create: (input, key, signal) => mutation("/api/v1/conversations", "POST", CreateConversationInputSchema, ConversationDetailSchema, input, key, signal),
     rename: (id, input, key, signal) => pathFor(id) ? mutation(pathFor(id)!, "PATCH", RenameConversationInputSchema, ConversationSchema, input, key, signal) : Promise.resolve(conversationFailure(key, true)),

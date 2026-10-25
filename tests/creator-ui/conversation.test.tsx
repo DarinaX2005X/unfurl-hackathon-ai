@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Conversation } from "../../src/features/creator/Conversation";
-import { conversationTimeline, sourceLink, type ActionFacts } from "../../src/features/creator/conversation-timeline";
+import { conversationTimeline, mergeActionEvents, sourceLink, type ActionFacts } from "../../src/features/creator/conversation-timeline";
 import { createStreamState, creatorStreamReducer } from "../../src/features/creator/stream";
 import type { LocalMessage } from "../../src/domain/chat";
 import type { ActionEvent, AgentTurnRun, ChatEvent } from "../../src/domain/generation";
@@ -21,8 +21,8 @@ function completed(seq: number, invocationId: string, details?: ActionFacts): Ac
     type: "action.completed", invocationId, resultSummary: "read_artifact sourceId=secret-id digest=deadbeef revision=47", sourceIds: [ids.source],
     ...(details ? { details } : {}) } as ActionEvent;
 }
-const render = (messages: LocalMessage[], events: ActionEvent[], pending = false, interrupted = false) => renderToStaticMarkup(
-  <Conversation messages={messages} actionEvents={events} pending={pending} interrupted={interrupted} transmittingId={null} onRetry={vi.fn()} onEdit={vi.fn()} />,
+const render = (messages: LocalMessage[], events: ActionEvent[], pending = false, interrupted = false, currentRunId: string | null = ids.request) => renderToStaticMarkup(
+  <Conversation messages={messages} actionEvents={events} currentRunId={currentRunId} pending={pending} interrupted={interrupted} transmittingId={null} onRetry={vi.fn()} onEdit={vi.fn()} />,
 );
 
 describe("natural conversation presentation", () => {
@@ -30,7 +30,7 @@ describe("natural conversation presentation", () => {
     const messages = [message("user", "Teach me", "user"), message("intro", "I’ll find sources."), message("finding", "Here is what I found.")];
     const events = [completed(2, "search"), started(1, "search", "intro"), started(3, "read", "finding")];
     const timeline = conversationTimeline(messages, events);
-    expect(timeline.map((item) => item.kind === "message" ? item.message.id : item.id)).toEqual(["user", "intro", "search", "finding", "read"]);
+    expect(timeline.map((item) => item.kind === "message" ? item.message.id : item.id)).toEqual(["user", "intro", `${ids.request}:search`, "finding", `${ids.request}:read`]);
     const html = render(messages, events, true);
     expect(html.indexOf("I’ll find sources.")).toBeLessThan(html.indexOf("Searched the web"));
     expect(html.indexOf("Searched the web")).toBeLessThan(html.indexOf("Here is what I found."));
@@ -76,6 +76,17 @@ describe("natural conversation presentation", () => {
     const responding = render(messages, [...events, completed(3, "new-step")], true);
     expect(responding).toContain("Unfurl is responding");
     expect(responding.match(/class="creator-responding"/g)).toHaveLength(1);
+  });
+  it("deduplicates history by event identity and orders different runs by chronology, then per-run sequence", () => {
+    const later = new Date(Date.parse(timestamp) + 1_000).toISOString();
+    const old = started(2, "old");
+    const first = { ...started(1, "new"), id: "new-1", runId: ids.attempt, at: later };
+    const second = { ...completed(2, "new"), id: "new-2", runId: ids.attempt, at: later };
+    const merged = mergeActionEvents(ids.sample, [second], [old, first, old]);
+    expect(merged.map((event) => event.id)).toEqual([old.id, first.id, second.id]);
+    const html = render([message("old", "Earlier"), message("new", "Continuing", "assistant", later)], merged, true, false, ids.attempt);
+    expect(html).toContain("Work paused");
+    expect(html.match(/class="creator-responding"/g)).toHaveLength(1);
   });
   it("rejects executable and credential-bearing source links", () => {
     expect(sourceLink("javascript:alert(1)")).toBeUndefined();

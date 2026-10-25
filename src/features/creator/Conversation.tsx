@@ -10,22 +10,28 @@ import { actionFactLines, actionLabel, collectActions, conversationTimeline, sou
 export interface ConversationProps {
   messages: LocalMessage[];
   actionEvents?: ActionEvent[];
+  currentRunId?: string | null;
   pending: boolean;
   transmittingId: string | null;
   interrupted?: boolean;
   active?: boolean;
+  hasEarlierActivity?: boolean;
+  earlierActivityPending?: boolean;
+  earlierActivityError?: boolean;
+  onLoadEarlierActivity?: () => void;
   onRetry: (messageId: string) => void;
   onEdit: (messageId: string) => void;
 }
 
-export function Conversation({ messages, actionEvents = [], pending, transmittingId, interrupted = false, active = true, onRetry, onEdit }: ConversationProps) {
+export function Conversation({ messages, actionEvents = [], currentRunId = null, pending, transmittingId, interrupted = false, active = true,
+  hasEarlierActivity = false, earlierActivityPending = false, earlierActivityError = false, onLoadEarlierActivity, onRetry, onEdit }: ConversationProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const [hasNewContent, setHasNewContent] = useState(false);
   const [copyState, setCopyState] = useState<{ id: string; status: "copied" | "error" } | null>(null);
   const latest = messages.at(-1);
   const timeline = conversationTimeline(messages, actionEvents);
-  const lastAction = collectActions(actionEvents).at(-1);
+  const lastAction = collectActions(actionEvents).filter((action) => action.runId === currentRunId).at(-1);
   const activeActionId = pending && !interrupted && lastAction?.status === "working" ? lastAction.id : null;
   const updateKey = `${latest?.id}:${latest?.text.length}:${latest?.delivery}:${actionEvents.length}:${pending}`;
   useEffect(() => {
@@ -47,6 +53,7 @@ export function Conversation({ messages, actionEvents = [], pending, transmittin
       following.current = area.scrollHeight - area.clientHeight - area.scrollTop < 88;
       if (following.current) setHasNewContent(false);
     }}><div className="creator-conversation__content">
+      {(hasEarlierActivity || earlierActivityError) && <div className="creator-conversation__earlier"><Button type="button" variant="quiet" size="compact" pending={earlierActivityPending} disabled={!hasEarlierActivity} onClick={onLoadEarlierActivity}>Earlier activity</Button>{earlierActivityError && <span role="status">Earlier activity couldn’t be loaded.</span>}</div>}
       {timeline.map((item) => {
         if (item.kind === "actions") return <ActionGroup key={item.id} actions={item.actions} activeActionId={activeActionId} />;
         const message = item.message;

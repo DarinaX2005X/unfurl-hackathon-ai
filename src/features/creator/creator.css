@@ -115,6 +115,7 @@
 .creator-conversation { position: relative; flex: 1; min-height: 120px; min-width: 0; }
 .creator-conversation__scroll { height: 100%; overflow-y: auto; overscroll-behavior: contain; scrollbar-gutter: stable; border-radius: 8px; }
 .creator-conversation__content { width: min(100%, var(--width-chat)); margin-inline: auto; padding: 20px 0; }
+.creator-conversation__earlier { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; margin-bottom: 14px; color: var(--color-muted); font-size: 14px; }
 .creator-message { margin-bottom: 30px; min-width: 0; }
 .creator-message h2 { margin-bottom: 8px; font-size: 14px; font-weight: 700; letter-spacing: 0; }
 .creator-message__text { font-size: 16px; line-height: 1.8; overflow-wrap: anywhere; white-space: pre-wrap; }

@@ -60,4 +60,22 @@ describe("known paid fence-only decision recovery",()=>{
     await resumeSavedAgentDecision({query:h.query} as never,h.actor,h.run);
     expect(h.query.mock.calls.some(([sql])=>sql.includes("advance_execution_job_retry"))).toBe(false);
   });
+  it("reuses the exact epoch and raw receipt for a complete search with domain whitespace only",async()=>{
+    const h=fixture(JSON.stringify({tool:"search",input:{query:"primary sources",language:"en",limit:5,domainHints:["mit.edu"," stanford.edu"]}}),{v2:true});
+    const before=JSON.stringify(h.result);await resumeSavedAgentDecision({query:h.query} as never,h.actor,h.run);
+    expect(h.query.mock.calls.some(([sql])=>sql.includes("advance_execution_job_retry")||sql.startsWith("INSERT INTO unfurl.run_steps"))).toBe(false);
+    expect(JSON.stringify(h.result)).toBe(before);
+  });
+  it.each([" https://stanford.edu "," *.stanford.edu "," stanford.edu/path "," stan ford.edu "])("does not repair semantic hostname changes: %s",async domain=>{
+    const h=fixture(JSON.stringify({tool:"search",input:{query:"primary sources",language:"en",limit:5,domainHints:[domain]}}),{v2:true});
+    await resumeSavedAgentDecision({query:h.query} as never,h.actor,h.run);
+    expect(h.query.mock.calls.some(([sql])=>sql.includes("advance_execution_job_retry"))).toBe(true);
+  });
+  it("does not let whitespace repair bypass a different invalid field or saved schema",async()=>{
+    for(const options of [{limit:6,schemaDigest:undefined},{limit:5,schemaDigest:"b".repeat(64)}]){
+      const h=fixture(JSON.stringify({tool:"search",input:{query:"primary sources",language:"en",limit:options.limit,domainHints:[" stanford.edu "]}}),{v2:true,...(options.schemaDigest?{schemaDigest:options.schemaDigest}:{})});
+      await resumeSavedAgentDecision({query:h.query} as never,h.actor,h.run);
+      expect(h.query.mock.calls.some(([sql])=>sql.includes("advance_execution_job_retry"))).toBe(true);
+    }
+  });
 });

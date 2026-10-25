@@ -33,7 +33,7 @@ export const SearchResultSchema = z.object({
 }).strict();
 export const SearchInputSchema = z.object({
   query: z.string().trim().min(1).max(2000), language: ContentLanguageSchema,
-  domainHints: z.array(z.string().min(1).max(253).regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i)).max(10).optional(),
+  domainHints: z.array(z.string().trim().min(1).max(253).regex(/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/i)).max(10).optional(),
   publishedAfter: IsoDateTimeSchema.optional(), limit: z.number().int().min(1).max(5),
 }).strict();
 export type SourceDocument = z.infer<typeof SourceDocumentSchema>;

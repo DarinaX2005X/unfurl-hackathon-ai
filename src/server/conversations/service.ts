@@ -3,10 +3,10 @@ import { z } from "zod";
 import { IdSchema } from "../../domain/common";
 import { ConversationSchema } from "../../domain/generation";
 import {
-  CloudSendMessageInputSchema, ComposerDraftSchema, ConversationDetailSchema, ConversationQuerySchema,
+  CloudSendMessageInputSchema, ComposerDraftSchema, ConversationActionQuerySchema, ConversationDetailSchema, ConversationQuerySchema,
   CreateConversationInputSchema, DeleteConversationInputSchema, ImportConversationInputSchema,
   ImportConversationResultSchema, RenameConversationInputSchema, SaveComposerInputSchema, SendMessageResultSchema,
-  type CloudSendMessageInput, type ConversationQuery, type CreateConversationInput, type DeleteConversationInput,
+  type CloudSendMessageInput, type ConversationActionQuery, type ConversationQuery, type CreateConversationInput, type DeleteConversationInput,
   type ImportConversationInput, type RenameConversationInput, type SaveComposerInput,
 } from "../../domain/conversations";
 import type { Actor } from "../auth/actor";
@@ -59,6 +59,11 @@ export function createConversationService(options: ServiceOptions = {}) {
     get(actor: Actor, id: string) {
       input(IdSchema, id);
       return transactions.actor(actor, async (tx) => repository.readDetail(tx, actor, await repository.requireConversation(tx, actor, id)));
+    },
+    actions(actor: Actor, id: string, query: ConversationActionQuery = {}) {
+      input(IdSchema, id);
+      const parsed = input(ConversationActionQuerySchema, query);
+      return transactions.actor(actor, async (tx) => repository.readActionHistory(tx, actor, await repository.requireConversation(tx, actor, id), parsed));
     },
     async create(actor: Actor, value: CreateConversationInput, key: string) {
       const body = input(CreateConversationInputSchema, value);

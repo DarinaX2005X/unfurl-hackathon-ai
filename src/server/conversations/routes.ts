@@ -3,7 +3,7 @@ import { dispatchOwnedExecution } from "../runs/dispatcher";
 import { NextResponse, type NextRequest } from "next/server";
 import { IdSchema } from "../../domain/common";
 import {
-  CONVERSATION_BODY_LIMIT, MESSAGE_BODY_LIMIT, CloudSendMessageInputSchema, ConversationQuerySchema, CreateConversationInputSchema,
+  CONVERSATION_BODY_LIMIT, MESSAGE_BODY_LIMIT, CloudSendMessageInputSchema, ConversationActionQuerySchema, ConversationQuerySchema, CreateConversationInputSchema,
   DeleteConversationInputSchema, ImportConversationInputSchema, RenameConversationInputSchema, SaveComposerInputSchema,
 } from "../../domain/conversations";
 import { requireActor } from "../auth/session";
@@ -49,6 +49,17 @@ export async function createConversationRoute(request: NextRequest) {
 export async function getConversationRoute(request: NextRequest, id: string) {
   try { const actor=await requireActor();const data=await conversationService.get(actor,idFor(id));await dispatchOwnedExecution(actor);return success(data); }
   catch (error) { return failure(error, request); }
+}
+export async function getConversationActionsRoute(request: NextRequest, id: string) {
+  try {
+    const actor = await requireActor();
+    const params = request.nextUrl.searchParams;
+    for (const key of params.keys()) if (!["cursor", "limit"].includes(key) || params.getAll(key).length !== 1) throw new ServiceFault(400, "invalid_input", "chat.invalidInput");
+    const parsed = ConversationActionQuerySchema.safeParse({ ...(params.has("cursor") ? { cursor: params.get("cursor") } : {}),
+      ...(params.has("limit") ? { limit: Number(params.get("limit")) } : {}) });
+    if (!parsed.success) throw new ServiceFault(400, "invalid_input", "chat.invalidInput");
+    return success(await conversationService.actions(actor, idFor(id), parsed.data));
+  } catch (error) { return failure(error, request); }
 }
 export async function renameConversationRoute(request: NextRequest, id: string) {
   try {

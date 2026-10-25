@@ -136,4 +136,20 @@ describe.skipIf(process.env.RUN_LIVE_RECEIPT_RESUME!=="1")("ordinary receipt-onl
     expect((await client.query("SELECT result_reference,input_digest FROM unfurl.run_steps WHERE job_id=$1 AND step_key=$2",[job,"agent.v1:000000:capture"])).rows).toEqual(captureBefore);
     expect((await client.query("SELECT count(*)::int AS n FROM unfurl.execution_job_retry_receipts WHERE job_id=$1",[job])).rows[0].n).toBe(1);
   },30000);
+  it("resumes a paid whitespace-only search response at the same epoch without changing its receipt",async()=>{
+    const content=JSON.stringify({tool:"search",input:{query:"primary sources",language:"en",limit:5,domainHints:["mit.edu"," stanford.edu"]}});
+    fetcher.mockResolvedValueOnce(new Response(JSON.stringify({id:`gen-${randomUUID()}`,model:MODEL_ID,provider:"DigitalOcean",
+      choices:[{finish_reason:"stop",message:{content}}],usage:{prompt_tokens:20,completion_tokens:10,total_tokens:30,cost:0.0000354}})));
+    await model.complete(request,new AbortController().signal);
+    const fault={code:"generation_failed",messageKey:"generation.invalidResponse",requestId:randomUUID(),retryable:false};
+    await client.query("UPDATE unfurl.run_steps SET schema_digest=$2 WHERE id=$1",[step,jsonDigest({version:"agent-decision-v1"})]);
+    await client.query("UPDATE unfurl.agent_turn_runs SET status='failed',error=$2 WHERE id=$1",[run,JSON.stringify(fault)]);
+    await client.query("UPDATE unfurl.execution_jobs SET status='failed',safe_error=$2 WHERE id=$1",[job,JSON.stringify(fault)]);
+    const before=(await client.query("SELECT result,response_digest FROM unfurl.ai_provider_responses WHERE operation_id=$1",[request.budget.reservationId])).rows;
+    expect((await retryRun(actor,run,"agent_turn",randomUUID())).data.run.id).toBe(run);
+    expect((await client.query("SELECT retry_epoch FROM unfurl.execution_jobs WHERE id=$1",[job])).rows[0].retry_epoch).toBe(0);
+    expect((await client.query("SELECT count(*)::int AS n FROM unfurl.execution_job_retry_receipts WHERE job_id=$1",[job])).rows[0].n).toBe(0);
+    expect((await client.query("SELECT result,response_digest FROM unfurl.ai_provider_responses WHERE operation_id=$1",[request.budget.reservationId])).rows).toEqual(before);
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  },30000);
 });

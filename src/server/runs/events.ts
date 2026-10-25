@@ -1,10 +1,15 @@
 import "server-only";
 import { randomUUID } from "node:crypto";
-import { ChatEventSchema, type ChatEvent } from "../../domain/generation";
+import { ChatEventSchema, type ChatEvent, type ResearchAction } from "../../domain/generation";
 import { GenerationEventSchema, type GenerationEvent } from "../../domain/generation-observer";
 import type { DbTransaction } from "../db";
 import { ProviderFailure } from "../ai/failure";
 import type { ChatEventPayload, ExecutionTarget, GenerationEventPayload, JobClaim } from "./ports";
+
+const actionLabels:Partial<Record<ResearchAction,readonly string[]>>={
+  search:["generation.search"],read_source:["generation.readSource"],
+  build_outline:["generation.planCourse","generation.readArtifact","generation.createCourse","generation.reviseCurriculum","generation.updateMetadata","generation.reviseLanguage"],
+};
 
 export async function appendChatEvent(tx: DbTransaction, target: Extract<ExecutionTarget, { kind: "agent_turn" }>, payload: ChatEventPayload): Promise<ChatEvent> {
   const row = (await tx.query<{ last_seq: number; updated_at: Date | string }>(`UPDATE unfurl.agent_turn_runs
@@ -13,7 +18,10 @@ export async function appendChatEvent(tx: DbTransaction, target: Extract<Executi
   if (!row) throw new ProviderFailure("cancelled");
   let safePayload = payload;
   if (payload.type === "action.started") {
-    safePayload = { type: payload.type, invocationId: payload.invocationId, action: payload.action, labelKey: "generation.action." + payload.action };
+    safePayload = { type: payload.type, invocationId: payload.invocationId, action: payload.action,
+      labelKey:actionLabels[payload.action]?.includes(payload.labelKey)?payload.labelKey:"generation.action."+payload.action,
+      ...(payload.afterMessageId!==undefined?{afterMessageId:payload.afterMessageId}:{}),
+      ...(payload.details!==undefined?{details:payload.details}:{}) };
   }
   if (payload.type === "action.completed" && payload.resultSummary.length > 1000) throw new ProviderFailure("invalid_output");
   const event = ChatEventSchema.parse({ ...safePayload, id: randomUUID(), runId: target.runId, branchId: target.branchId,

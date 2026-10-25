@@ -3,8 +3,8 @@ import { z } from "zod";
 import { IdSchema, IsoDateTimeSchema, type Page } from "../../domain/common";
 import { CourseArtifactRefSchema, type CourseArtifactRef } from "../../domain/chat";
 import { CurriculumApprovalSchema } from "../../domain/course";
-import { AgentTurnRunSchema, ChatMessageSchema, ConversationSchema, type AgentTurnRun, type ChatMessage, type Conversation } from "../../domain/generation";
-import { ComposerDraftSchema, ConversationDetailSchema, unacceptedIntents, type ComposerDraft, type ConversationDetail, type ConversationQuery, type PendingUserMessage, type SaveComposerInput } from "../../domain/conversations";
+import { ActionEventSchema, AgentTurnRunSchema, ChatMessageSchema, ConversationSchema, type AgentTurnRun, type ChatMessage, type Conversation } from "../../domain/generation";
+import { ComposerDraftSchema, ConversationActionPageSchema, ConversationDetailSchema, unacceptedIntents, type ComposerDraft, type ConversationActionQuery, type ConversationDetail, type ConversationQuery, type PendingUserMessage, type SaveComposerInput } from "../../domain/conversations";
 import type { Actor } from "../auth/actor";
 import { ServiceFault, unavailable } from "../auth/errors";
 import type { DbTransaction } from "../db";
@@ -77,6 +77,43 @@ export async function readMessages(tx: DbTransaction, conversation: Conversation
   return result.rows.map(messageFromRow);
 }
 
+const ActionCursorSchema = z.object({ branchId: IdSchema, at: IsoDateTimeSchema, invocationId: IdSchema }).strict();
+export async function readActionHistory(tx: DbTransaction, actor: Actor, conversation: Conversation, query: ConversationActionQuery = {}) {
+  let cursor: z.infer<typeof ActionCursorSchema> | null = null;
+  if (query.cursor) {
+    try {
+      if (!/^[A-Za-z0-9_-]+$/.test(query.cursor)) throw new Error();
+      cursor = ActionCursorSchema.parse(JSON.parse(Buffer.from(query.cursor, "base64url").toString("utf8")));
+    } catch { throw new ServiceFault(400, "invalid_input", "chat.invalidCursor"); }
+    if (cursor.branchId !== conversation.activeBranchId) throw revisionConflict(conversation.revision);
+  }
+  const limit = query.limit ?? 50;
+  const groups = (await tx.query<{ invocation_id: string; started_at: DateValue; events: unknown }>(`WITH visible_events AS (
+    SELECT e.* FROM unfurl.agent_turn_events e
+    JOIN unfurl.agent_turn_runs r ON r.id=e.run_id AND r.owner_id=$2 AND r.conversation_id=$1 AND r.branch_id=$3
+    JOIN unfurl.conversations c ON c.id=r.conversation_id AND c.owner_id=$2 AND c.active_branch_id=$3 AND c.deleted_at IS NULL
+    JOIN unfurl.messages input ON input.id=r.input_message_id AND input.conversation_id=$1 AND input.branch_id=$3
+      AND input.role='user' AND input.status='complete'
+    WHERE e.branch_id=$3 AND e.type IN ('action.started','action.completed','action.failed')
+  ), starts AS (
+    SELECT (event->>'invocationId')::uuid AS invocation_id,min(at) AS started_at FROM visible_events
+    WHERE type='action.started' GROUP BY (event->>'invocationId')::uuid
+  ), selected AS (
+    SELECT * FROM starts WHERE $4::timestamptz IS NULL OR (started_at,invocation_id)<($4::timestamptz,$5::uuid)
+    ORDER BY started_at DESC,invocation_id DESC LIMIT $6
+  ) SELECT selected.invocation_id,selected.started_at,
+    (SELECT jsonb_agg(event ORDER BY seq) FROM visible_events WHERE (event->>'invocationId')::uuid=selected.invocation_id) AS events
+    FROM selected ORDER BY started_at DESC,invocation_id DESC`,
+  [conversation.id, actor.id, conversation.activeBranchId, cursor?.at ?? null, cursor?.invocationId ?? null, limit + 1])).rows;
+  const retained = groups.slice(0, limit);
+  const items = retained.flatMap((group) => z.array(ActionEventSchema).parse(group.events))
+    .sort((left, right) => left.at.localeCompare(right.at) || left.runId.localeCompare(right.runId) || left.seq - right.seq);
+  const oldest = retained.at(-1);
+  return ConversationActionPageSchema.parse({ conversationId: conversation.id, branchId: conversation.activeBranchId, items,
+    nextCursor: groups.length > limit && oldest ? Buffer.from(JSON.stringify({ branchId: conversation.activeBranchId,
+      at: iso(oldest.started_at), invocationId: oldest.invocation_id })).toString("base64url") : null });
+}
+
 async function readArtifacts(tx: DbTransaction, actor: Actor, conversationId: string): Promise<CourseArtifactRef[]> {
   const result = await tx.query<ArtifactRow>(
     `SELECT c.id AS course_id, c.title, c.summary, c.content_language, c.revision, c.current_ready_version_id AS ready_version_id,
@@ -113,7 +150,9 @@ export async function readDetail(tx: DbTransaction, actor: Actor, conversation: 
   const messages = await readMessages(tx, conversation);
   const activeTurn = await readActiveTurn(tx, actor, conversation);
   const artifacts = await readArtifacts(tx, actor, conversation.id);
+  const actionHistory = await readActionHistory(tx, actor, conversation);
   return ConversationDetailSchema.parse({ conversation, messages, activeTurn, artifacts,
+    retainedActionEvents: actionHistory.items, actionHistoryNextCursor: actionHistory.nextCursor,
     composerDraft: { ...composerDraft, pendingMessages: unacceptedIntents(composerDraft.pendingMessages, messages) } });
 }
 
@@ -128,7 +167,7 @@ export async function insertConversation(tx: DbTransaction, actor: Actor, input:
     [input.id, input.text, JSON.stringify(input.pendingMessages)],
   );
   if (!result.rows[0] || !composer.rows[0]) throw unavailable("chat.unavailable");
-  return ConversationDetailSchema.parse({ conversation: conversationFromRow(result.rows[0]), composerDraft: composerFromRow(composer.rows[0]), messages: [], activeTurn: null, artifacts: [] });
+  return ConversationDetailSchema.parse({ conversation: conversationFromRow(result.rows[0]), composerDraft: composerFromRow(composer.rows[0]), messages: [], activeTurn: null, artifacts: [], retainedActionEvents: [], actionHistoryNextCursor: null });
 }
 
 export async function renameConversation(tx: DbTransaction, actor: Actor, id: string, expectedRevision: number, title: string): Promise<Conversation> {

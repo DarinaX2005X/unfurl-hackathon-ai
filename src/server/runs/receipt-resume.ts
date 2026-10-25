@@ -17,14 +17,18 @@ const completeResponse=z.object({model:z.literal(MODEL_ID),provider:z.literal("D
 const terminalResponse=completeResponse.extend({finishReason:z.string().min(1),failure:z.enum(["invalid_output","refused"]).nullable(),content:z.string().nullable()});
 const conflict=()=>new ServiceFault(409,"revision_conflict","generation.changed");
 function normalizedDecisionIsValid(content:string,capture:unknown,schemaDigest:string):boolean{
-  // This exception repairs only an outer serialization wrapper, never a previously invalid
-  // JSON value or decision. The shared parser must reject prose and malformed/multiple fences.
-  try{JSON.parse(content);return false;}catch{/* A wrapper may be the sole parse failure. */}
   if(typeof capture!=="object"||capture===null||Array.isArray(capture))return false;
   const selected=agentDecisionSchemaForCapture(capture);
   if(schemaDigest!==jsonDigest({version:`agent-decision-v${selected.schemaVersion}`}))return false;
-  try{return selected.schema.safeParse(parseStructuredOutput(content)).success;}
-  catch{return false;}
+  try{
+    const parsed=parseStructuredOutput(content);
+    if(!selected.schema.safeParse(parsed).success)return false;
+    // Only the complete outer JSON fence and surrounding domain-hint whitespace are
+    // replay exceptions. Full original-version validation still rejects other repairs.
+    try{JSON.parse(content);}catch{return true;}
+    const search=z.object({tool:z.literal("search"),input:z.object({domainHints:z.array(z.string())})}).safeParse(parsed);
+    return search.success&&search.data.input.domainHints.some(domain=>domain!==domain.trim());
+  }catch{return false;}
 }
 
 /** Called only after the public retry's ownership, current branch, latest run and intent guards.

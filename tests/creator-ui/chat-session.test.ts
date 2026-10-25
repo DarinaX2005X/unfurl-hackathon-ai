@@ -6,7 +6,7 @@ import type { ConversationPort } from "../../src/application/conversation-port";
 import type { ApplicationPort, SendMessageInput, SendMessageResult, ServiceResult } from "../../src/application/ports";
 import type { ConversationDetail } from "../../src/domain/conversations";
 import type { CourseArtifactRef } from "../../src/domain/chat";
-import type { RunSnapshot } from "../../src/domain/generation";
+import type { ActionEvent, RunSnapshot } from "../../src/domain/generation";
 import { localApplication } from "../../src/application/local-adapter";
 import { curriculumDigest } from "../../src/domain/course";
 import { canApproveCurriculum } from "../../src/features/creator/stream";
@@ -34,6 +34,8 @@ function cloud(initial?: ConversationDetail) {
   const port: ConversationPort = {
     list: vi.fn(async () => ok({ items: [...records.values()].map((item) => item.conversation), nextCursor: null })),
     get: vi.fn<ConversationPort["get"]>(async (id) => records.has(id) ? ok(records.get(id)!) : { ok: false, error: { error: { code: "not_found", messageKey: "chat.notFound", retryable: false, requestId: ids.request } } }),
+    getActions: vi.fn<ConversationPort["getActions"]>(async (id) => records.has(id) ? ok({ conversationId: id, branchId: records.get(id)!.conversation.activeBranchId, items: [], nextCursor: null })
+      : { ok: false, error: { error: { code: "not_found", messageKey: "chat.notFound", retryable: false, requestId: ids.request } } }),
     create: vi.fn(async (input, key) => {
       if (receipts.has(key)) return ok(receipts.get(key) as ConversationDetail);
       const value = detail(input.composerText); records.set(ids.conversation, value); receipts.set(key, value); return ok(value);
@@ -68,6 +70,10 @@ function accepted(input: SendMessageInput, currentRunId = runId): SendMessageRes
 function artifact(courseId: string = ids.course): CourseArtifactRef {
   const draft = { ...curriculum(), courseId, id: courseId === ids.course ? ids.draft : ids.missing };
   return { courseId, title: draft.title, summary: draft.goal, contentLanguage: "en", revision: 1, curriculum: draft, approval: null, approvalRequestedRevision: 1, readyVersionId: null, updatedAt: timestamp };
+}
+function action(run: string, seq: number, invocation: string, at = timestamp): ActionEvent {
+  return { id: `90000000-0000-4000-8000-${String(seq).padStart(12, "0")}`, runId: run, branchId, seq, at,
+    type: "action.started", invocationId: invocation, action: "search", labelKey: "generation.search" };
 }
 
 describe("account-owned chat input", () => {
@@ -269,5 +275,43 @@ describe("pending input and canonical delivery", () => {
     expect(complete.pendingMessages).toEqual([]);
     expect(complete.conversation?.messages.filter((message) => message.role === "user")).toHaveLength(1);
     expect(complete.conversation?.messages.at(-1)).toMatchObject({ role: "assistant", text: "A durable retry resumes saved work.", status: "complete" });
+  });
+
+  it("preserves earlier run activity when a continuation starts and lazily merges older pages", async () => {
+    const first = accepted({ conversationId: ids.conversation, messageId: ids.question, requestId: ids.request, text: "Start", branchId, expectedRevision: 1, parentMessageId: null });
+    const previous = action(first.run.id, 1, ids.source);
+    const value = detail("Continue"); value.messages = [first.message]; value.activeTurn = { ...first.run, status: "succeeded" };
+    value.retainedActionEvents = [previous]; value.actionHistoryNextCursor = "older-page";
+    const { port, records } = cloud(value);
+    const older = { ...action(ids.sample, 1, ids.task, new Date(Date.parse(timestamp) - 1_000).toISOString()), id: ids.approval };
+    port.getActions = vi.fn(async () => ok({ conversationId: ids.conversation, branchId, items: [older, previous], nextCursor: null }));
+    const services = { ...localApplication, sendMessage: vi.fn<ApplicationPort["sendMessage"]>(async (input) => {
+      const receipt = accepted(input, ids.evaluation); const current = records.get(input.conversationId)!;
+      current.messages = [...current.messages, receipt.message]; current.activeTurn = receipt.run;
+      current.conversation = { ...current.conversation, revision: current.conversation.revision + 1 };
+      current.composerDraft = { ...current.composerDraft, revision: current.composerDraft.revision + 1, text: "", pendingMessages: [] };
+      return ok(receipt);
+    }) };
+    const session = sessionFor(port, services, ids.conversation); await session.open(); await session.send();
+    session.receiveEvent({ id: ids.request, runId: ids.evaluation, branchId, seq: 1, at: timestamp, type: "run.accepted", status: "queued" });
+    session.receiveEvent(action(ids.evaluation, 2, ids.attempt, new Date(Date.parse(timestamp) + 1_000).toISOString()));
+    expect(session.getSnapshot().actionEvents.map((event) => event.runId)).toEqual([first.run.id, ids.evaluation]);
+    expect(await session.loadEarlierActivity()).toBe(true);
+    const history = session.getSnapshot();
+    expect(history.actionEvents.map((event) => event.id)).toEqual([older.id, previous.id, "90000000-0000-4000-8000-000000000002"]);
+    expect(history.actionHistoryNextCursor).toBeNull();
+    expect(port.getActions).toHaveBeenCalledWith(ids.conversation, { cursor: "older-page", limit: 50 }, expect.any(AbortSignal));
+  });
+
+  it("drops an older-activity response when the conversation revision changes in flight", async () => {
+    const value = detail(); value.actionHistoryNextCursor = "older-page";
+    const { port } = cloud(value); const gate = deferred<Awaited<ReturnType<ConversationPort["getActions"]>>>();
+    port.getActions = vi.fn(() => gate.promise);
+    const session = sessionFor(port, localApplication, ids.conversation); await session.open();
+    const loading = session.loadEarlierActivity();
+    expect(await session.rename("Changed while loading")).toBe(true);
+    gate.resolve(ok({ conversationId: ids.conversation, branchId, items: [action(ids.request, 1, ids.source)], nextCursor: null }));
+    expect(await loading).toBe(false);
+    expect(session.getSnapshot().actionEvents).toEqual([]);
   });
 });

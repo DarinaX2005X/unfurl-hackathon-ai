@@ -4,6 +4,7 @@ import type { ActionDetails, ActionEvent, ResearchAction } from "@/domain/genera
 export type ActionFacts = ActionDetails;
 export interface ConversationAction {
   id: string;
+  runId: string;
   at: string;
   afterMessageId: string | undefined;
   action: ResearchAction | undefined;
@@ -13,13 +14,33 @@ export interface ConversationAction {
 }
 export type ConversationItem = { kind: "message"; message: LocalMessage } | { kind: "actions"; id: string; actions: ConversationAction[] };
 
+function compareEvents(a: ActionEvent, b: ActionEvent): number {
+  if (a.runId === b.runId) return a.seq - b.seq;
+  const chronology = a.at.localeCompare(b.at);
+  return chronology || a.runId.localeCompare(b.runId) || a.seq - b.seq;
+}
+
+/** Event ids are immutable server identities; conflicting reuses never replace the first observed event. */
+export function mergeActionEvents(branchId: string, ...groups: ActionEvent[][]): ActionEvent[] {
+  const events = new Map<string, ActionEvent>();
+  for (const event of groups.flat()) {
+    if (event.branchId !== branchId) continue;
+    const existing = events.get(event.id);
+    if (!existing) events.set(event.id, event);
+    else if (existing.runId === event.runId && existing.seq === event.seq && existing.type === event.type) events.set(event.id, event);
+  }
+  return [...events.values()].sort(compareEvents);
+}
+
 /** Raw observations, error messages, params and internal identifiers are never display copy. */
 export function collectActions(events: ActionEvent[]): ConversationAction[] {
   const actions = new Map<string, ConversationAction>();
-  for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
-    const previous = actions.get(event.invocationId);
-    actions.set(event.invocationId, {
-      id: event.invocationId,
+  for (const event of [...events].sort(compareEvents)) {
+    const key = `${event.runId}:${event.invocationId}`;
+    const previous = actions.get(key);
+    actions.set(key, {
+      id: key,
+      runId: event.runId,
       at: previous?.at ?? event.at,
       afterMessageId: previous?.afterMessageId ?? (event.type === "action.started" ? event.afterMessageId : undefined),
       action: event.type === "action.started" ? event.action : previous?.action,

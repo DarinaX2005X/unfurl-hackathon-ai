@@ -316,7 +316,8 @@ function AccountCreator({ actorId, conversationId = null, store = chatStore, con
 
   const chat = <section className={`creator-chat${hasMessages ? " creator-chat--conversation" : ""}`} aria-label="Chat">
     {!hasMessages && <div className="creator-introduction"><h1>What would you like to learn?</h1></div>}
-    {hasMessages && <Conversation messages={conversation?.messages ?? []} actionEvents={state.stream?.actionEvents ?? []} pending={pending} transmittingId={state.transmittingId}
+    {hasMessages && <Conversation messages={conversation?.messages ?? []} actionEvents={state.actionEvents} currentRunId={state.stream?.run.id ?? null} pending={pending} transmittingId={state.transmittingId}
+      hasEarlierActivity={state.actionHistoryNextCursor !== null} earlierActivityPending={state.actionHistoryStatus === "loading"} earlierActivityError={state.actionHistoryStatus === "error"} onLoadEarlierActivity={() => { void session.loadEarlierActivity(); }}
       interrupted={state.run?.status === "cancelled" || state.run?.status === "failed"} active={!compact || !hasArtifacts || panel === "chat"}
       onRetry={(id) => { void session.retry(id); }} onEdit={(id) => { if (session.editMessage(id)) { setEditNotice(false); inputRef.current?.focus(); } else setEditNotice(true); }} />}
     <div className="creator-writing">

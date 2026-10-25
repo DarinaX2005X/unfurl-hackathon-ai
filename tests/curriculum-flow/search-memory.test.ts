@@ -79,7 +79,7 @@ it("retrieves the complete original search only through this job's saved receipt
   const query = vi.fn(async (_sql: string, values: unknown[]) => ({ rows: values[0] === ids.approval && values[1] === compact.id ? [{ id: ids.task }] : [] }));
   const tx = { query } as unknown as DbTransaction;
   expect(await readSavedSearch(tx, ids.approval, compact.id)).toEqual(original);
-  expect(query.mock.calls[0]![0]).toContain("job_id=$1");
+  expect(query.mock.calls[0]![0]).toContain("current_job.id=$1");
   expect(query.mock.calls[0]![1]).toEqual([ids.approval, compact.id]);
   await expect(readSavedSearch(tx, ids.missing, compact.id)).rejects.toMatchObject({ status: 404 });
   expect(getSearch).toHaveBeenCalledOnce();

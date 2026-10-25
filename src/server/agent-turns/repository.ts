@@ -11,6 +11,7 @@ import { requireCourseDraft } from "../curricula/repository";
 import { PostgresResearchRepository } from "../research/repository";
 import { attachSearchMemory, CompactSearchSchema, SearchMemorySchema } from "./search-memory";
 import { compactSourceMemory, ReadMemoryReceiptSchema, SourceMemorySchema } from "./source-memory";
+import { researchHistoryOrder, visibleResearchStepsCte } from "./research-visibility";
 import { ToolObservationSchema, type AgentToolAuthority } from "../agent-tools/contracts";
 
 export function jsonValue(value: unknown): JsonValue { return JsonValueSchema.parse(JSON.parse(JSON.stringify(value))); }
@@ -81,8 +82,8 @@ export async function loadToolAuthority(tx: DbTransaction, target: ExecutionTarg
     artifactIds.add(row.course_id);
     draft.sourceIds.forEach((id) => sourceIds.add(id));
   }
-  const receipts = (await tx.query<{ result_reference: unknown }>(`SELECT result_reference FROM unfurl.run_steps
-    WHERE job_id=$1 AND status='succeeded' AND step_key LIKE 'agent.v1:%:tool'`, [jobId])).rows;
+  const receipts = (await tx.query<{ result_reference: unknown }>(`${visibleResearchStepsCte}
+    SELECT result_reference FROM visible_research_steps WHERE result_reference->>'tool'='read_source'`, [jobId])).rows;
   for (const row of receipts) {
     const receipt = ToolObservationSchema.parse(row.result_reference);
     if (receipt.ok) receipt.sourceIds.forEach((id) => sourceIds.add(id));
@@ -90,10 +91,10 @@ export async function loadToolAuthority(tx: DbTransaction, target: ExecutionTarg
   return { ...agent, artifactIds, sourceIds };
 }
 
-/** A saved search is readable only through a successful tool receipt in this authorized job. */
+/** A saved search is readable only through this turn's visible, owned research receipts. */
 export async function readSavedSearch(tx: DbTransaction, jobId: string, searchId: string) {
-  const allowed = (await tx.query(`SELECT id FROM unfurl.run_steps WHERE job_id=$1 AND status='succeeded'
-    AND step_key LIKE 'agent.v1:%:tool' AND result_reference->>'tool'='search' AND result_reference->>'ok'='true'
+  const allowed = (await tx.query(`${visibleResearchStepsCte} SELECT id FROM visible_research_steps
+    WHERE result_reference->>'tool'='search' AND result_reference->>'ok'='true'
     AND result_reference->'data'->>'id'=$2 LIMIT 1`, [jobId, searchId])).rows[0];
   if (!allowed) throw new ServiceFault(404, "not_found", "curriculum.notFound");
   const result = await new PostgresResearchRepository().getSearch(tx, searchId);
@@ -101,10 +102,10 @@ export async function readSavedSearch(tx: DbTransaction, jobId: string, searchId
   return result;
 }
 
-/** Overflow references can recover only a real read receipt from this same authorized job. */
+/** Overflow references use the same visibility boundary as source grants and memory. */
 export async function readSavedSourceResult(tx: DbTransaction, jobId: string, stepId: string) {
-  const row = (await tx.query<{ result_reference: unknown }>(`SELECT result_reference FROM unfurl.run_steps WHERE job_id=$1 AND id=$2
-    AND status='succeeded' AND step_key LIKE 'agent.v1:%:tool' AND result_reference->>'tool'='read_source'`, [jobId, stepId])).rows[0];
+  const row = (await tx.query<{ result_reference: unknown }>(`${visibleResearchStepsCte}
+    SELECT result_reference FROM visible_research_steps WHERE id=$2 AND result_reference->>'tool'='read_source'`, [jobId, stepId])).rows[0];
   if (!row) throw new ServiceFault(404, "not_found", "curriculum.notFound");
   return ToolObservationSchema.parse(row.result_reference);
 }
@@ -118,12 +119,11 @@ export const ReadHistoryPageSchema = z.object({ category: z.enum(["searches", "s
     fullyReadBlockIds: z.array(z.string().min(1).max(80)).max(64) }).strict()).max(5),
 }).strict();
 export async function readSourceHistory(tx: DbTransaction, jobId: string, selection: { category: "searches" | "source_reads"; offset: number; limit: number }) {
-  const row = (await tx.query<{ total: number; entries: unknown }>(`WITH eligible AS (
-    SELECT id,step_key,result_reference FROM unfurl.run_steps WHERE job_id=$1 AND status='succeeded' AND step_key LIKE 'agent.v1:%:tool'
-      AND (($2='searches' AND result_reference->>'tool'='search' AND result_reference->>'ok'='true')
+  const row = (await tx.query<{ total: number; entries: unknown }>(`${visibleResearchStepsCte}, eligible AS (
+    SELECT * FROM visible_research_steps WHERE (($2='searches' AND result_reference->>'tool'='search' AND result_reference->>'ok'='true')
         OR ($2='source_reads' AND result_reference->>'tool'='read_source'
           AND (result_reference->'data' ? 'sourceId' OR result_reference->'data' ? 'requestedUrl')))
-    ), page AS (SELECT * FROM eligible ORDER BY step_key LIMIT $3 OFFSET $4)
+    ), page AS (SELECT * FROM eligible ORDER BY ${researchHistoryOrder()} LIMIT $3 OFFSET $4)
     SELECT (SELECT count(*)::int FROM eligible) AS total,COALESCE(jsonb_agg(jsonb_build_object(
       'stepId',id,'tool',result_reference->'tool','ok',result_reference->'ok',
       'searchId',CASE WHEN result_reference->>'tool'='search' THEN result_reference->'data'->'id' ELSE NULL END,
@@ -135,7 +135,7 @@ export async function readSourceHistory(tx: DbTransaction, jobId: string, select
       'candidateCount',CASE WHEN result_reference->>'tool'='search' THEN jsonb_array_length(result_reference->'data'->'hits') ELSE NULL END,
       'fullyReadBlockIds',CASE WHEN result_reference->'data'->>'overview'='false' THEN COALESCE((SELECT jsonb_agg(block.value->'id' ORDER BY block.ordinality)
         FROM jsonb_array_elements(result_reference->'data'->'blocks') WITH ORDINALITY AS block(value,ordinality)), '[]'::jsonb) ELSE '[]'::jsonb END)
-      ORDER BY step_key),'[]'::jsonb) AS entries FROM page`, [jobId, selection.category, selection.limit, selection.offset])).rows[0];
+      ORDER BY ${researchHistoryOrder()}),'[]'::jsonb) AS entries FROM page`, [jobId, selection.category, selection.limit, selection.offset])).rows[0];
   if (!row) throw new ServiceFault(503, "service_unavailable", "generation.recoveryUnavailable");
   return ReadHistoryPageSchema.parse({ category: selection.category, offset: selection.offset, total: row.total,
     nextOffset: selection.offset + selection.limit < row.total ? selection.offset + selection.limit : null, entries: row.entries });
@@ -180,29 +180,28 @@ export async function captureContext(tx: DbTransaction, target: ExecutionTarget,
   }
   const documents = await new PostgresResearchRepository().getSources(tx, Array.from(authority.sourceIds));
   const sources = documents.map((source) => ({ sourceId: source.id, title: source.title, url: source.finalUrl }));
-  const readRows = (await tx.query<{ receipt: unknown }>(`SELECT jsonb_build_object('stepId',id,
+  const readRows = (await tx.query<{ receipt: unknown }>(`${visibleResearchStepsCte} SELECT jsonb_build_object('stepId',id,
     'sourceId',CASE WHEN result_reference->>'ok'='true' THEN result_reference->'data'->'sourceId' ELSE NULL END,
     'fullyReadBlockIds',CASE WHEN result_reference->>'ok'='true' AND result_reference->'data'->>'overview'='false'
       THEN COALESCE((SELECT jsonb_agg(block.value->'id' ORDER BY block.ordinality)
         FROM jsonb_array_elements(result_reference->'data'->'blocks') WITH ORDINALITY AS block(value,ordinality)), '[]'::jsonb) ELSE '[]'::jsonb END,
     'failedUrl',CASE WHEN result_reference->>'ok'='false' THEN result_reference->'data'->'requestedUrl' ELSE NULL END,
     'failureStatus',CASE WHEN result_reference->>'ok'='false' THEN result_reference->'data'->'status' ELSE NULL END) AS receipt
-    FROM unfurl.run_steps WHERE job_id=$1 AND status='succeeded' AND step_key LIKE 'agent.v1:%:tool'
-      AND result_reference->>'tool'='read_source' AND (result_reference->'data' ? 'sourceId' OR result_reference->'data' ? 'requestedUrl') ORDER BY step_key`, [jobId])).rows;
+    FROM visible_research_steps WHERE result_reference->>'tool'='read_source'
+      AND (result_reference->'data' ? 'sourceId' OR result_reference->'data' ? 'requestedUrl') ORDER BY ${researchHistoryOrder()}`, [jobId])).rows;
   const sourceMemory = compactSourceMemory(documents, readRows.map((row) => ReadMemoryReceiptSchema.parse(row.receipt)));
-  const observations = (await tx.query<{ result_reference: unknown }>(`SELECT result_reference FROM unfurl.run_steps
-    WHERE job_id=$1 AND status='succeeded' AND step_key LIKE 'agent.v1:%:tool' ORDER BY step_key DESC LIMIT 8`, [jobId])).rows;
+  const observations = (await tx.query<{ result_reference: unknown }>(`${visibleResearchStepsCte}
+    SELECT result_reference FROM visible_research_steps ORDER BY ${researchHistoryOrder("DESC")} LIMIT 8`, [jobId])).rows;
   const recentTools = observations.map((row, order) => {
     const observation = ToolObservationSchema.parse(row.result_reference);
     return { tool: observation.tool, ok: observation.ok, summary: observation.summary, data: order === 0 ? observation.data : null };
   }).reverse();
-  const searchRows = (await tx.query<{ search: unknown }>(`SELECT jsonb_build_object(
+  const searchRows = (await tx.query<{ search: unknown }>(`${visibleResearchStepsCte} SELECT jsonb_build_object(
     'id',result_reference->'data'->'id', 'requestedQuery',result_reference->'data'->'requestedQuery',
     'executedQuery',result_reference->'data'->'executedQuery',
     'hits',COALESCE((SELECT jsonb_agg(jsonb_build_object('id',hit.value->'id','url',hit.value->'url','title',hit.value->'title') ORDER BY hit.ordinality)
       FROM jsonb_array_elements(result_reference->'data'->'hits') WITH ORDINALITY AS hit(value,ordinality)), '[]'::jsonb)) AS search
-    FROM unfurl.run_steps WHERE job_id=$1 AND status='succeeded' AND step_key LIKE 'agent.v1:%:tool'
-      AND result_reference->>'tool'='search' AND result_reference->>'ok'='true' ORDER BY step_key`, [jobId])).rows;
+    FROM visible_research_steps WHERE result_reference->>'tool'='search' AND result_reference->>'ok'='true' ORDER BY ${researchHistoryOrder()}`, [jobId])).rows;
   const searches = searchRows.map((row) => CompactSearchSchema.parse(row.search));
   const intent = (await tx.query<{ course_id: string; expected_course_revision: number; draft_id: string; expected_draft_revision: number; target_language: string }>(`SELECT * FROM unfurl.course_language_revision_intents WHERE run_id=$1 AND owner_id=$2`, [agent.runId, agent.ownerId])).rows[0];
   const snapshot = ContextSnapshotSchema.parse(attachSearchMemory({ kind: "context", index, now, currentMessage, recentMessages, artifacts, sources, recentTools,

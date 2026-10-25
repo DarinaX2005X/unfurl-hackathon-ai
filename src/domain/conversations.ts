@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ContentLanguageSchema, IdSchema, IsoDateTimeSchema, RevisionSchema, pageSchema } from "./common";
 import { CourseArtifactRefSchema } from "./chat";
-import { AgentTurnRunSchema, ChatMessageSchema, ConversationSchema } from "./generation";
+import { ActionEventSchema, AgentTurnRunSchema, ChatMessageSchema, ConversationSchema } from "./generation";
 
 export const MESSAGE_TEXT_LIMIT = 20_000;
 export const PENDING_MESSAGE_LIMIT = 100;
@@ -63,6 +63,8 @@ export const ConversationDetailSchema = z.object({
   activeTurn: AgentTurnRunSchema.nullable(),
   artifacts: z.array(CourseArtifactRefSchema),
   composerDraft: ComposerDraftSchema,
+  retainedActionEvents: z.array(ActionEventSchema).optional(),
+  actionHistoryNextCursor: z.string().min(1).max(2000).nullable().optional(),
 }).strict().superRefine((detail, context) => {
   const { conversation, messages, activeTurn, artifacts, composerDraft } = detail;
   if (composerDraft.conversationId !== conversation.id) context.addIssue({ code: "custom", path: ["composerDraft"], message: "The input belongs to another chat" });
@@ -73,6 +75,10 @@ export const ConversationDetailSchema = z.object({
   if (activeTurn && (activeTurn.conversationId !== conversation.id || activeTurn.branchId !== conversation.activeBranchId || activeTurn.ownerId !== conversation.ownerId)) {
     context.addIssue({ code: "custom", path: ["activeTurn"], message: "The turn belongs to another chat" });
   }
+  if (detail.retainedActionEvents?.some((event) => event.branchId !== conversation.activeBranchId)
+    || new Set(detail.retainedActionEvents?.map((event) => event.id) ?? []).size !== (detail.retainedActionEvents?.length ?? 0)) {
+    context.addIssue({ code: "custom", path: ["retainedActionEvents"], message: "Actions must belong to this chat's visible branch" });
+  }
   if (new Set(artifacts.map((artifact) => artifact.courseId)).size !== artifacts.length
     || artifacts.some((artifact) => artifact.curriculum && artifact.curriculum.conversationId !== conversation.id)) {
     context.addIssue({ code: "custom", path: ["artifacts"], message: "Course references must belong to this chat" });
@@ -80,6 +86,17 @@ export const ConversationDetailSchema = z.object({
 });
 export type ConversationDetail = z.infer<typeof ConversationDetailSchema>;
 export const ConversationPageSchema = pageSchema(ConversationSchema);
+
+export const ConversationActionQuerySchema = z.object({ cursor: z.string().min(1).max(2000).optional(),
+  limit: z.number().int().min(1).max(50).optional() }).strict();
+export type ConversationActionQuery = z.infer<typeof ConversationActionQuerySchema>;
+export const ConversationActionPageSchema = z.object({ conversationId: IdSchema, branchId: IdSchema,
+  items: z.array(ActionEventSchema), nextCursor: z.string().min(1).max(2000).nullable() }).strict().superRefine((page, context) => {
+  if (page.items.some((event) => event.branchId !== page.branchId) || new Set(page.items.map((event) => event.id)).size !== page.items.length) {
+    context.addIssue({ code: "custom", path: ["items"], message: "Actions must belong to this page's visible branch" });
+  }
+});
+export type ConversationActionPage = z.infer<typeof ConversationActionPageSchema>;
 
 export const SendMessageResultSchema = z.object({ message: ChatMessageSchema, run: AgentTurnRunSchema }).strict().superRefine((result, context) => {
   if (result.message.role !== "user" || result.message.conversationId !== result.run.conversationId

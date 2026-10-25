@@ -6,9 +6,10 @@ import type { ApiError } from "@/domain/errors";
 import { SaveComposerInputSchema, unacceptedIntents, type ComposerDraft, type ConversationDetail, type PendingUserMessage } from "@/domain/conversations";
 import type { ChatRecovery, ChatRecoveryBuffer } from "./chat-recovery";
 import { creatorStreamReducer, createStreamState, type CreatorStreamState } from "./stream";
-import type { ChatEvent, ChatMessage, Conversation, RunSnapshot } from "@/domain/generation";
+import type { ActionEvent, ChatEvent, ChatMessage, Conversation, RunSnapshot } from "@/domain/generation";
 import { assertCurrentApproval, type CurriculumApproval } from "@/domain/course";
 import { accountScope, type AccountScope } from "@/features/account/account-scope";
+import { mergeActionEvents } from "./conversation-timeline";
 
 export const MESSAGE_LIMIT = 20_000;
 export type ChatLoadStatus = "loading" | "ready" | "invalid" | "missing" | "error";
@@ -30,6 +31,9 @@ export interface ChatSessionState {
   editingMessageId: string | null;
   run: SendMessageResult["run"] | null;
   stream: CreatorStreamState | null;
+  actionEvents: ActionEvent[];
+  actionHistoryNextCursor: string | null;
+  actionHistoryStatus: "idle" | "loading" | "error";
 }
 interface SessionOptions {
   actorId: string;
@@ -61,6 +65,7 @@ export class ChatSession {
   private createCommand: ChatRecoveryBuffer["createCommand"] = null;
   private saveCommand: ChatRecoveryBuffer["saveCommand"] = null;
   private sendCommand: SendMessageInput | null = null;
+  private actionHistoryPagingStarted = false;
   private deliveryErrors = new Map<string, ApiError["error"]>();
   private readonly createId: () => string;
   private readonly now: () => string;
@@ -71,7 +76,8 @@ export class ChatSession {
     this.createId = options.createId ?? (() => crypto.randomUUID());
     this.now = options.now ?? (() => new Date().toISOString());
     this.scope = options.scope ?? accountScope;
-    this.state = { loadStatus: requestedId ? "loading" : "ready", saveStatus: "idle", conversation: null, composerText: "", pendingMessages: [], storageError: null, composerConflict: null, transmittingId: null, editingMessageId: null, run: null, stream: null };
+    this.state = { loadStatus: requestedId ? "loading" : "ready", saveStatus: "idle", conversation: null, composerText: "", pendingMessages: [], storageError: null, composerConflict: null, transmittingId: null, editingMessageId: null, run: null, stream: null,
+      actionEvents: [], actionHistoryNextCursor: null, actionHistoryStatus: "idle" };
     this.stopAccountListener = this.scope.onClear(options.actorId, () => this.dispose());
   }
 
@@ -101,9 +107,11 @@ export class ChatSession {
     this.requests.clear();
     this.options.recovery?.forgetActor(this.options.actorId);
     this.detail = null;
+    this.actionHistoryPagingStarted = false;
     this.createCommand = this.saveCommand = this.sendCommand = null;
     this.deliveryErrors.clear();
-    this.state = { ...this.state, conversation: null, composerText: "", pendingMessages: [], run: null, stream: null, composerConflict: null, storageError: null, transmittingId: null, editingMessageId: null, loadStatus: "loading", saveStatus: "idle" };
+    this.state = { ...this.state, conversation: null, composerText: "", pendingMessages: [], run: null, stream: null, composerConflict: null, storageError: null, transmittingId: null, editingMessageId: null, loadStatus: "loading", saveStatus: "idle",
+      actionEvents: [], actionHistoryNextCursor: null, actionHistoryStatus: "idle" };
     for (const listener of this.listeners) listener();
     this.stopAccountListener?.();
   }
@@ -143,13 +151,17 @@ export class ChatSession {
   }
   private adopt(detail: ConversationDetail, preserveInput: boolean) {
     if (detail.conversation.ownerId !== this.options.actorId || (this.detail && detail.conversation.id !== this.detail.conversation.id)) throw new Error("The chat belongs to a different account");
+    const sameConversation = this.detail?.conversation.id === detail.conversation.id && this.detail.conversation.activeBranchId === detail.conversation.activeBranchId;
+    if (!sameConversation) this.actionHistoryPagingStarted = false;
     this.detail = detail;
     if (!preserveInput) this.publish({ composerText: detail.composerDraft.text, pendingMessages: detail.composerDraft.pendingMessages });
     else this.publish({ pendingMessages: unacceptedIntents(this.state.pendingMessages, detail.messages) });
     if (this.sendCommand && detail.messages.some((message) => message.id === this.sendCommand!.messageId && message.clientRequestId === this.sendCommand!.requestId)) this.sendCommand = null;
     const run = detail.activeTurn;
     const stream = run && this.state.stream?.run.id === run.id && this.state.stream.run.branchId === run.branchId ? this.state.stream : run ? createStreamState({ ...run, lastSeq: 0 }, detail.messages, detail.artifacts) : null;
-    this.publish({ loadStatus: "ready", run, stream });
+    const actionEvents = mergeActionEvents(detail.conversation.activeBranchId, sameConversation ? this.state.actionEvents : [], detail.retainedActionEvents ?? [], stream?.actionEvents ?? []);
+    const actionHistoryNextCursor = sameConversation && this.actionHistoryPagingStarted ? this.state.actionHistoryNextCursor : detail.actionHistoryNextCursor ?? null;
+    this.publish({ loadStatus: "ready", run, stream, actionEvents, actionHistoryNextCursor, actionHistoryStatus: "idle" });
     this.project();
     this.options.onIdentity?.(detail.conversation.id, this);
   }
@@ -364,7 +376,9 @@ export class ChatSession {
       if (!result.ok) { this.publish({ storageError: result.error.error }); if (result.error.error.code === "revision_conflict") { this.mutation = null; await this.refreshAfterSend(false); } return false; }
       this.options.recovery?.clear(this.options.actorId, id);
       this.detail = null; this.mutation = null;
-      this.publish({ conversation: null, composerText: "", pendingMessages: [], loadStatus: "missing", saveStatus: "idle", storageError: null, run: null, stream: null });
+      this.actionHistoryPagingStarted = false;
+      this.publish({ conversation: null, composerText: "", pendingMessages: [], loadStatus: "missing", saveStatus: "idle", storageError: null, run: null, stream: null,
+        actionEvents: [], actionHistoryNextCursor: null, actionHistoryStatus: "idle" });
       return true;
     } catch { if (this.current()) this.publish({ storageError: transientError(command.key) }); return false; }
     finally { this.deleting = false; }
@@ -374,6 +388,32 @@ export class ChatSession {
     const conversation = this.state.conversation;
     if (!conversation?.artifacts.some((item) => item.courseId === courseId)) return;
     this.publish({ conversation: { ...conversation, selectedCourseId: courseId } });
+  }
+  async loadEarlierActivity(): Promise<boolean> {
+    const cursor = this.state.actionHistoryNextCursor;
+    if (!this.current() || !this.detail || !cursor || this.state.actionHistoryStatus === "loading") return false;
+    const conversationId = this.detail.conversation.id;
+    const branchId = this.detail.conversation.activeBranchId;
+    const revision = this.detail.conversation.revision;
+    this.actionHistoryPagingStarted = true;
+    this.publish({ actionHistoryStatus: "loading" });
+    try {
+      const result = await this.request((signal) => this.conversations.getActions(conversationId, { cursor, limit: 50 }, signal));
+      if (!result.ok) { this.publish({ actionHistoryStatus: "error" }); return false; }
+      const current = this.detail?.conversation;
+      if (!current || current.id !== conversationId || current.ownerId !== this.options.actorId || current.activeBranchId !== branchId || current.revision !== revision) {
+        this.publish({ actionHistoryStatus: "idle" }); return false;
+      }
+      if (result.data.conversationId !== conversationId || result.data.branchId !== branchId) {
+        this.publish({ actionHistoryStatus: "error" }); return false;
+      }
+      this.publish({ actionEvents: mergeActionEvents(branchId, result.data.items, this.state.actionEvents),
+        actionHistoryNextCursor: result.data.nextCursor, actionHistoryStatus: "idle" });
+      return true;
+    } catch (error) {
+      if (this.current() && !(error instanceof Error && error.name === "AbortError")) this.publish({ actionHistoryStatus: "error" });
+      return false;
+    }
   }
   async updateArtifact(artifact: CourseArtifactRef): Promise<boolean> {
     const existing = this.detail?.artifacts.find((item) => item.courseId === artifact.courseId);
@@ -430,7 +470,8 @@ export class ChatSession {
       if (index < 0) messages.push(incoming); else messages[index] = incoming;
     }
     this.detail = { ...this.detail, messages, artifacts: stream.artifacts, activeTurn: stream.run };
-    this.publish({ stream, run: stream.run, pendingMessages: unacceptedIntents(this.state.pendingMessages, messages) }); this.project();
+    this.publish({ stream, run: stream.run, pendingMessages: unacceptedIntents(this.state.pendingMessages, messages),
+      actionEvents: mergeActionEvents(this.detail.conversation.activeBranchId, this.state.actionEvents, stream.actionEvents) }); this.project();
   }
 }
 

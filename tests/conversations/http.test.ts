@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createHttpConversations } from "../../src/application/http-conversations";
 import { createHttpApplication } from "../../src/application/http-application";
-import { accepted, detail, ids, pending, sendInput } from "./fixtures";
+import { accepted, at, detail, ids, pending, sendInput } from "./fixtures";
 
 const json = (data: unknown, status = 200) => new Response(JSON.stringify({ data }), { status, headers: { "Content-Type": "application/json" } });
 
@@ -22,6 +22,16 @@ describe("conversation HTTP clients", () => {
     const client = createHttpConversations(fetcher);
     expect((await client.get(ids.conversation)).ok).toBe(false);
     expect((await client.list()).ok).toBe(false);
+  });
+  it("loads a bounded action-history page and rejects a page for another conversation", async () => {
+    const event = { id: ids.key, runId: ids.run, branchId: ids.branch, seq: 1, at, type: "action.started", invocationId: ids.source,
+      action: "search", labelKey: "generation.search" };
+    const page = { conversationId: ids.conversation, branchId: ids.branch, items: [event], nextCursor: "older" };
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(json(page)).mockResolvedValueOnce(json({ ...page, conversationId: ids.source }));
+    const client = createHttpConversations(fetcher);
+    await expect(client.getActions(ids.conversation, { cursor: "cursor", limit: 50 })).resolves.toEqual({ ok: true, data: page });
+    expect(fetcher.mock.calls[0]?.[0]).toBe(`/api/v1/conversations/${ids.conversation}/actions?cursor=cursor&limit=50`);
+    await expect(client.getActions(ids.conversation)).resolves.toMatchObject({ ok: false, error: { error: { code: "service_unavailable" } } });
   });
   it("handles empty delete acknowledgement and preserves revision errors", async () => {
     const fetcher = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(null, { status: 204 })).mockResolvedValueOnce(new Response(JSON.stringify({ error: { code: "revision_conflict", messageKey: "chat.changed", retryable: false, requestId: ids.key }, currentRevision: 4 }), { status: 409 }));
