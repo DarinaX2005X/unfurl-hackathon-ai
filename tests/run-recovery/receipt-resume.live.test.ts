@@ -13,6 +13,7 @@ vi.mock("../../src/server/runs/composition",()=>({getRuntimeAdmission:()=>({asse
 import {retryRun} from "../../src/server/runs/retry";
 import {enqueueAcceptedRun} from "../../src/server/runs/enqueue";
 import {agentOperationId,stableExecutionId} from "../../src/server/runs/identity";
+import {readAgentDecisionRetryPolicy} from "../../src/server/runs/decision-policy";
 import {ProviderFailure} from "../../src/server/ai/failure";
 import {jsonDigest} from "../../src/server/ai/json";
 import {PostgresBudget} from "../../src/server/budget/postgres";
@@ -113,13 +114,17 @@ describe.skipIf(process.env.RUN_LIVE_RECEIPT_RESUME!=="1")("ordinary receipt-onl
     expect((await client.query("SELECT retry_epoch FROM unfurl.execution_jobs WHERE id=$1",[job])).rows[0].retry_epoch).toBe(1);
     expect((await client.query("SELECT from_epoch,to_epoch,semantic_target FROM unfurl.execution_job_retry_receipts WHERE job_id=$1",[job])).rows)
       .toEqual([{from_epoch:0,to_epoch:1,semantic_target:{kind:"agent_turn",runId:run}}]);
+    const retryBinding={jobId:job,runId:run,decisionStepId:step,retryEpoch:1,inputDigest:jsonDigest(input),schemaDigest:digests.schema};
+    expect(await readAgentDecisionRetryPolicy(client,retryBinding)).toBe(32768);
+    expect(await readAgentDecisionRetryPolicy(client,{...retryBinding,retryEpoch:0})).toBeNull();
     const logical=agentOperationId(step,"agent_decision",1);expect(logical).not.toBe(request.operationId);
     expect(agentOperationId(step,"agent_decision",0)).toBe(request.operationId);
     let commits=0,interrupt=true;const schema=z.object({answer:z.string()}).strict();
     const executor=new DurableRunExecutor(new RunHandlerRegistry([{kind:"agent_turn",version:"rollback-test",assertAuthority:async()=>{},advance:async context=>{
       await context.step({key,input,digests,executionProfile:"longform_curriculum",outputSchema:schema,resultSchema:schema,
         effect:async effect=>{const budget=effect.budgetOperation("agent_decision");expect(budget.logicalOperationId).toBe(logical);
-          const result=await model.generateStructured({...request,operationId:budget.logicalOperationId,budget,maxOutputTokens:8192,executionProfile:"longform_curriculum",deadlineAt:effect.deadlineAt,schema,schemaId:"answer",schemaVersion:1},effect.signal);
+          const allocation=await context.read(tx=>readAgentDecisionRetryPolicy(tx,{...retryBinding,retryEpoch:effect.stepFence.retryEpoch}));
+          const result=await model.generateStructured({...request,operationId:budget.logicalOperationId,budget,maxOutputTokens:allocation??8192,executionProfile:"longform_curriculum",deadlineAt:effect.deadlineAt,schema,schemaId:"answer",schemaVersion:1},effect.signal);
           if(interrupt){interrupt=false;throw new ProviderFailure("timeout");}return result.data;},
         commit:async(tx,output)=>{commits++;await context.completeTurn(tx,{status:"succeeded"});return output;}});return{status:"succeeded"};
     }}]),work=>work(client));

@@ -1,10 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { ArrowDown, Check, Copy, Pencil, RotateCcw } from "lucide-react";
+import { ArrowDown, Check, ChevronRight, Copy, Pencil, RotateCcw, CircleAlert } from "lucide-react";
 import { Button, IconButton } from "@/components/ui";
-import type { ActionEvent, ResearchAction } from "@/domain/generation";
+import type { ActionEvent } from "@/domain/generation";
 import type { LocalMessage } from "@/domain/chat";
+import { actionFactLines, actionLabel, collectActions, conversationTimeline, sourceLink, type ConversationAction } from "./conversation-timeline";
 
 export interface ConversationProps {
   messages: LocalMessage[];
@@ -23,7 +24,10 @@ export function Conversation({ messages, actionEvents = [], pending, transmittin
   const [hasNewContent, setHasNewContent] = useState(false);
   const [copyState, setCopyState] = useState<{ id: string; status: "copied" | "error" } | null>(null);
   const latest = messages.at(-1);
-  const updateKey = `${latest?.id}:${latest?.text.length}:${latest?.delivery}:${actionEvents.length}`;
+  const timeline = conversationTimeline(messages, actionEvents);
+  const lastAction = collectActions(actionEvents).at(-1);
+  const activeActionId = pending && !interrupted && lastAction?.status === "working" ? lastAction.id : null;
+  const updateKey = `${latest?.id}:${latest?.text.length}:${latest?.delivery}:${actionEvents.length}:${pending}`;
   useEffect(() => {
     const area = scrollRef.current;
     if (!area || !active) return;
@@ -43,7 +47,10 @@ export function Conversation({ messages, actionEvents = [], pending, transmittin
       following.current = area.scrollHeight - area.clientHeight - area.scrollTop < 88;
       if (following.current) setHasNewContent(false);
     }}><div className="creator-conversation__content">
-      {messages.map((message) => <article className={`creator-message creator-message--${message.role}`} key={message.id}>
+      {timeline.map((item) => {
+        if (item.kind === "actions") return <ActionGroup key={item.id} actions={item.actions} activeActionId={activeActionId} />;
+        const message = item.message;
+        return <article className={`creator-message creator-message--${message.role}${message.status === "streaming" ? " creator-message--streaming" : ""}`} key={message.id}>
         <h2>{message.role === "user" ? "You" : "Unfurl"}</h2>
         <div className="creator-message__text"><p>{message.text}</p></div>
         {message.role === "user" && message.delivery !== "accepted" && <div className="creator-message__delivery">
@@ -54,10 +61,9 @@ export function Conversation({ messages, actionEvents = [], pending, transmittin
           </>}
         </div>}
         {message.role === "assistant" && (message.status === "failed" || message.status === "interrupted") && <p className="creator-message__status">{message.status === "interrupted" ? "Stopped. This response is incomplete." : "This response could not be completed."}</p>}
-        <div className="creator-message__tools"><IconButton label="Copy message" icon={copyState?.id === message.id && copyState.status === "copied" ? <Check /> : <Copy />} onClick={() => void copyMessage(message)} />{copyState?.id === message.id && <span role="status">{copyState.status === "copied" ? "Copied" : "Select the message text to copy it."}</span>}</div>
-      </article>)}
-      {actionEvents.length > 0 && <ActionHistory events={actionEvents} interrupted={interrupted} />}
-      {pending && !transmittingId && <p className="creator-conversation__status" role="status">Unfurl is responding…</p>}
+        {message.status !== "streaming" && <div className="creator-message__tools"><IconButton label="Copy message" icon={copyState?.id === message.id && copyState.status === "copied" ? <Check /> : <Copy />} onClick={() => void copyMessage(message)} />{copyState?.id === message.id && <span role="status">{copyState.status === "copied" ? "Copied" : "Select the message text to copy it."}</span>}</div>}
+      </article>; })}
+      {pending && !transmittingId && !activeActionId && <div className="creator-conversation__status" role="status"><RespondingMark /><span>Unfurl is responding</span></div>}
     </div></div>
     {hasNewContent && <Button className="creator-conversation__latest" variant="secondary" size="compact" onClick={() => {
       const area = scrollRef.current;
@@ -68,15 +74,39 @@ export function Conversation({ messages, actionEvents = [], pending, transmittin
   </div>;
 }
 
-const actionLabels: Record<ResearchAction, string> = { search: "Finding sources", read_source: "Reading a source", compare_sources: "Comparing sources", build_outline: "Planning a course", research_module: "Researching a section", construct_tasks: "Preparing practice", validate_tasks: "Checking practice" };
 export function ActionHistory({ events, interrupted = false }: { events: ActionEvent[]; interrupted?: boolean }) {
-  const invocations = new Map<string, { label: string; status: "working" | "completed" | "failed"; summary?: string }>();
-  for (const event of events) {
-    if (event.type === "action.started") invocations.set(event.invocationId, { label: actionLabels[event.action], status: "working" });
-    else {
-      const current = invocations.get(event.invocationId) ?? { label: "Course preparation", status: "working" as const };
-      invocations.set(event.invocationId, { ...current, status: event.type === "action.completed" ? "completed" : "failed", ...(event.type === "action.completed" ? { summary: event.resultSummary } : {}) });
-    }
-  }
-  return <details className="creator-actions"><summary>Activity <span>{invocations.size}</span></summary><ul>{Array.from(invocations, ([id, action]) => <li key={id}><div><strong>{action.label}</strong><span>{action.status === "working" ? interrupted ? "Interrupted" : "In progress" : action.status === "completed" ? "Complete" : "Couldn’t finish"}</span></div>{action.summary && <p>{action.summary}</p>}</li>)}</ul></details>;
+  const actions = collectActions(events);
+  const last = actions.at(-1);
+  return <ActionGroup actions={actions} activeActionId={!interrupted && last?.status === "working" ? last.id : null} />;
+}
+
+function RespondingMark() {
+  return <span className="creator-responding" aria-hidden="true"><span /><span /><span /></span>;
+}
+
+function ActionGroup({ actions, activeActionId }: { actions: ConversationAction[]; activeActionId: string | null }) {
+  const current = actions.find((action) => action.id === activeActionId);
+  const working = Boolean(current);
+  const failed = actions.some((action) => action.status === "failed");
+  const stopped = !working && actions.some((action) => action.status === "working");
+  const last = actions.at(-1);
+  if (!last) return null;
+  const title = working && current ? actionLabel(current) : stopped ? "Work paused" : failed ? "Some work couldn’t finish" : actions.length === 1 ? actionLabel(last) : `${actions.length} steps completed`;
+  return <details className={`creator-actions${working ? " creator-actions--working" : ""}`}>
+    <summary><span className="creator-actions__state" aria-hidden="true">{working ? <RespondingMark /> : failed || stopped ? <CircleAlert size={16} /> : <Check size={16} />}</span><span className="creator-actions__label" role={working ? "status" : undefined}>{title}</span><ChevronRight className="creator-actions__chevron" size={16} aria-hidden="true" /><span className="creator-actions__hint">Details</span></summary>
+    <ol>{actions.map((action) => {
+      const facts = actionFactLines(action.facts);
+      const sources = [...(action.facts.source ? [action.facts.source] : []), ...(action.facts.sources ?? [])];
+      const status = action.status === "working" ? action.id === activeActionId ? "In progress" : "Paused" : action.status === "completed" ? "Complete" : "Couldn’t finish";
+      return <li key={action.id}><div className="creator-actions__heading"><strong>{actionLabel(action)}</strong><span>{status}</span></div>
+        {action.facts.query && <p className="creator-actions__query">{action.facts.query}</p>}
+        {facts.length > 0 && <p>{facts.join(" · ")}</p>}
+        {sources.length > 0 && <ul className="creator-actions__sources">{sources.map((source, index) => {
+          const url = sourceLink(source.url);
+          return <li key={`${source.title}-${index}`}>{url ? <a href={url} target="_blank" rel="noopener noreferrer">{source.title}</a> : source.title}</li>;
+        })}</ul>}
+        {action.status === "failed" && <p>This step didn’t finish. Any completed work is still available.</p>}
+      </li>;
+    })}</ol>
+  </details>;
 }

@@ -1,6 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { IdSchema } from "../../domain/common";
+import type { ActionDetails } from "../../domain/generation";
 import { CurriculumAuthoringSnapshotSchema } from "../../domain/curriculum-authoring";
 import { ProviderFailure } from "../ai/failure";
 import { jsonDigest } from "../ai/json";
@@ -17,8 +18,9 @@ import { composeDurableCurriculum } from "../curriculum-research/durable-compose
 import { commitResearchedRevision } from "../curriculum-research/persistence";
 import { createResearchedCourse, curriculumConflict, readArtifact, requireCourseDraft, requireDraft } from "../curricula/repository";
 import { editMetadataInTransaction, readAuthoringSnapshot } from "../curricula/service";
-import { asAgentTarget, jsonSchema, jsonValue, journalKey, loadToolAuthority, readSavedSearch, type ContextSnapshot } from "../agent-turns/repository";
+import { asAgentTarget, jsonSchema, jsonValue, journalKey, loadToolAuthority, readSavedSearch, readSavedSourceResult, readSourceHistory, ReadHistoryPageSchema, saveAssistantMessage, type ContextSnapshot } from "../agent-turns/repository";
 import { AgentDecisionReceiptSchema, ToolObservationSchema, type AgentDecision, type AgentDecisionReceipt, type AgentToolAuthority, type ToolObservation } from "./contracts";
+import { agentActionDetails, sourceActionDetails } from "./action-details";
 
 const ReadResultSchema = z.union([
   z.object({ status: z.literal("success"), document: SourceDocumentSchema }).strict(),
@@ -27,6 +29,8 @@ const ReadResultSchema = z.union([
 const ToolOutputSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("search"), result: SearchResultSchema }).strict(),
   z.object({ kind: z.literal("saved_search"), result: SearchResultSchema, offset: z.number().int(), limit: z.number().int() }).strict(),
+  z.object({ kind: z.literal("saved_read"), stepId: IdSchema, result: ToolObservationSchema }).strict(),
+  z.object({ kind: z.literal("read_history"), result: ReadHistoryPageSchema }).strict(),
   z.object({ kind: z.literal("source"), result: ReadResultSchema }).strict(),
   z.object({ kind: z.literal("blocks"), sourceId: IdSchema, blocks: z.array(SourceBlockSchema), overview: z.boolean() }).strict(),
   z.object({ kind: z.literal("artifact"), snapshot: CurriculumAuthoringSnapshotSchema }).strict(),
@@ -145,6 +149,15 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
               output = { kind: "saved_search", result: await context.read((tx) => readSavedSearch(tx, context.claim.jobId, selection.searchId)),
                 offset: selection.offset, limit: selection.limit };
             }
+            else if (decision.input.kind === "saved_read") {
+              const selection = decision.input;
+              output = { kind: "saved_read", stepId: selection.stepId,
+                result: await context.read((tx) => readSavedSourceResult(tx, context.claim.jobId, selection.stepId)) };
+            }
+            else if (decision.input.kind === "history") {
+              const selection = decision.input;
+              output = { kind: "read_history", result: await context.read((tx) => readSourceHistory(tx, context.claim.jobId, selection)) };
+            }
             else {
               const selection = decision.input;
               if (!authority.sourceIds.has(selection.sourceId)) throw notInScope();
@@ -182,12 +195,16 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
     commit: async (tx, rawOutput) => {
       const output = ToolOutputSchema.parse(rawOutput);
       let result: ToolObservation;
+      let details: ActionDetails | undefined = agentActionDetails(decision, snapshot);
       switch (output.kind) {
         case "failure": result = observation(decision.tool, false, output.summary, { code: output.code }); break;
         case "search": {
           await new PostgresResearchRepository().saveSearch(tx, output.result);
           result = observation(decision.tool, true, `Found ${output.result.hits.length} source candidates. These search results still need to be read.`, output.result); break;
         }
+        case "saved_read": result = observation(decision.tool, true, "Recovered a saved source-read result without fetching the URL again.",
+          { savedReadStepId: output.stepId, observation: output.result }); break;
+        case "read_history": result = observation(decision.tool, true, "Read a page of saved research history without repeating a provider call.", output.result); break;
         case "saved_search": result = observation(decision.tool, true, "Read saved search candidates. Their snippets are not read sources or research evidence.", {
           searchId: output.result.id, requestedQuery: output.result.requestedQuery, executedQuery: output.result.executedQuery,
           hits: output.result.hits.slice(output.offset, output.offset + output.limit), offset: output.offset, totalHits: output.result.hits.length,
@@ -197,10 +214,13 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
         case "source": {
           if (output.result.status !== "success") { result = observation(decision.tool, false, `This source could not be read (${output.result.status}).`, output.result); break; }
           const source = await new PostgresResearchRepository().saveSource(tx, output.result.document);
+          details = { source: { title: source.title, url: source.finalUrl }, sectionCount: source.blocks.length };
           result = observation(decision.tool, true, `Read ${source.title}.`, { sourceId: source.id, title: source.title, url: source.finalUrl,
             extractionState: source.extractionState, blockIndex: blockOverview(source.blocks), previewOnly: true }, [source.id]); break;
         }
-        case "blocks": result = observation(decision.tool, true, output.overview ? "Listed the source's available blocks; previews are not complete passages." : "Read the selected source blocks.", output, [output.sourceId]); break;
+        case "blocks":
+          details = { ...sourceActionDetails(snapshot, output.sourceId), sectionCount: output.blocks.length };
+          result = observation(decision.tool, true, output.overview ? "Listed the source's available blocks; previews are not complete passages." : "Read the selected source blocks.", output, [output.sourceId]); break;
         case "artifact": result = observation(decision.tool, true, "Read the current course and curriculum revision.",
           curriculumObservationData(output.snapshot, decision.tool === "read_artifact" ? decision.input.page : undefined), [], [output.snapshot.artifact.courseId]); break;
         case "curriculum": {
@@ -221,6 +241,8 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
           if (mutation.artifact.approvalRequestedRevision === mutation.draft.revision) await context.emitChat(tx, {
             type: "approval.required", courseId: mutation.artifact.courseId, draftId: mutation.draft.id, revision: mutation.draft.revision,
           });
+          details = { outcomeCount: mutation.draft.outcomes.length, moduleCount: mutation.draft.modules.length,
+            sourceCount: mutation.draft.sourceIds.length, sources: sources.slice(0, 8).map((source) => ({ title: source.document.title, url: source.document.finalUrl })) };
           result = observation(decision.tool, true, "Saved a researched curriculum. The user must explicitly approve its exact revision before lesson construction.", {
             courseId: mutation.artifact.courseId, draftId: mutation.draft.id, courseRevision: mutation.artifact.revision,
             draftRevision: mutation.draft.revision, contentDigest: mutation.contentDigest, title: mutation.draft.title,
@@ -243,9 +265,7 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
             const artifact = await readArtifact(tx, agent.ownerId, snapshot.languageIntent.courseId);
             if (artifact.curriculum?.contentLanguage !== snapshot.languageIntent.targetLanguage) awaitingUser = true;
           }
-          await tx.query(`INSERT INTO unfurl.messages(id,conversation_id,branch_id,parent_message_id,role,status,parts,client_request_id)
-            VALUES($1,$2,$3,$4,'assistant','complete',$5,NULL)`, [messageId, agent.conversationId, agent.branchId, agent.inputMessageId,
-              JSON.stringify([{ type: "text", text: decision.input.text }])]);
+          await saveAssistantMessage(tx, agent, messageId, decision.input.text);
           await context.emitChat(tx, { type: "message.started", messageId });
           await context.emitChat(tx, { type: "message.delta", messageId, text: decision.input.text });
           await context.emitChat(tx, { type: "message.completed", messageId });
@@ -254,9 +274,15 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
           result = observation(decision.tool, true, "Saved the assistant response.", { status }); break;
         }
       }
+      if (output.kind === "search" || output.kind === "saved_search") details = { query: output.result.requestedQuery,
+        candidateCount: output.kind === "search" ? output.result.hits.length : output.result.hits.slice(output.offset, output.offset + output.limit).length,
+        sources: (output.kind === "search" ? output.result.hits : output.result.hits.slice(output.offset, output.offset + output.limit))
+          .slice(0, 8).map((hit) => ({ title: hit.title, url: hit.url })) };
+      if (output.kind === "artifact") details = { outcomeCount: output.snapshot.draft.outcomes.length,
+        moduleCount: output.snapshot.draft.modules.length, sourceCount: output.snapshot.evidence.sources.length };
       if (decision.tool !== "respond") await context.emitChat(tx, result.ok
-        ? { type: "action.completed", invocationId: receipt.invocationId, resultSummary: result.summary, sourceIds: result.sourceIds }
-        : { type: "action.failed", invocationId: receipt.invocationId, error: { code: "generation_failed", messageKey: "generation.toolNeedsAttention", retryable: true, requestId: receipt.invocationId } });
+        ? { type: "action.completed", invocationId: receipt.invocationId, resultSummary: result.summary, sourceIds: result.sourceIds, ...(details ? { details } : {}) }
+        : { type: "action.failed", invocationId: receipt.invocationId, error: { code: "generation_failed", messageKey: "generation.toolNeedsAttention", retryable: true, requestId: receipt.invocationId }, ...(details ? { details } : {}) });
       return jsonValue(result);
     },
   });

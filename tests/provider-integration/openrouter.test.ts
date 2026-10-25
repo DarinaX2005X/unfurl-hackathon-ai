@@ -186,6 +186,17 @@ describe("paid completion boundary (simulated provider, no live quality claim)",
     expect(h.budget.reserve).toHaveBeenCalledWith(expect.objectContaining({amountMicroUsd:"199886"}));
     await expect(h.model.complete({...input,purpose:"rubric_grading",executionProfile:"longform_curriculum"},new AbortController().signal)).rejects.toThrow("provider.invalid_output");
   });
+  it("reserves 32k planner headroom while keeping ordinary and curriculum limits unchanged",async()=>{
+    const h=harness(),input={...request(),purpose:"turn_planning" as const,maxOutputTokens:32768,deadlineAt:Date.now()+270000};
+    await expect(h.model.complete(input,new AbortController().signal)).rejects.toThrow("provider.invalid_output");
+    await expect(h.model.complete({...input,purpose:"curriculum",executionProfile:"longform_curriculum"},new AbortController().signal)).rejects.toThrow("provider.invalid_output");
+    expect(h.budget.reserve).not.toHaveBeenCalled();
+    await h.model.complete({...input,executionProfile:"longform_curriculum"},new AbortController().signal);
+    expect(h.budget.reserve).toHaveBeenCalledWith(expect.objectContaining({amountMicroUsd:"242484"}));
+    const body=JSON.parse(String(h.fetcher.mock.calls[0]?.[1]?.body));
+    expect(body.max_tokens).toBe(32768);expect(body.reasoning).toBeUndefined();expect(body.thinking).toBeUndefined();
+    await expect(h.model.complete({...input,maxOutputTokens:32769,executionProfile:"longform_curriculum"},new AbortController().signal)).rejects.toThrow("provider.invalid_output");
+  });
   it("settles every valid native search fee before returning the next executable result",async()=>{
     const h=harness(completion({usage:{prompt_tokens:20,completion_tokens:10,total_tokens:30,cost:0.0050354,
       cost_details:{upstream_inference_cost:0.0000354},server_tool_use_details:{web_search_requests:1,tool_calls_requested:1,tool_calls_executed:1}},

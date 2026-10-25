@@ -11,23 +11,32 @@ export type CompactSearch = z.infer<typeof CompactSearchSchema>;
 export const SearchMemorySchema = z.object({
   searches: z.array(z.object({ searchId: IdSchema, queryPreview: z.string(), requestedQuery: z.string().nullable(),
     candidates: z.array(z.object({ id: IdSchema, title: z.string().nullable(), url: z.string().nullable() }).strict()),
-  }).strict()).max(64),
+  }).strict()),
   overflow: z.boolean(), retrieval: z.literal("read_source.search_result"), snippetsAreReadSources: z.literal(false),
+  history: z.object({ totalSearches: z.number().int().nonnegative(), omittedSearches: z.number().int().positive(),
+    category: z.literal("searches"), offset: z.literal(0), retrieval: z.literal("read_source.history") }).strict().optional(),
 }).strict();
 const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), "utf8");
 const preview = (text: string) => Array.from(text).slice(0, 80).join("");
-function manifest(searches: readonly CompactSearch[]): z.infer<typeof SearchMemorySchema> {
-  if (searches.length > 64 || new Set(searches.map((search) => search.id)).size !== searches.length) throw new ProviderFailure("invalid_output");
-  return { searches: searches.map((search) => ({ searchId: search.id, queryPreview: preview(search.requestedQuery), requestedQuery: null,
+function manifest(searches: readonly CompactSearch[], maximumBytes = 64 * 1024): z.infer<typeof SearchMemorySchema> {
+  if (new Set(searches.map((search) => search.id)).size !== searches.length) throw new ProviderFailure("invalid_output");
+  const result: z.infer<typeof SearchMemorySchema> = { searches: searches.map((search) => ({ searchId: search.id, queryPreview: preview(search.requestedQuery), requestedQuery: null,
     candidates: search.hits.map((hit) => ({ id: hit.id, title: null, url: null })) })),
   overflow: searches.length > 0, retrieval: "read_source.search_result", snippetsAreReadSources: false };
+  while (bytes(result) > maximumBytes && result.searches.length) {
+    result.searches.shift();
+    result.history = { totalSearches: searches.length, omittedSearches: searches.length - result.searches.length,
+      category: "searches", offset: 0, retrieval: "read_source.history" };
+  }
+  if (bytes(result) > maximumBytes) throw new ProviderFailure("invalid_output");
+  return result;
 }
 export function compactSearchMemory(searches: readonly CompactSearch[], maximumBytes = 64 * 1024) {
-  const result = manifest(searches);
-  if (bytes(result) > maximumBytes) throw new ProviderFailure("invalid_output");
+  const result = manifest(searches, maximumBytes);
+  const originals = new Map(searches.map((search) => [search.id, search]));
   // Recent discoveries get detail first. Every search/candidate identity remains, including overflow.
-  for (let index = searches.length - 1; index >= 0; index--) {
-    const source = searches[index]!, entry = result.searches[index]!;
+  for (let index = result.searches.length - 1; index >= 0; index--) {
+    const entry = result.searches[index]!, source = originals.get(entry.searchId)!;
     entry.requestedQuery = source.requestedQuery;
     if (bytes(result) > maximumBytes) entry.requestedQuery = null;
     for (const [hitIndex, hit] of source.hits.entries()) {
@@ -36,7 +45,7 @@ export function compactSearchMemory(searches: readonly CompactSearch[], maximumB
       if (bytes(result) > maximumBytes) { candidate.title = null; candidate.url = null; }
     }
   }
-  result.overflow = result.searches.some((search) => search.requestedQuery === null || search.candidates.some((hit) => hit.url === null));
+  result.overflow = !!result.history || result.searches.some((search) => search.requestedQuery === null || search.candidates.some((hit) => hit.url === null));
   return SearchMemorySchema.parse(result);
 }
 

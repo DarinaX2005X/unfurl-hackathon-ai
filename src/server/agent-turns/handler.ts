@@ -4,7 +4,10 @@ import { MODEL_ID, MODEL_POLICY_VERSION } from "../ai/constants";
 import { jsonDigest } from "../ai/json";
 import type { DbTransaction } from "../db";
 import type { ExecutionTarget, RunContext, RunHandler } from "../runs/ports";
-import { AgentDecisionReceiptSchema, AgentDecisionSchema, LegacyAgentDecisionSchema, type AgentDecision, type AgentDecisionReceipt, type AgentToolAuthority, type ToolObservation } from "../agent-tools/contracts";
+import { AgentDecisionReceiptSchema, agentDecisionSchemaForCapture, type AgentDecision, type AgentDecisionReceipt, type AgentToolAuthority, type ToolObservation } from "../agent-tools/contracts";
+import { agentActionDetails, agentActionLabelKey } from "../agent-tools/action-details";
+import { stableExecutionId } from "../runs/identity";
+import { readAgentDecisionRetryPolicy } from "../runs/decision-policy";
 import { executeAgentTool, prepareAgentDecision, type AgentToolDependencies } from "../agent-tools/executor";
 import * as repository from "./repository";
 import { ContextSnapshotSchema, type ContextSnapshot } from "./repository";
@@ -23,9 +26,9 @@ const postgresJournal: AgentJournal = {
   receipt: repository.journalReceipt, authority: repository.loadToolAuthority, prepare: prepareAgentDecision,
 };
 export const AGENT_INSTRUCTION_VERSION = "adaptive-course-agent-v1";
-export const AGENT_MAX_DECISIONS_PER_TURN = 64;
 /** Receipt-only resumes keep their original policy/epoch; a new paid epoch may use the expanded allowance. */
-export function plannerOutputTokens(snapshot: Pick<ContextSnapshot, "planningPolicy">, retryEpoch: number): 4096 | 8192 {
+export function plannerOutputTokens(snapshot: Pick<ContextSnapshot, "planningPolicy" | "agentProtocol">, retryEpoch: number, retryPolicy: 32768 | null = null): 4096 | 8192 | 32768 {
+  if (retryPolicy === 32768 || snapshot.agentProtocol === "conversational-v3" || snapshot.planningPolicy?.maxOutputTokens === 32768) return 32768;
   return snapshot.planningPolicy?.maxOutputTokens === 8192 || retryEpoch > 0 ? 8192 : 4096;
 }
 const instructions = `You are Unfurl's course authoring agent. Select exactly ONE permitted typed tool based on the current user message, saved course artifacts and observed tool results. You are an adaptive agent, not a fixed wizard.
@@ -36,6 +39,8 @@ Make requiredCapabilities cover the user's full intended result, including found
 If languageIntent is present, it is the current explicit action, while currentMessage is historical context: only research/read that target course, create its requested language revision at the captured revisions, or respond/clarify. Never create another course for this intent.
 After a useful saved result, respond with concise, concrete guidance in the conversation's language. State limitations or missing input plainly. awaitingUser is for a real clarification, not because one course awaits approval; other courses can continue independently. If a tool fails, inspect the result and adjust; do not repeat an identical failed request indefinitely. You may never fabricate a tool result or source.`;
 const searchMemoryInstructions = `searchMemory preserves searches from the entire current turn, including exact search and candidate IDs. Use the saved candidate URLs instead of repeating a search just because its result is no longer the latest tool. A null query/title/URL means bounded context overflow, not a missing search: retrieve that original search with read_source {kind:"search_result",searchId,offset,limit}. This retrieval is read-only and makes no new web search. Search candidates/snippets are never read sources or evidence. Read their URL before selecting source blocks. A latest tool payload marked payloadOmitted is an explicit reference; retrieve the saved blocks or artifact with a smaller selection. Do not infer omitted text.`;
+const conversationalInstructions = `sourceMemory preserves exact saved source block identities across this turn. fullyReadBlockIds means those complete blocks were retrieved before; blocks lists available IDs, original character counts, read status and short previews. Use these retained selections across MULTIPLE sources rather than relisting a source just because another tool ran. A preview is not evidence. The curriculum composer loads the complete selected blocks and validates exact quotes. Small character counts or topic headings alone are not substantive support for a detailed course; research relevant explanatory primary-source passages. If blocks or fullyReadBlockIds is null, memory overflow is explicit: use read_source blocks with [] to recover that source's index or select the retained exact IDs. Failed URL reads retain status and attempt counts; avoid repeating an unchanged unavailable URL without a concrete reason. A null failed URL can be recovered with read_source {kind:"saved_read",stepId}. A searchMemory.history or sourceMemory.history field explicitly reports older omitted index entries; page their durable identities with read_source {kind:"history",category:"searches"|"source_reads",offset:0,limit:5}, then follow nextOffset. These pages use saved research, not new searches or URL fetches.
+Each non-final tool decision includes commentary, a concise user-facing message or null. currentTurnCommentary contains your actual recent messages from this accepted user turn; omittedCount explicitly reports older omitted messages. Do not repeat a plan or finding already communicated. If this list is empty, briefly answer the user and explain the immediate next step before substantial work, even when earlier tools already ran. In that case describe the actual present research state, not a fictional earlier message. During work, add commentary only for a meaningful finding, changed approach, limitation or next stage; use null for routine consecutive reads. Write in the conversation's language, with concrete facts from actual observations. Commentary does not end the run and must not claim an action already succeeded. Continue tools after commentary as needed. Use respond only when the work is complete or you genuinely need the user's answer; awaitingUser is an explicit clarification state. Do not narrate private reasoning or the internal tool protocol.`;
 
 export function createAgentTurnHandler(dependencies: AgentToolDependencies, options: {
   journal?: AgentJournal;
@@ -73,32 +78,45 @@ export function createAgentTurnHandler(dependencies: AgentToolDependencies, opti
       }
       const snapshot = await context.read((tx) => journal.receipt(tx, context.claim.jobId, position.index, "capture", ContextSnapshotSchema));
       if (position.stage === "decision") {
-        const hasSearchMemory = snapshot.searchMemory !== undefined;
-        const decisionSchema: z.ZodType<AgentDecision> = hasSearchMemory ? AgentDecisionSchema : LegacyAgentDecisionSchema;
+        const policy = agentDecisionSchemaForCapture(snapshot);
+        const decisionSchema = policy.schema;
+        const schemaDigest = jsonDigest({ version: `agent-decision-v${policy.schemaVersion}` });
+        const retryPolicy = options.journal ? null : await context.read((tx) => readAgentDecisionRetryPolicy(tx, {
+          jobId: context.claim.jobId, runId: target.runId,
+          decisionStepId: stableExecutionId(context.claim.jobId, repository.journalKey(position.index, "decision")),
+          inputDigest: jsonDigest(repository.jsonValue(snapshot)), schemaDigest, retryEpoch: context.claim.retryEpoch,
+        }));
         await context.step({ key: repository.journalKey(position.index, "decision"), input: repository.jsonValue(snapshot),
           executionProfile: "longform_curriculum",
-          digests: { ...commonDigests, schema: jsonDigest({ version: hasSearchMemory ? "agent-decision-v2" : "agent-decision-v1" }) },
+          digests: { ...commonDigests, schema: schemaDigest },
           outputSchema: repository.jsonSchema(decisionSchema), resultSchema: repository.jsonSchema(AgentDecisionReceiptSchema),
           effect: async (step) => {
-            if (position.index >= AGENT_MAX_DECISIONS_PER_TURN) return repository.jsonValue({ tool: "respond", input: {
-              text: "I paused this research sequence after a long run. Your saved courses and research are preserved. Continue when you are ready, or narrow the next step.", awaitingUser: true,
-            } });
             const budget = step.budgetOperation("agent_decision");
             const result = await dependencies.model.generateStructured({ operationId: budget.logicalOperationId, purpose: "turn_planning",
-              instructionVersion: hasSearchMemory ? "adaptive-course-agent-v2" : AGENT_INSTRUCTION_VERSION,
-              trustedInstructions: hasSearchMemory ? `${instructions}\n${searchMemoryInstructions}` : instructions, untrustedInput: repository.jsonValue(snapshot),
-              model: MODEL_ID, maxOutputTokens: plannerOutputTokens(snapshot, step.stepFence.retryEpoch),
+              instructionVersion: policy.instructionVersion,
+              trustedInstructions: policy.schemaVersion === 3 ? `${instructions}\n${searchMemoryInstructions}\n${conversationalInstructions}`
+                : policy.schemaVersion === 2 ? `${instructions}\n${searchMemoryInstructions}` : instructions, untrustedInput: repository.jsonValue(snapshot),
+              model: MODEL_ID, maxOutputTokens: plannerOutputTokens(snapshot, step.stepFence.retryEpoch, retryPolicy),
               executionProfile: "longform_curriculum", deadlineAt: step.deadlineAt, budget,
-              schema: decisionSchema, schemaId: "agent_decision", schemaVersion: hasSearchMemory ? 2 : 1 }, step.signal);
+              schema: decisionSchema, schemaId: "agent_decision", schemaVersion: policy.schemaVersion }, step.signal);
             return repository.jsonValue(result.data);
           },
           commit: async (tx, output) => {
             const decision = decisionSchema.parse(output);
             const authority = await journal.authority(tx, target, context.claim.jobId);
             const receipt = await journal.prepare(tx, authority, decision, position.index, snapshot.languageIntent);
+            let afterMessageId = snapshot.agentProtocol === "conversational-v3" ? snapshot.lastAssistantMessageId ?? target.inputMessageId : undefined;
+            if ("commentary" in decision && decision.commentary) {
+              afterMessageId = stableExecutionId(receipt.invocationId, "commentary");
+              await repository.saveAssistantMessage(tx, target, afterMessageId, decision.commentary);
+              await context.emitChat(tx, { type: "message.started", messageId: afterMessageId });
+              await context.emitChat(tx, { type: "message.delta", messageId: afterMessageId, text: decision.commentary });
+              await context.emitChat(tx, { type: "message.completed", messageId: afterMessageId });
+            }
+            const details = agentActionDetails(decision, snapshot);
             if (decision.tool !== "respond") await context.emitChat(tx, { type: "action.started", invocationId: receipt.invocationId,
               action: decision.tool === "search" ? "search" : decision.tool === "read_source" ? "read_source" : "build_outline",
-              labelKey: decision.tool === "search" ? "generation.search" : decision.tool === "read_source" ? "generation.readSource" : "generation.planCourse" });
+              labelKey: agentActionLabelKey(decision), ...(afterMessageId ? { afterMessageId } : {}), ...(details ? { details } : {}) });
             return repository.jsonValue(receipt);
           },
         });

@@ -4,7 +4,7 @@ import type { JsonObject, JsonValue } from "../../domain/common";
 import type { BudgetPort, BudgetReservation, ProviderResponseReceipt } from "../budget/ports";
 import { worstCaseMicroUsd } from "../budget/calculations";
 import { usdToMicroUsdCeil } from "../budget/money";
-import { LONGFORM_CURRICULUM_OUTPUT_TOKENS,LONGFORM_CURRICULUM_DURATION_MS,MAX_OUTPUT_TOKENS, MAX_PROVIDER_DURATION_MS, MODEL_ID, OPENROUTER_BASE_URL, PROVIDER_TAG, SEARCH_POLICY } from "./constants";
+import { LONGFORM_PLANNER_OUTPUT_TOKENS,LONGFORM_CURRICULUM_OUTPUT_TOKENS,LONGFORM_CURRICULUM_DURATION_MS,MAX_OUTPUT_TOKENS, MAX_PROVIDER_DURATION_MS, MODEL_ID, OPENROUTER_BASE_URL, PROVIDER_TAG, SEARCH_POLICY } from "./constants";
 import { ProviderFailure } from "./failure";
 import { httpFailureReceipt, httpFailureReceiptSchema } from "./error-receipt";
 import { providerWireSchema } from "./wire-schema";
@@ -61,9 +61,11 @@ export class OpenRouterModel implements ModelPort {
     const longform=request.executionProfile==="longform_curriculum"||request.executionProfile==="longform_content";
     const profilePurpose=request.executionProfile==="longform_curriculum"?["curriculum","turn_planning"].includes(request.purpose):
       request.executionProfile==="longform_content"?["source_extraction","module_knowledge","task_authoring","content_review"].includes(request.purpose):true;
+    const outputLimit=request.executionProfile==="longform_curriculum"&&request.purpose==="turn_planning"
+      ?LONGFORM_PLANNER_OUTPUT_TOKENS:longform?LONGFORM_CURRICULUM_OUTPUT_TOKENS:MAX_OUTPUT_TOKENS;
     if (request.model !== MODEL_ID || !Number.isSafeInteger(request.maxOutputTokens) || request.maxOutputTokens < 1 ||
       (request.executionProfile!==undefined&&!longform)||(longform&&(!profilePurpose||options.search))||
-      request.maxOutputTokens > (longform?LONGFORM_CURRICULUM_OUTPUT_TOKENS:MAX_OUTPUT_TOKENS) || request.operationId !== request.budget.logicalOperationId ||
+      request.maxOutputTokens > outputLimit || request.operationId !== request.budget.logicalOperationId ||
       !/^[a-zA-Z0-9_-]{1,64}$/.test(options.schemaName ?? "output")) throw new ProviderFailure("invalid_output");
     const body = {
       model: MODEL_ID, stream: false, max_tokens: request.maxOutputTokens,

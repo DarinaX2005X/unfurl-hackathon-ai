@@ -61,18 +61,29 @@ const eventBase = {
   seq: z.number().int().positive(), at: IsoDateTimeSchema,
 };
 
+const ActionSourceSchema = z.object({ title: z.string().min(1).max(1000), url: z.string().url().max(4096).optional() }).strict();
+export const ActionDetailsSchema = z.object({
+  query: z.string().min(1).max(2000).optional(), source: ActionSourceSchema.optional(), sources: z.array(ActionSourceSchema).max(8).optional(),
+  sectionCount: z.number().int().nonnegative().optional(), candidateCount: z.number().int().nonnegative().optional(),
+  sourceCount: z.number().int().nonnegative().optional(), outcomeCount: z.number().int().nonnegative().optional(),
+  moduleCount: z.number().int().nonnegative().optional(), changeCount: z.number().int().nonnegative().optional(),
+}).strict();
+export type ActionDetails = z.infer<typeof ActionDetailsSchema>;
 const ActionStartedEventSchema = z.object({
   ...eventBase, type: z.literal("action.started"), invocationId: IdSchema,
   action: ResearchActionSchema, labelKey: z.string().min(1),
   params: z.record(z.string(), z.string()).optional(),
+  afterMessageId: IdSchema.optional(), details: ActionDetailsSchema.optional(),
 }).strict();
 const ActionCompletedEventSchema = z.object({
   ...eventBase, type: z.literal("action.completed"), invocationId: IdSchema,
   resultSummary: z.string(), sourceIds: z.array(IdSchema),
+  details: ActionDetailsSchema.optional(),
 }).strict();
 const ActionFailedEventSchema = z.object({
   ...eventBase, type: z.literal("action.failed"), invocationId: IdSchema,
   error: ApiErrorDetailSchema,
+  details: ActionDetailsSchema.optional(),
 }).strict();
 
 export const ActionEventSchema = z.discriminatedUnion("type", [

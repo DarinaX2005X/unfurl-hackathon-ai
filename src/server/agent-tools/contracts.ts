@@ -51,7 +51,34 @@ export const AgentDecisionSchema = z.discriminatedUnion("tool", [
   ]) }).strict(),
   ...LegacyAgentDecisionSchema.options.slice(2),
 ]);
-export type AgentDecision = z.infer<typeof AgentDecisionSchema>;
+const commentary = z.string().trim().min(1).max(2000).nullable();
+export const AgentDecisionV3Schema = z.discriminatedUnion("tool", [
+  AgentDecisionSchema.options[0].extend({ commentary }),
+  z.object({ tool: z.literal("read_source"), commentary, input: z.discriminatedUnion("kind", [
+    ...AgentDecisionSchema.options[1].shape.input.options,
+    z.object({ kind: z.literal("saved_read"), stepId: IdSchema }).strict(),
+    z.object({ kind: z.literal("history"), category: z.enum(["searches", "source_reads"]),
+      offset: z.number().int().nonnegative(), limit: z.number().int().min(1).max(5) }).strict(),
+  ]) }).strict(),
+  LegacyAgentDecisionSchema.options[2].extend({ commentary }),
+  LegacyAgentDecisionSchema.options[3].extend({ commentary }),
+  LegacyAgentDecisionSchema.options[4].extend({ commentary }),
+  LegacyAgentDecisionSchema.options[5].extend({ commentary }),
+  LegacyAgentDecisionSchema.options[6].extend({ commentary }),
+  LegacyAgentDecisionSchema.options[7],
+]);
+export const PersistedAgentDecisionSchema = z.union([AgentDecisionV3Schema, AgentDecisionSchema]);
+export type AgentDecision = z.infer<typeof PersistedAgentDecisionSchema>;
+
+/** Captured policy chooses the exact request schema, including when replaying a paid receipt. */
+export function agentDecisionSchemaForCapture(capture: { agentProtocol?: unknown; searchMemory?: unknown }): {
+  schema: z.ZodType<AgentDecision>; schemaVersion: 1 | 2 | 3; instructionVersion: string;
+} {
+  if (capture.agentProtocol === "conversational-v3") return { schema: AgentDecisionV3Schema, schemaVersion: 3, instructionVersion: "adaptive-course-agent-v3" };
+  return capture.searchMemory !== undefined
+    ? { schema: AgentDecisionSchema, schemaVersion: 2, instructionVersion: "adaptive-course-agent-v2" }
+    : { schema: LegacyAgentDecisionSchema, schemaVersion: 1, instructionVersion: "adaptive-course-agent-v1" };
+}
 
 export const ToolObservationSchema = z.object({
   tool: z.string().min(1).max(80), ok: z.boolean(), summary: z.string().min(1).max(4000),
@@ -59,7 +86,7 @@ export const ToolObservationSchema = z.object({
 }).strict();
 export type ToolObservation = z.infer<typeof ToolObservationSchema>;
 export const AgentDecisionReceiptSchema = z.object({
-  kind: z.literal("decision"), index: z.number().int().nonnegative(), invocationId: IdSchema, decision: AgentDecisionSchema,
+  kind: z.literal("decision"), index: z.number().int().nonnegative(), invocationId: IdSchema, decision: PersistedAgentDecisionSchema,
   capturedDraft: CurriculumDraftSchema.nullable(), capturedCourseRevision: RevisionSchema.nullable(),
   preparationError: z.string().min(1).max(200).nullable(),
 }).strict();

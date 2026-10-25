@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
-import { ArrowUp, Check, MessageSquare } from "lucide-react";
+import { ArrowUp, Check, MessageSquare, Square } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
 import { Button, Dialog, IconButton, LinkButton, Menu, Notice, Tabs, Textarea, TextField } from "@/components/ui";
 import type { ApplicationPort } from "@/application/ports";
@@ -324,7 +324,7 @@ function AccountCreator({ actorId, conversationId = null, store = chatStore, con
       <form className="creator-composer" onSubmit={(event) => { event.preventDefault(); void session.send(); }}>
         <Textarea ref={inputRef} id="chat-message" className="creator-composer__field" label="Message" placeholder="Ask a question or describe what you want to learn…" value={composerText}
           maxLength={MESSAGE_LIMIT} rows={hasMessages ? 2 : 4} onChange={(event) => session.setComposer(event.target.value)} onKeyDown={onComposerKey} />
-        <div className="creator-composer__toolbar"><span className="creator-composer__shortcut">Shift + Enter for a new line</span><div className="creator-composer__actions">{state.stream?.pending && <Button type="button" variant="quiet" size="compact" pending={runCancelPending} onClick={() => void stopActiveRun()}>Stop response</Button>}<IconButton type="submit" variant="primary" className="creator-composer__send" label={state.editingMessageId ? "Send edited message" : "Send message"} icon={<ArrowUp size={22} strokeWidth={2} />} pending={state.transmittingId !== null} disabled={!composerText.trim() || pending || Boolean(state.composerConflict)} /></div></div>
+        <div className="creator-composer__toolbar"><span className="creator-composer__shortcut">Shift + Enter for a new line</span><div className="creator-composer__actions">{state.stream?.pending ? <IconButton type="button" variant="primary" className="creator-composer__send creator-composer__stop" label={runCancelPending ? "Stopping response" : "Stop response"} title="Stop response" icon={<Square fill="currentColor" strokeWidth={0} />} pending={runCancelPending} onClick={() => void stopActiveRun()} /> : <IconButton type="submit" variant="primary" className="creator-composer__send" label={state.editingMessageId ? "Send edited message" : "Send message"} icon={<ArrowUp size={22} strokeWidth={2} />} pending={state.transmittingId !== null} disabled={!composerText.trim() || pending || Boolean(state.composerConflict)} />}</div></div>
       </form>
       <div className="creator-feedback">
         {composerText.length >= MESSAGE_LIMIT && <p className="creator-composer__limit" role="status">This message has reached the {MESSAGE_LIMIT.toLocaleString("en-US")} character limit.</p>}

@@ -6,16 +6,16 @@ import {agentOperationId,stableExecutionId} from "../../src/server/runs/identity
 import {jsonDigest} from "../../src/server/ai/json";
 import type {GenerationRow} from "../../src/server/curricula/repository";
 
-function fixture(content:string,options:{v2?:boolean;schemaDigest?:string}={}){
+function fixture(content:string,options:{v2?:boolean;v3?:boolean;schemaDigest?:string}={}){
   const actor={id:randomUUID(),sessionId:randomUUID(),email:null},jobId=randomUUID(),stepId=randomUUID();
   const run={id:randomUUID(),status:"failed",error:{messageKey:"generation.invalidResponse"},conversation_id:randomUUID(),branch_id:randomUUID(),input_message_id:randomUUID()} as GenerationRow;
-  const capture={kind:"context",...(options.v2?{searchMemory:[]}:{})};
+  const capture={kind:"context",...(options.v2?{searchMemory:[]}:{}),...(options.v3?{agentProtocol:"conversational-v3"}:{})};
   const logical=agentOperationId(stepId,"agent_decision",1),digest="a".repeat(64);
   const result={model:"moonshotai/kimi-k2.6",provider:"DigitalOcean",finishReason:"stop",failure:null,content,rateCardDigest:digest};
   const query=vi.fn(async(sql:string,parameters:unknown[]=[])=>{
     if(sql.startsWith("SELECT id,status,retry_epoch"))return{rows:[{id:jobId,status:"failed",retry_epoch:1}]};
     if(sql.includes("o.state IN")||sql.includes("FROM unfurl.code_execution_runs"))return{rows:[]};
-    if(sql.includes("status<>'succeeded'"))return{rows:[{id:stepId,step_key:"agent.v1:000011:decision",input_digest:jsonDigest(capture),schema_digest:options.schemaDigest??jsonDigest({version:options.v2?"agent-decision-v2":"agent-decision-v1"}),status:"failed"}]};
+    if(sql.includes("status<>'succeeded'"))return{rows:[{id:stepId,step_key:"agent.v1:000011:decision",input_digest:jsonDigest(capture),schema_digest:options.schemaDigest??jsonDigest({version:options.v3?"agent-decision-v3":options.v2?"agent-decision-v2":"agent-decision-v1"}),status:"failed"}]};
     if(sql.includes("SELECT result_reference"))return{rows:[{result_reference:capture}]};
     if(sql.includes("SELECT o.id,o.logical_operation_id")){expect(parameters).toEqual([stepId,logical]);return{rows:[{id:stableExecutionId(logical,"attempt:1"),logical_operation_id:logical,attempt:1,state:"settled",purpose:"turn_planning",provider_request_id:"gen-saved",response_provider_id:"gen-saved",request_digest:digest,rate_card_digest:digest,result}]};}
     if(sql.includes("advance_execution_job_retry"))return{rows:[{epoch:2}]};
@@ -31,6 +31,7 @@ describe("known paid fence-only decision recovery",()=>{
     const content=fence(valid),h=fixture(content),before=JSON.stringify(h.result);
     expect(await resumeSavedAgentDecision({query:h.query} as never,h.actor,h.run)).toBe(true);
     expect(h.query.mock.calls.some(([sql])=>sql.includes("advance_execution_job_retry"))).toBe(false);
+    expect(h.query.mock.calls.some(([sql])=>sql.startsWith("INSERT INTO unfurl.run_steps"))).toBe(false);
     expect(h.query.mock.calls.find(([sql])=>sql.startsWith("UPDATE unfurl.run_steps"))?.[1]).toEqual([h.stepId]);
     expect(JSON.stringify(h.result)).toBe(before);
   });
@@ -46,9 +47,16 @@ describe("known paid fence-only decision recovery",()=>{
     const h=fixture(content,options);await resumeSavedAgentDecision({query:h.query} as never,h.actor,h.run);
     const advanced=h.query.mock.calls.filter(([sql])=>sql.includes("advance_execution_job_retry"));expect(advanced).toHaveLength(1);
     expect(advanced[0]![1]![3]).toBe(1);
+    const policy=h.query.mock.calls.find(([sql])=>sql.startsWith("INSERT INTO unfurl.run_steps"));expect(policy).toBeDefined();
+    expect(JSON.parse(String(policy![1]![5]))).toMatchObject({decisionStepId:h.stepId,retryEpoch:2,version:"planner-headroom-v1",maxOutputTokens:32768});
   });
   it("uses the v2 schema only for a capture that actually exposed search memory",async()=>{
     const h=fixture(fence({tool:"read_source",input:{kind:"search_result",searchId:valid.input.sourceId,offset:0,limit:1}}),{v2:true});
+    await resumeSavedAgentDecision({query:h.query} as never,h.actor,h.run);
+    expect(h.query.mock.calls.some(([sql])=>sql.includes("advance_execution_job_retry"))).toBe(false);
+  });
+  it("replays a valid v3 fence with its own original schema and commentary",async()=>{
+    const h=fixture(fence({...valid,commentary:"I will read the selected source."}),{v3:true});
     await resumeSavedAgentDecision({query:h.query} as never,h.actor,h.run);
     expect(h.query.mock.calls.some(([sql])=>sql.includes("advance_execution_job_retry"))).toBe(false);
   });

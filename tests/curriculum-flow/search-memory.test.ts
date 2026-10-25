@@ -84,3 +84,13 @@ it("retrieves the complete original search only through this job's saved receipt
   await expect(readSavedSearch(tx, ids.missing, compact.id)).rejects.toMatchObject({ status: 404 });
   expect(getSearch).toHaveBeenCalledOnce();
 });
+
+it("continues beyond 64 searches and exposes a paged history when the index itself exceeds its byte budget", () => {
+  const searches = Array.from({ length: 300 }, (_, index) => search(index, `Research branch ${index}`, Array.from({ length: 5 }, (_, hit) => `https://example.test/${index}/${hit}`)));
+  const memory = compactSearchMemory(searches);
+  expect(Buffer.byteLength(JSON.stringify(memory))).toBeLessThanOrEqual(64 * 1024);
+  expect(memory.history).toMatchObject({ totalSearches: 300, omittedSearches: 300 - memory.searches.length,
+    category: "searches", offset: 0, retrieval: "read_source.history" });
+  expect(memory.history!.omittedSearches).toBeGreaterThan(0);
+  expect(memory.searches.at(-1)!.searchId).toBe(searches.at(-1)!.id);
+});

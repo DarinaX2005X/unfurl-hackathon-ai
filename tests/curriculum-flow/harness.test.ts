@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 import { z } from "zod";
-import { createAgentTurnHandler, type AgentJournal } from "../../src/server/agent-turns/handler";
+import { createAgentTurnHandler, plannerOutputTokens, type AgentJournal } from "../../src/server/agent-turns/handler";
 import { journalKey, jsonSchema, jsonValue, type ContextSnapshot } from "../../src/server/agent-turns/repository";
 import { AgentDecisionSchema, ToolObservationSchema, type AgentDecision, type AgentDecisionReceipt, type ToolObservation } from "../../src/server/agent-tools/contracts";
 import type { ModelPort, ModelResult, StructuredRequest } from "../../src/server/ai/ports";
 import type { DbTransaction } from "../../src/server/db";
-import type { RunContext } from "../../src/server/runs/ports";
+import type { ChatEventPayload, RunContext } from "../../src/server/runs/ports";
 import { stableExecutionId } from "../../src/server/runs/identity";
 import { MODEL_ID } from "../../src/server/ai/constants";
 import { ids, now, researchFixture } from "./fixtures";
@@ -29,14 +29,22 @@ export function fakeModel(decisions: unknown[]) {
   return { model, calls };
 }
 
-function memoryHarness(decisions: AgentDecision[], planningPolicy?: ContextSnapshot["planningPolicy"]) {
+function memoryHarness(decisions: AgentDecision[], planningPolicy?: ContextSnapshot["planningPolicy"], agentProtocol?: ContextSnapshot["agentProtocol"]) {
   const { model, calls } = fakeModel(decisions);
   const receipts = new Map<string, unknown>();
   const effects: string[] = [];
+  const events: ChatEventPayload[] = [];
+  const messages: Array<{ id: string; parts: Array<{ type: "text"; text: string }> }> = [];
   const artifactIds = new Set<string>();
   let message = "Please help with this learning goal.";
   const target = { kind: "agent_turn" as const, runId: ids.request, ownerId: ids.actor, conversationId: ids.conversation, branchId: ids.sample, inputMessageId: ids.missing };
-  const tx: DbTransaction = { query: async () => { throw new Error("An injected journal should not issue SQL"); } };
+  const tx: DbTransaction = { query: async (sql, values) => {
+    if (sql.includes("INSERT INTO unfurl.messages") && values) {
+      messages.push({ id: String(values[0]), parts: JSON.parse(String(values[4])) });
+      return { rows: [], rowCount: 1, command: "INSERT", oid: 0, fields: [] };
+    }
+    throw new Error("An injected journal should not issue other SQL");
+  } };
   const journal: AgentJournal = {
     assertAuthority: async () => undefined,
     position: async () => {
@@ -49,6 +57,8 @@ function memoryHarness(decisions: AgentDecision[], planningPolicy?: ContextSnaps
     capture: async (_tx, _target, _jobId, index): Promise<ContextSnapshot> => ({
       kind: "context", index, now, currentMessage: message, recentMessages: [], sources: [], artifacts: [], recentTools: [], languageIntent: null,
       ...(planningPolicy ? { planningPolicy } : {}),
+      ...(agentProtocol ? { agentProtocol, lastAssistantMessageId: messages.at(-1)?.id ?? null,
+        currentTurnCommentary: { messages: messages.slice(-8).map((saved) => ({ messageId: saved.id, text: saved.parts[0]!.text })), omittedCount: Math.max(0, messages.length - 8) } } : {}),
     }),
     receipt: async <T>(_tx: DbTransaction, _jobId: string, index: number, stage: "capture" | "decision" | "tool", schema: z.ZodType<T>) => schema.parse(receipts.get(journalKey(index, stage))),
     authority: async () => ({ ...target, artifactIds, sourceIds: new Set() }),
@@ -71,7 +81,7 @@ function memoryHarness(decisions: AgentDecision[], planningPolicy?: ContextSnaps
       effects.push(`commit:${spec.key}`);
       return result;
     },
-    emitChat: async (_tx, payload) => ({ ...payload, id: ids.task, runId: target.runId, branchId: target.branchId, seq: 1, at: now }),
+    emitChat: async (_tx, payload) => { events.push(payload); return { ...payload, id: ids.task, runId: target.runId, branchId: target.branchId, seq: events.length, at: now }; },
     emitGeneration: async () => { throw new Error("An agent turn cannot emit course-build completion"); },
     completeTurn: async (_tx, result) => { effects.push(`terminal:${result.status}`); },
     completeGeneration: async () => { throw new Error("An agent turn cannot finish a course build"); },
@@ -93,10 +103,53 @@ function memoryHarness(decisions: AgentDecision[], planningPolicy?: ContextSnaps
       return ToolObservationSchema.parse(result);
     },
   });
-  return { handler, context, calls, effects, receipts, artifactIds, changeMessage: (next: string) => { message = next; } };
+  return { handler, context, calls, effects, receipts, artifactIds, messages, events, changeMessage: (next: string) => { message = next; } };
 }
 
 describe("adaptive durable agent orchestration", () => {
+  it("commits model commentary before a tool and continues until an explicit final response", async () => {
+    const first: AgentDecision = { tool: "search", commentary: "I’ll first check primary sources for the requested course.", input: { query: "Primary source material", language: "en", limit: 3 } };
+    const routine: AgentDecision = { tool: "search", commentary: null, input: { query: "A separate requested branch", language: "en", limit: 2 } };
+    const test = memoryHarness([first, routine, { tool: "respond", input: { text: "The sources are ready for the next step.", awaitingUser: false } }],
+      { version: "planner-headroom-v1", maxOutputTokens: 32768 }, "conversational-v3");
+    await test.handler.advance(test.context);
+    await test.handler.advance(test.context);
+    expect(test.calls).toHaveLength(1);
+    expect(test.calls[0]).toMatchObject({ instructionVersion: "adaptive-course-agent-v3", schemaVersion: 3, maxOutputTokens: 32768 });
+    expect(test.messages).toHaveLength(1);
+    expect(test.events.map((event) => event.type)).toEqual(["message.started", "message.delta", "message.completed", "action.started"]);
+    expect(test.events[3]).toMatchObject({ afterMessageId: test.messages[0]!.id, details: { query: first.input.query } });
+    expect(test.effects.some((effect) => effect.startsWith("terminal:"))).toBe(false);
+    expect(await test.handler.advance(test.context)).toEqual({ status: "continue" });
+    for (let index = 0; index < 3; index++) await test.handler.advance(test.context);
+    expect(test.messages).toHaveLength(1);
+    expect(test.calls[1]!.untrustedInput).toMatchObject({ currentTurnCommentary: { messages: [{ text: first.commentary }], omittedCount: 0 } });
+    expect(test.events.filter((event) => event.type === "action.started").at(-1)).toMatchObject({ afterMessageId: test.messages[0]!.id });
+    expect(test.effects.some((effect) => effect.startsWith("terminal:"))).toBe(false);
+    for (let index = 0; index < 3; index++) await test.handler.advance(test.context);
+    expect(test.effects.filter((effect) => effect.startsWith("terminal:"))).toEqual(["terminal:succeeded"]);
+    expect(test.calls).toHaveLength(3);
+  });
+
+  it("keeps historical planner limits unless a saved headroom policy or bound retry overrides them", () => {
+    expect(plannerOutputTokens({}, 0)).toBe(4096);
+    expect(plannerOutputTokens({}, 1)).toBe(8192);
+    expect(plannerOutputTokens({}, 2, 32768)).toBe(32768);
+    expect(plannerOutputTokens({ planningPolicy: { version: "planner-8192-v1", maxOutputTokens: 8192 } }, 0)).toBe(8192);
+    expect(plannerOutputTokens({ agentProtocol: "conversational-v3" }, 0)).toBe(32768);
+  });
+
+  it("continues healthy work beyond 64 decisions instead of forcing a terminal reply", async () => {
+    const test = memoryHarness([{ tool: "search", input: { query: "The next substantive primary source", language: "en", limit: 3 } }]);
+    test.receipts.set(journalKey(63, "tool"), { tool: "read_source", ok: true, summary: "Read useful evidence", data: null, sourceIds: [], artifactIds: [] });
+    await test.handler.advance(test.context);
+    await test.handler.advance(test.context);
+    expect(test.calls).toHaveLength(1);
+    expect(test.receipts.get(journalKey(64, "decision"))).toMatchObject({ decision: { tool: "search" } });
+    expect(await test.handler.advance(test.context)).toEqual({ status: "continue" });
+    expect(test.effects.some((effect) => effect.startsWith("terminal:"))).toBe(false);
+  });
+
   it("binds new planner allowance in the capture while preserving old epoch-zero request bodies", async () => {
     const decision: AgentDecision = { tool: "respond", input: { text: "A saved reply.", awaitingUser: false } };
     const old = memoryHarness([decision]);

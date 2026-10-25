@@ -7,8 +7,9 @@ import type {DbTransaction} from "../db";
 import type {GenerationRow} from "../curricula/repository";
 import {MODEL_ID} from "../ai/constants";
 import {jsonDigest,parseStructuredOutput} from "../ai/json";
-import {AgentDecisionSchema,LegacyAgentDecisionSchema} from "../agent-tools/contracts";
+import {agentDecisionSchemaForCapture} from "../agent-tools/contracts";
 import {agentOperationId,stableExecutionId} from "./identity";
+import {saveAgentDecisionRetryPolicy} from "./decision-policy";
 import {appendChatEvent} from "./events";
 
 const completeResponse=z.object({model:z.literal(MODEL_ID),provider:z.literal("DigitalOcean"),finishReason:z.literal("stop"),
@@ -19,9 +20,10 @@ function normalizedDecisionIsValid(content:string,capture:unknown,schemaDigest:s
   // This exception repairs only an outer serialization wrapper, never a previously invalid
   // JSON value or decision. The shared parser must reject prose and malformed/multiple fences.
   try{JSON.parse(content);return false;}catch{/* A wrapper may be the sole parse failure. */}
-  const hasSearchMemory=typeof capture==="object"&&capture!==null&&!Array.isArray(capture)&&"searchMemory" in capture&&capture.searchMemory!==undefined;
-  if(schemaDigest!==jsonDigest({version:hasSearchMemory?"agent-decision-v2":"agent-decision-v1"}))return false;
-  try{return (hasSearchMemory?AgentDecisionSchema:LegacyAgentDecisionSchema).safeParse(parseStructuredOutput(content)).success;}
+  if(typeof capture!=="object"||capture===null||Array.isArray(capture))return false;
+  const selected=agentDecisionSchemaForCapture(capture);
+  if(schemaDigest!==jsonDigest({version:`agent-decision-v${selected.schemaVersion}`}))return false;
+  try{return selected.schema.safeParse(parseStructuredOutput(content)).success;}
   catch{return false;}
 }
 
@@ -63,6 +65,8 @@ export async function resumeSavedAgentDecision(tx:DbTransaction,actor:Actor,run:
     const epoch=(await tx.query<{epoch:number}>("SELECT unfurl.advance_execution_job_retry($1,$2,$3,$4,$5::jsonb) AS epoch",
       [randomUUID(),job.id,actor.id,job.retry_epoch,JSON.stringify({kind:"agent_turn",runId:run.id})])).rows[0]?.epoch;
     if(epoch!==job.retry_epoch+1)throw conflict();
+    await saveAgentDecisionRetryPolicy(tx,{jobId:job.id,runId:run.id,decisionStepId:step.id,retryEpoch:epoch,
+      inputDigest:step.input_digest,schemaDigest:step.schema_digest});
   }
   // Same-epoch replay reconstructs and verifies request_digest before returning the receipt;
   // a newly audited epoch allocates only this failed decision's new provider operation.
