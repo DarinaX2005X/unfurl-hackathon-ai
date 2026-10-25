@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { IdSchema, RevisionSchema, type Id, type Revision } from "@/domain/common";
+import { ContentLanguageSchema, IdSchema, IsoDateTimeSchema, RevisionSchema, type Id, type Revision } from "@/domain/common";
 import {
   ActionReceiptSchema, ActivitySessionPublicSchema, InputSnapshotSchema,
   canonicalResponseJson,
@@ -26,6 +26,30 @@ export const SupportResponseInputSchema = RouteRevisionInputSchema.extend({ resp
 export const AssessmentReviewInputSchema = EvaluationRevisionInputSchema.extend({
   reason: z.enum(["valid_alternative", "unclear_prompt", "other"]), comment: z.string().trim().min(1).max(2_000),
 }).strict();
+export const LearningContextQuerySchema = z.object({ cursor: z.string().min(1).max(512).optional(), limit: z.number().int().min(1).max(100).optional() }).strict();
+export const LearningContextSchema = z.object({
+  enrollmentId: IdSchema, routeRevision: RevisionSchema,
+  course: z.object({ id: IdSchema, versionId: IdSchema, versionNumber: RevisionSchema, title: z.string().trim().min(1).max(120), contentLanguage: ContentLanguageSchema }).strict(),
+  outcomes: z.array(z.object({ id: IdSchema, title: z.string().trim().min(1).max(120) }).strict()).max(10_000),
+  outline: z.array(z.object({ lessonId: IdSchema, title: z.string().min(1), outcomeIds: z.array(IdSchema),
+    availability: z.enum(["current", "completed", "upcoming"]),
+    positions: z.array(z.object({ taskId: IdSchema.nullable(), taskVersion: RevisionSchema.nullable(), instruction: z.string().min(1).max(20_000).nullable(), revisitable: z.boolean() }).strict())
+      .superRefine((positions, context) => { positions.forEach((position, index) => { if ((position.taskId === null) !== (position.taskVersion === null) || (position.taskId === null) !== (position.instruction === null)) context.addIssue({ code: "custom", path: [index], message: "Task navigation identity must be complete" }); }); }),
+  }).strict()).max(100),
+  outlineNextCursor: z.string().min(1).max(512).nullable(),
+  citations: z.array(z.object({ id: IdSchema, title: z.string().min(1), url: z.url().refine((value) => { const url = new URL(value); return ["https:", "http:"].includes(url.protocol) && !url.username && !url.password; }), retrievedAt: IsoDateTimeSchema }).strict()),
+  assistance: z.object({ taskId: IdSchema, taskVersion: RevisionSchema, level: z.enum(["independent", "hinted", "worked_example"]),
+    hints: z.array(z.object({ hintId: IdSchema, index: z.number().int().min(0).max(5), content: z.string().min(1).max(4_000), usedAt: IsoDateTimeSchema }).strict()).max(6),
+    workedExample: z.object({ content: z.string().min(1).max(12_000), usedAt: IsoDateTimeSchema }).strict().nullable(),
+  }).strict().nullable(),
+  revisitBlockedReason: z.enum(["support_active", "review_active", "archived"]).nullable(),
+}).strict().superRefine((value, context) => {
+  if (new TextEncoder().encode(JSON.stringify(value)).byteLength > 2 * 1024 * 1024) context.addIssue({ code: "custom", message: "Learning context exceeds 2 MiB" });
+  if (new Set(value.outline.map(({ lessonId }) => lessonId)).size !== value.outline.length || new Set(value.outcomes.map(({ id }) => id)).size !== value.outcomes.length ||
+    new Set(value.citations.map(({ id }) => id)).size !== value.citations.length) context.addIssue({ code: "custom", message: "Context identifiers must be unique" });
+});
+export type LearningContext = z.infer<typeof LearningContextSchema>;
+export type LearningContextQuery = z.infer<typeof LearningContextQuerySchema>;
 
 const activityFields = { activity: ActivitySessionPublicSchema, savedInput: InputSnapshotSchema.nullable() };
 function validateActivityState(value: { activity: z.infer<typeof ActivitySessionPublicSchema>; savedInput: z.infer<typeof InputSnapshotSchema> | null }, context: z.RefinementCtx) {
@@ -80,6 +104,7 @@ export type ReviewReceipt = z.infer<typeof ReviewReceiptSchema>;
 export type MutationOptions = { idempotencyKey: Id; signal?: AbortSignal };
 export interface LearningPort {
   loadSession(enrollmentId: Id, signal?: AbortSignal): Promise<ServiceResult<LearningSession>>;
+  loadContext(enrollmentId: Id, query?: LearningContextQuery, signal?: AbortSignal): Promise<ServiceResult<LearningContext>>;
   startActivity(enrollmentId: Id, input: z.infer<typeof StartActivityInputSchema>, options: MutationOptions): Promise<ServiceResult<ActivityState>>;
   getActivity(activitySessionId: Id, signal?: AbortSignal): Promise<ServiceResult<ActivityState>>;
   saveInput(activitySessionId: Id, input: SaveActivityInput, options: MutationOptions): Promise<ServiceResult<ActivityState>>;

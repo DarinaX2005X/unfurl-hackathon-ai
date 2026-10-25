@@ -9,11 +9,12 @@ import { createPublicationService } from "../../src/server/publication";
 import {
   applyEvaluationProgressTx,
   lockLearnerCourseStableTaskTx,
+  previewEvaluationAwardTx,
   readAccountProgressTx,
 } from "../../src/server/progression";
 
 const live = process.env.RUN_LIVE_PROGRESSION === "1";
-const liveTest = (name: string, test: () => Promise<void>) => it(name, test, 60_000);
+const liveTest = (name: string, test: () => Promise<void>) => it(name, test, 90_000);
 
 function connection(): Client {
   const ref = process.env.SUPABASE_PROJECT_REF;
@@ -33,7 +34,7 @@ function connection(): Client {
 }
 
 type TaskFixture = { taskId: string; activityId: string };
-type AttemptFixture = { attemptId: string; evaluationId: string; evidenceId: string };
+type AttemptFixture = { attemptId: string; evaluationId: string; evidenceId: string; awardedXp: 0 | 10 | 25 };
 
 describe.skipIf(!live)("actual progression and publication SQL (rollback-only fixtures)", () => {
   let client: Client;
@@ -224,14 +225,21 @@ describe.skipIf(!live)("actual progression and publication SQL (rollback-only fi
       );
       await client.query(
         `INSERT INTO unfurl.evaluations (id,attempt_id,status,outcome,dimensions,feedback,awarded_xp,revision)
-         VALUES ($1,$2,'evaluated','correct','[]'::jsonb,'{}'::jsonb,$3,1)`,
-        [evaluationId, attemptId, assistance === "independent" ? 25 : 10],
+         VALUES ($1,$2,'pending',NULL,'[]'::jsonb,'{}'::jsonb,0,1)`,
+        [evaluationId, attemptId],
+      );
+      const awardedXp = await previewEvaluationAwardTx(tx(), {
+        attemptId, evaluationId, evaluationRevision: 1, status: "evaluated", outcome: "correct",
+      });
+      await client.query(
+        "UPDATE unfurl.evaluations SET status='evaluated',outcome='correct',awarded_xp=$2,updated_at=now() WHERE id=$1",
+        [evaluationId, awardedXp],
       );
       await client.query(
         `INSERT INTO unfurl.evaluation_revisions
          (evaluation_id,attempt_id,revision,status,outcome,dimensions,feedback,awarded_xp)
          VALUES ($1,$2,1,'evaluated','correct','[]'::jsonb,'{}'::jsonb,$3)`,
-        [evaluationId, attemptId, assistance === "independent" ? 25 : 10],
+        [evaluationId, attemptId, awardedXp],
       );
       await client.query(
         `INSERT INTO unfurl.learner_evidence
@@ -243,12 +251,27 @@ describe.skipIf(!live)("actual progression and publication SQL (rollback-only fi
           assistance === "independent" ? "independent_success" : "assisted_success"],
       );
       await applyEvaluationProgressTx(tx(), { evaluationId, evaluationRevision: 1 });
-      return { attemptId, evaluationId, evidenceId };
+      const stored = await client.query<{ projection_xp: number; semantic_xp: number }>(
+        `SELECT evaluation.awarded_xp AS projection_xp, semantic.awarded_xp AS semantic_xp
+         FROM unfurl.evaluations evaluation
+         JOIN unfurl.evaluation_revisions semantic ON semantic.evaluation_id=evaluation.id AND semantic.revision=1
+         WHERE evaluation.id=$1`,
+        [evaluationId],
+      );
+      expect(stored.rows[0]).toEqual({ projection_xp: awardedXp, semantic_xp: awardedXp });
+      return { attemptId, evaluationId, evidenceId, awardedXp };
     }
 
     const firstAttempts: AttemptFixture[] = [];
     for (const task of tasks.slice(0, 20)) firstAttempts.push(await attempt(task, "independent"));
     expect(await readAccountProgressTx(tx(), actor.id)).toMatchObject({ xpTotal: 500, level: 3, publication: { eligible: true } });
+    expect(await previewEvaluationAwardTx(tx(), {
+      attemptId: firstAttempts[0]!.attemptId,
+      evaluationId: firstAttempts[0]!.evaluationId,
+      evaluationRevision: 1,
+      status: "evaluated",
+      outcome: "correct",
+    })).toBe(25);
 
     const hinted = await attempt(tasks[20]!, "hinted");
     await attempt(tasks[20]!, "independent");
@@ -290,9 +313,17 @@ describe.skipIf(!live)("actual progression and publication SQL (rollback-only fi
     expect((await client.query("SELECT count(*)::int AS count FROM unfurl.enrollments WHERE id=$1", [enrollmentId])).rows[0]).toEqual({ count: 1 });
 
     const original = firstAttempts[0]!;
+    const uncertainAward = await previewEvaluationAwardTx(tx(), {
+      attemptId: original.attemptId,
+      evaluationId: original.evaluationId,
+      evaluationRevision: 2,
+      status: "uncertain",
+      outcome: null,
+    });
+    expect(uncertainAward).toBe(0);
     await client.query(
-      "UPDATE unfurl.evaluations SET status='uncertain',outcome=NULL,awarded_xp=0,revision=2,updated_at=now() WHERE id=$1",
-      [original.evaluationId],
+      "UPDATE unfurl.evaluations SET status='uncertain',outcome=NULL,awarded_xp=$2,revision=2,updated_at=now() WHERE id=$1",
+      [original.evaluationId, uncertainAward],
     );
     await client.query(
       `INSERT INTO unfurl.evaluation_revisions
@@ -312,10 +343,24 @@ describe.skipIf(!live)("actual progression and publication SQL (rollback-only fi
     );
     await applyEvaluationProgressTx(tx(), { evaluationId: original.evaluationId, evaluationRevision: 2 });
     expect(await readAccountProgressTx(tx(), actor.id)).toMatchObject({ xpTotal: 510 });
-
-    await client.query(
-      "UPDATE unfurl.evaluations SET status='evaluated',outcome='incorrect',awarded_xp=0,revision=3,updated_at=now() WHERE id=$1",
+    expect((await client.query(
+      `SELECT evaluation.awarded_xp AS projection_xp, semantic.awarded_xp AS semantic_xp
+       FROM unfurl.evaluations evaluation JOIN unfurl.evaluation_revisions semantic
+         ON semantic.evaluation_id=evaluation.id AND semantic.revision=2 WHERE evaluation.id=$1`,
       [original.evaluationId],
+    )).rows[0]).toEqual({ projection_xp: 0, semantic_xp: 0 });
+
+    const correctedAward = await previewEvaluationAwardTx(tx(), {
+      attemptId: original.attemptId,
+      evaluationId: original.evaluationId,
+      evaluationRevision: 3,
+      status: "evaluated",
+      outcome: "incorrect",
+    });
+    expect(correctedAward).toBe(0);
+    await client.query(
+      "UPDATE unfurl.evaluations SET status='evaluated',outcome='incorrect',awarded_xp=$2,revision=3,updated_at=now() WHERE id=$1",
+      [original.evaluationId, correctedAward],
     );
     await client.query(
       `INSERT INTO unfurl.evaluation_revisions
@@ -340,5 +385,11 @@ describe.skipIf(!live)("actual progression and publication SQL (rollback-only fi
       [original.evaluationId],
     );
     expect(adjustments.rows[0]).toEqual({ count: 1, delta: -25 });
+    expect((await client.query(
+      `SELECT evaluation.awarded_xp AS projection_xp, semantic.awarded_xp AS semantic_xp
+       FROM unfurl.evaluations evaluation JOIN unfurl.evaluation_revisions semantic
+         ON semantic.evaluation_id=evaluation.id AND semantic.revision=3 WHERE evaluation.id=$1`,
+      [original.evaluationId],
+    )).rows[0]).toEqual({ projection_xp: 0, semantic_xp: 0 });
   });
 });

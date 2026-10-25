@@ -34,9 +34,15 @@ function validatePrivateJoin(task: TaskPublic, privateTask: TaskPrivateCandidate
   requireValid(privateTask.taskId === task.id && privateTask.taskVersion === task.taskVersion, "Private task identity/version does not match the public task");
   requireValid(privateTask.hints.length === task.availableHints, "Available hints must equal the authored private hints");
   const spec = privateTask.evaluationSpec;
-  if (spec.kind === "execution") throw new TaskCandidateError("unsupported", "No execution adapter is registered for this mechanic version");
+  if (spec.kind === "execution" && !handle.descriptor.supportedEvaluators.includes("execution")) {
+    throw new TaskCandidateError("unsupported", "No execution adapter is registered for this mechanic version");
+  }
   requireValid(handle.descriptor.supportedEvaluators.includes(spec.kind), "This evaluation kind is not supported by the mechanic");
-  if (spec.kind === "deterministic") {
+  if (spec.kind === "execution") {
+    requireValid(task.mechanicVersion === 3 && spec.executorId === "python_stdlib_v1" && spec.dialect === "python3.14" &&
+      spec.testSetId === privateTask.evaluatorData.testSetId && spec.resourceLimits.timeoutMs === 3000 && spec.resourceLimits.memoryMb === 256,
+    "Python execution must bind the private test set and the fixed python_stdlib_v1 resource profile");
+  } else if (spec.kind === "deterministic") {
     requireValid(spec.evaluatorId === task.mechanicId && spec.evaluatorVersion === 2 && spec.secretConfig === null,
       "Production deterministic data belongs only in evaluatorData, with the matching mechanic ID/version and null secretConfig");
   } else {
@@ -95,6 +101,8 @@ function verifyCases(candidate: PreparedTaskCandidate, evidence: TaskValidationE
   if (!(["valid", "invalid"] as const).every((category) => cases.some((item) => item.category === category))) return false;
   if (new Set(cases.map((item) => item.caseId)).size !== cases.length || cases.some((item) => !receipt.testEvidenceRefs.includes(item.caseId))) return false;
   const valid = cases.filter((item) => item.category !== "invalid");
+  const requiresModel = handle.descriptor.requirements.includes("model") &&
+    !(candidate.task.mechanicVersion === 3 && candidate.task.mechanicId === "diagnosis_repair" && candidate.privateTask.evaluatorData.explanationRubric === null);
   if (new Set(valid.map((item) => canonicalTaskJson(item.response))).size !== valid.length) return false;
   for (const item of cases) {
     let validForm = false;
@@ -104,8 +112,21 @@ function verifyCases(candidate: PreparedTaskCandidate, evidence: TaskValidationE
       else if (!validForm || item.decision?.status !== "evaluated" || item.decision.outcome === "correct" ||
         item.decision.dimensions.length === 0 || item.decision.dimensions.every((dimension) => dimension.status === "met")) return false;
     } else if (!validForm || item.rejectedAsInvalid || !item.decision || !hasActualSuccessDimensions(item.decision, dimensions)) return false;
-    if (!item.rejectedAsInvalid && handle.descriptor.requirements.includes("model") && item.modelCallId === null) return false;
+    if (!item.rejectedAsInvalid && requiresModel && item.modelCallId === null) return false;
     if (!item.rejectedAsInvalid && handle.descriptor.requirements.includes("activity") && item.activityEvidenceRef === null) return false;
+  }
+  if (candidate.task.mechanicVersion === 3) {
+    const behaviorIds = z.array(z.object({ dimensionId: z.string() }).passthrough()).parse(candidate.privateTask.evaluatorData.hiddenCases).map((item) => item.dimensionId);
+    // Executable tasks need a real semantic negative case. A malformed response cannot
+    // establish a defect in a program, including the original program in a repair task.
+    const negative = cases.some((item) => {
+      if (item.category !== "invalid" || item.rejectedAsInvalid || item.activityEvidenceRef === null || item.decision?.status !== "evaluated" ||
+        !item.decision.dimensions.some((dimension) => behaviorIds.includes(dimension.id) && dimension.status === "not_met")) return false;
+      const response = handle.parseResponse(item.response);
+      return candidate.task.mechanicId !== "diagnosis_repair" ||
+        response !== null && typeof response === "object" && !Array.isArray(response) && response.source === candidate.task.config.starterSource;
+    });
+    if (!negative) return false;
   }
   if (!cases.some((item) => item.category === "alternative") && !evidence.some((item) => item.kind === "alternative_space" &&
     verifyAlternativeSpaceEvidence(candidate, item, valid.map((test) => test.response), cases))) return false;

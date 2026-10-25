@@ -3,6 +3,7 @@ import { z } from "zod";
 import { productionMechanicManifest, type MechanicManifestEntry } from "@/domain/mechanic-manifest";
 import { createTaskPublicSchema, type TaskPublic } from "@/domain/mechanics";
 import { StateTracingConfigSchema } from "@/domain/mechanic-families/v2/investigation";
+import { PYTHON_RUNTIME_PROFILE } from "@/domain/mechanic-families/v3/python";
 import { RubricRequestSchema } from "@/server/evaluation/contracts";
 import { getServerMechanic } from "./registry";
 import { taskDigest } from "./digest";
@@ -11,13 +12,16 @@ import { MechanicRuntimeCapabilitiesSchema, type MechanicRuntimeCapabilities } f
 export function getMechanicAuthoringContract(id: string, version: number) {
   const registration = getServerMechanic(id, version);
   if (!registration) throw new Error(`Unsupported mechanic: ${id}@${version}`);
+  // V3 uses bounded preflight pipes and source normalization. The output schema describes
+  // their concrete validated data; the input side of a preflight is deliberately unknown.
+  const io = version === 3 ? "output" as const : "input" as const;
   // Zod throws on unrepresentable types. Never substitute an unconstrained {} or an any schema.
   return {
     id: registration.descriptor.id, version: registration.descriptor.version,
-    publicTaskSchema: z.toJSONSchema(createTaskPublicSchema(registration.descriptor.configSchema), { io: "input" }),
-    configSchema: z.toJSONSchema(registration.descriptor.configSchema, { io: "input" }),
-    responseSchema: z.toJSONSchema(registration.descriptor.responseSchema, { io: "input" }),
-    evaluatorDataSchema: z.toJSONSchema(registration.privateSchema, { io: "input" }),
+    publicTaskSchema: z.toJSONSchema(createTaskPublicSchema(registration.descriptor.configSchema), { io }),
+    configSchema: z.toJSONSchema(registration.descriptor.configSchema, { io }),
+    responseSchema: z.toJSONSchema(registration.descriptor.responseSchema, { io }),
+    evaluatorDataSchema: z.toJSONSchema(registration.privateSchema, { io }),
     runtimeRefinementsRequired: true as const,
   };
 }
@@ -41,6 +45,7 @@ export function mechanicRuntimeBlockers(entry: MechanicManifestEntry, runtime: M
     if (entry.actions.includes("dialogue.turn") && !runtime.activity.dialogue) reasons.push("dialogue_unavailable");
   }
   if (entry.requirements.includes("sandbox") && (!runtime.sandbox.available || runtime.sandbox.profiles.length === 0)) reasons.push("sandbox_unavailable");
+  if (entry.version === 3 && !runtime.sandbox.profiles.includes(PYTHON_RUNTIME_PROFILE)) reasons.push(`sandbox_profile_unavailable:${PYTHON_RUNTIME_PROFILE}`);
   return reasons;
 }
 /** Membership is stable even when a runtime provider is unavailable. */
@@ -59,6 +64,8 @@ export function getAssessmentDimensionIds(taskValue: TaskPublic, evaluatorData: 
   const registration = getServerMechanic(taskValue.mechanicId, taskValue.mechanicVersion);
   if (!registration) throw new Error("Unsupported mechanic/version");
   const task = registration.parseTask(taskValue), data = registration.parsePrivate(evaluatorData);
+  if (task.mechanicVersion === 3) return z.array(z.string().min(1).max(128)).min(1).max(24)
+    .refine((ids) => new Set(ids).size === ids.length, "Python dimensions must be unique").parse(data.requiredDimensions);
   const rubric = (key = "rubric", prefix = "") => RubricRequestSchema.shape.rubric.parse(data[key]).dimensions.map(({ id }) => `${prefix}${id}`);
   let ids: string[];
   switch (task.mechanicId) {

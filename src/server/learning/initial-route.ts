@@ -27,6 +27,18 @@ export function createInitialLearningRoute(input: {
   const enrollmentId = IdSchema.parse(input.enrollmentId);
   const version = CourseVersionSchema.parse(input.version);
   if (version.state !== "ready") throw new Error("Learning requires a ready pinned version");
+  const { next, targetOutcomeIds } = createNormalProgramEntries(input);
+  const route = PersonalRouteSchema.parse({ enrollmentId, revision: 1, policyVersion: "adaptation-v1",
+    targetOutcomeIds, next, coveredOutcomeIds: [], pendingOutcomeIds: targetOutcomeIds });
+  return { route, currentLessonId: next[0]!.lessonId, currentTaskId: next[0]!.taskId };
+}
+
+/** Shared traversal validation for persisted generation candidates, without a fabricated learner enrollment. */
+export function createNormalProgramEntries(input: {
+  version: CourseVersion; lessons: readonly Lesson[]; tasks: readonly AssessedTask[];
+}): { next: PersonalRoute["next"]; targetOutcomeIds: Id[] } {
+  const version = CourseVersionSchema.parse(input.version);
+  if (!["building", "validating", "ready"].includes(version.state)) throw new Error("Only a current course version can define a normal program");
   const lessons = input.lessons.map((lesson) => LessonSchema.parse(lesson));
   sameSet(lessons.map((lesson) => lesson.id), version.lessonIds, "version lessons");
   const outcomes = unique(version.outcomes.map((outcome) => outcome.id), "version outcomes");
@@ -65,7 +77,6 @@ export function createInitialLearningRoute(input: {
   }
   sameSet(usedTasks, tasks.map(({ task }) => task.id), "version task membership");
   if ([...outcomes].some((id) => !assessedRequired.has(id))) throw new Error("Every approved outcome needs required assessment criteria");
-  const route = PersonalRouteSchema.parse({ enrollmentId, revision: 1, policyVersion: "adaptation-v1",
-    targetOutcomeIds: [...outcomes], next, coveredOutcomeIds: [], pendingOutcomeIds: [...outcomes] });
-  return { route, currentLessonId: next[0]!.lessonId, currentTaskId: next[0]!.taskId };
+  if (next.length === 0) throw new Error("A normal program needs at least one position");
+  return { next, targetOutcomeIds: [...outcomes] };
 }

@@ -6,21 +6,30 @@ import { ActivityActionRequestSchema, SaveActivityInputSchema, canonicalResponse
 import { PersonalRouteSchema, type Enrollment } from "@/domain/learning";
 import { ActionRetryInputSchema, StartActivityInputSchema, RouteRevisionInputSchema, RevisitInputSchema,
   type ActivityActionResult, type ActivityState } from "@/application/learning-port";
+import { LearningContextQuerySchema, type LearningContextQuery } from "@/application/learning-port";
 import type { Actor } from "@/server/auth/actor";
 import { ServiceFault } from "@/server/auth/errors";
 import { withSystemTransaction, type DbTransaction } from "@/server/db";
 import { executeIdempotentInTransaction, requestDigest, type MutationReceipt } from "@/server/idempotency";
 import { getServerMechanic } from "@/server/mechanics/registry";
+import { enqueueLearningJobTx } from "@/server/runs/enqueue";
 import { prepareActivityAction, invalidLearningFields, activityBudgetLimit } from "./actions";
 import { projectLearningSession } from "./projection";
 import { createInitialLearningRoute } from "./initial-route";
+import { createAssistanceOperations } from "./assistance";
+import { projectLearningContext } from "./context";
+import { createAttemptOperations } from "./attempts";
+import { createSupportOperations } from "./support";
+import { activateLearningJob, type LearningAdmission } from "./queue";
+import { createReviewOperations } from "./reviews";
 import * as repository from "./repository";
 
 export interface LearningTransactions { run<T>(work: (tx: DbTransaction) => Promise<T>): Promise<T> }
-export interface LearningServiceDependencies { transactions?: LearningTransactions; createId?: () => string }
+export interface LearningServiceDependencies { transactions?: LearningTransactions; createId?: () => string; admission?: LearningAdmission }
 export type LearningCommand<T> = { key: string; body: T };
 const activityReference = z.object({ activitySessionId: IdSchema }).strict();
 const actionReference = activityReference.extend({ receiptId: IdSchema }).strict();
+const actionRetryReference = actionReference.extend({ retryEpoch: z.number().int().nonnegative().nullable() }).strict();
 const enrollmentReference = z.object({ enrollmentId: IdSchema }).strict();
 function parsed<T>(schema: z.ZodType<T>, input: unknown): T {
   const result = schema.safeParse(input);
@@ -31,13 +40,7 @@ function writable(enrollment: Enrollment, review = false): void {
   if (enrollment.status === "archived" || (enrollment.status === "completed" && !review)) repository.revisionConflict(enrollment.routeRevision, "learning.enrollmentInactive");
 }
 async function currentTask(tx: DbTransaction, enrollment: Enrollment, taskId: string, taskVersion: number) {
-  const route = await repository.requireRoute(tx, enrollment);
-  writable(enrollment, route.next[0]?.reasonCode === "scheduled_review");
-  if (enrollment.currentTaskId !== taskId || route.next[0]?.taskId !== taskId) repository.revisionConflict(enrollment.routeRevision);
-  const program = await repository.loadProgram(tx, enrollment);
-  const task = program.tasks.find((entry) => entry.task.id === taskId && entry.task.taskVersion === taskVersion)?.task;
-  if (!task || !program.lessons.some((lesson) => lesson.id === enrollment.currentLessonId && lesson.taskIds.includes(task.id))) repository.notFound();
-  return task;
+  return repository.requireCurrentTask(tx, enrollment, taskId, taskVersion);
 }
 
 export function createLearningService(dependencies: LearningServiceDependencies = {}) {
@@ -45,6 +48,15 @@ export function createLearningService(dependencies: LearningServiceDependencies 
   const createId = dependencies.createId ?? (() => crypto.randomUUID());
 
   return {
+    ...createAssistanceOperations(transactions, createId),
+    ...createAttemptOperations(transactions, createId, dependencies.admission),
+    ...createSupportOperations(transactions, createId),
+    ...createReviewOperations(transactions, createId, dependencies.admission),
+    loadContext(actor: Actor, enrollmentId: string, query: LearningContextQuery = {}) {
+      parsed(IdSchema, enrollmentId);
+      const value = parsed(LearningContextQuerySchema, query);
+      return transactions.run(async (tx) => projectLearningContext(tx, await repository.requireEnrollment(tx, actor, enrollmentId), value));
+    },
     loadSession(actor: Actor, enrollmentId: string) {
       parsed(IdSchema, enrollmentId);
       return transactions.run(async (tx) => projectLearningSession(tx, await repository.requireEnrollment(tx, actor, enrollmentId)));
@@ -105,10 +117,10 @@ export function createLearningService(dependencies: LearningServiceDependencies 
         return { status: 200, data: await repository.readActivity(tx, enrollment, receipt.data.activitySessionId) };
       });
     },
-    dispatchAction(actor: Actor, activityId: string, command: LearningCommand<ActivityActionRequest>) {
+    async dispatchAction(actor: Actor, activityId: string, command: LearningCommand<ActivityActionRequest>) {
       parsed(IdSchema, activityId); parsed(IdSchema, command.key);
       const body = parsed(ActivityActionRequestSchema, command.body);
-      return transactions.run(async (tx): Promise<MutationReceipt<ActivityActionResult>> => {
+      const accepted = await transactions.run(async (tx): Promise<MutationReceipt<ActivityActionResult>> => {
         const enrollmentId = await repository.activityEnrollmentId(tx, actor, activityId);
         const enrollment = await repository.requireEnrollment(tx, actor, enrollmentId, true);
         const result = await executeIdempotentInTransaction(tx, actor, { operation: "learning.activity.action", key: command.key,
@@ -124,38 +136,55 @@ export function createLearningService(dependencies: LearningServiceDependencies 
           const privateTask = await repository.loadPrivateTask(tx, enrollment, task.id, task.taskVersion);
           const activity = await repository.authoritativeActivity(tx, enrollment, state);
           const prepared = await prepareActivityAction({ task, privateTask, activity, request: body });
-          if (prepared.execution.kind === "dialogue") throw new ServiceFault(503, "service_unavailable", "learning.dialogueUnavailable", true);
+          const synchronous = prepared.execution.kind === "deterministic";
           const receiptId = createId(), reservationRevision = state.activity.revision + 1, terminalRevision = reservationRevision + 1;
           await tx.query(`INSERT INTO unfurl.activity_actions
             (id,activity_session_id,client_action_id,request_digest,action,input_revision,response_digest,session_revision,completed_session_revision,status,public_observation)
-            VALUES($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,'completed',$10::jsonb)`,
+            VALUES($1,$2,$3,$4,$5::jsonb,$6,$7,$8,$9,$10,$11::jsonb)`,
           [receiptId, activityId, body.clientActionId, digest, JSON.stringify(prepared.action), body.inputRevision, body.responseDigest,
-            reservationRevision, terminalRevision, prepared.execution.observation === null ? null : JSON.stringify(prepared.execution.observation)]);
+            reservationRevision, terminalRevision, synchronous ? "completed" : "unavailable",
+            prepared.execution.kind !== "deterministic" || prepared.execution.observation === null ? null : JSON.stringify(prepared.execution.observation)]);
           await tx.query(`UPDATE unfurl.activity_sessions SET actions_used=actions_used+$2,revision=$3,updated_at=now(),
             status=CASE WHEN actions_used+$2>=action_budget THEN 'budget_exhausted' ELSE 'active' END WHERE id=$1`, [activityId, prepared.cost, terminalRevision]);
+          if (!synchronous) await enqueueLearningJobTx(tx, { kind: "activity_action", activityActionId: receiptId }, { dispatch: false });
           return { status: 200, data: { activitySessionId: activityId, receiptId } };
         });
         const state = await repository.readActivity(tx, enrollment, result.data.activitySessionId);
         const receipt = state.activity.events.find((event) => event.receipt.id === result.data.receiptId)?.receipt ?? repository.invariant();
         return { status: receipt.status === "pending" ? 202 : 200, data: { ...state, receipt } };
       });
-    },
-    retryAction(actor: Actor, activityId: string, receiptId: string, command: LearningCommand<z.infer<typeof ActionRetryInputSchema>>) {
-      parsed(IdSchema, activityId); parsed(IdSchema, receiptId); parsed(IdSchema, command.key);
-      const body = parsed(ActionRetryInputSchema, command.body);
+      if (accepted.data.receipt.status !== "unavailable" || !await activateLearningJob(transactions, dependencies.admission, actor,
+        { kind: "activity_action", activityActionId: accepted.data.receipt.id }, null)) return accepted;
       return transactions.run(async (tx): Promise<MutationReceipt<ActivityActionResult>> => {
         const enrollmentId = await repository.activityEnrollmentId(tx, actor, activityId);
+        const state = await repository.readActivity(tx, await repository.requireEnrollment(tx, actor, enrollmentId), activityId);
+        const receipt = state.activity.events.find((event) => event.receipt.id === accepted.data.receipt.id)!.receipt;
+        return { status: receipt.status === "pending" ? 202 : 200, data: { ...state, receipt } };
+      });
+    },
+    async retryAction(actor: Actor, activityId: string, receiptId: string, command: LearningCommand<z.infer<typeof ActionRetryInputSchema>>) {
+      parsed(IdSchema, activityId); parsed(IdSchema, receiptId); parsed(IdSchema, command.key);
+      const body = parsed(ActionRetryInputSchema, command.body);
+      const accepted = await transactions.run(async (tx) => {
+        const enrollmentId = await repository.activityEnrollmentId(tx, actor, activityId);
         const enrollment = await repository.requireEnrollment(tx, actor, enrollmentId, true);
-        await executeIdempotentInTransaction(tx, actor, { operation: "learning.activity.retry", key: command.key,
-          body: { activityId, receiptId, ...body }, parseResult: actionReference }, async () => {
+        return executeIdempotentInTransaction(tx, actor, { operation: "learning.activity.retry", key: command.key,
+          body: { activityId, receiptId, ...body }, parseResult: actionRetryReference }, async () => {
           const state = await repository.readActivity(tx, enrollment, activityId, true);
           const receipt = state.activity.events.find((event) => event.receipt.id === receiptId)?.receipt ?? repository.notFound();
           if (receipt.status === "unavailable") {
             if (state.activity.revision !== body.expectedRevision) repository.revisionConflict(state.activity.revision, "learning.activityChanged");
-            throw new ServiceFault(503, "service_unavailable", "learning.retryUnavailable", true);
+            const job = (await tx.query<{ retry_epoch: number }>("SELECT retry_epoch FROM unfurl.execution_jobs WHERE activity_action_id=$1", [receiptId])).rows[0] ?? repository.invariant();
+            return { status: 200, data: { activitySessionId: activityId, receiptId, retryEpoch: job.retry_epoch } };
           }
-          return { status: receipt.status === "pending" ? 202 : 200, data: { activitySessionId: activityId, receiptId } };
+          return { status: receipt.status === "pending" ? 202 : 200, data: { activitySessionId: activityId, receiptId, retryEpoch: null } };
         });
+      });
+      if (accepted.data.retryEpoch !== null) await activateLearningJob(transactions, dependencies.admission, actor,
+        { kind: "activity_action", activityActionId: receiptId }, { retryReceiptId: command.key, expectedRetryEpoch: accepted.data.retryEpoch });
+      return transactions.run(async (tx): Promise<MutationReceipt<ActivityActionResult>> => {
+        const enrollmentId = await repository.activityEnrollmentId(tx, actor, activityId);
+        const enrollment = await repository.requireEnrollment(tx, actor, enrollmentId);
         const state = await repository.readActivity(tx, enrollment, activityId);
         const receipt = state.activity.events.find((event) => event.receipt.id === receiptId)!.receipt;
         return { status: receipt.status === "pending" ? 202 : 200, data: { ...state, receipt } };
@@ -173,7 +202,11 @@ export function createLearningService(dependencies: LearningServiceDependencies 
           const position = session.route.next[0];
           writable(enrollment, position?.reasonCode === "scheduled_review");
           if (!position || !session.lesson) repository.revisionConflict(enrollment.routeRevision, "learning.noNextPosition");
-          if (position.reasonCode !== "course_sequence" && position.reasonCode !== "scheduled_review") throw new ServiceFault(409, "revision_conflict", "learning.supportReturnRequired", false, { currentRevision: enrollment.routeRevision });
+          const inSupport = position.reasonCode !== "course_sequence" && position.reasonCode !== "scheduled_review";
+          if (inSupport && (session.support?.status !== "accepted" || session.support.reasonCode !== position.reasonCode ||
+            session.support.tasks.at(-1)?.taskId === position.taskId || (session.support.tasks.length === 0))) {
+            throw new ServiceFault(409, "revision_conflict", "learning.supportReturnRequired", false, { currentRevision: enrollment.routeRevision });
+          }
           if (session.task) {
             const attempt = session.activity ? await repository.latestTaskAttempt(tx, enrollment, session.activity) : null;
             if (!attempt || attempt.activity_input_revision !== session.activity?.inputRevision || !session.evaluation ||

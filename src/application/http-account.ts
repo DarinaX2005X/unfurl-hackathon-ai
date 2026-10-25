@@ -1,7 +1,7 @@
 import { z } from "zod";
 import {
   AuthenticatedResultSchema, PasswordResetRequestedSchema, PasswordUpdatedSchema,
-  ProfileSchema, SignedOutSchema, SignUpResultSchema,
+  ProfileSchema, SignedOutSchema,
 } from "../domain/account";
 import { ApiErrorSchema, type ApiError } from "../domain/errors";
 import { AccountStateSchema, type AccountPort } from "./account-port";
@@ -49,7 +49,7 @@ export function createHttpAccount(fetcher: typeof fetch = (...args) => fetch(...
   return {
     getSession: (signal) => request("/api/v1/me", "GET", AccountStateSchema, undefined, signal),
     signIn: (input, signal) => request("/api/auth/sign-in", "POST", AuthenticatedResultSchema, input, signal),
-    signUp: (input, signal) => request("/api/auth/sign-up", "POST", SignUpResultSchema, input, signal),
+    signUp: (input, signal) => request("/api/auth/sign-up", "POST", AuthenticatedResultSchema, input, signal),
     requestPasswordReset: (input, signal) => request("/api/auth/forgot-password", "POST", PasswordResetRequestedSchema, input, signal),
     updatePassword: (input, signal) => request("/api/auth/reset-password", "POST", PasswordUpdatedSchema, input, signal),
     signOut: (signal) => request("/api/auth/sign-out", "POST", SignedOutSchema, {}, signal),

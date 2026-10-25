@@ -49,7 +49,7 @@ describe("public registry boundary", () => {
     expect(() => { entry.accessibility.keyboardEquivalent = false; }).toThrow();
     const unavailable = structuredClone(runtime); unavailable.activity.durable = false; unavailable.model = { modelId: "moonshotai/kimi-k2.6", available: false };
     const catalog = getGenerationMechanicCatalog(unavailable);
-    expect(catalog.entries).toHaveLength(29);
+    expect(catalog.entries).toHaveLength(31);
     expect(catalog.entries.find((item) => item.id === "information_gap")?.reasons).toEqual(expect.arrayContaining(["durable_activity_unavailable", "model_unavailable"]));
     expect(JSON.stringify(catalog)).not.toMatch(/privateSchema|evaluatorData|expectedAnswer|validationReceiptId|reviewedClaim/);
   });

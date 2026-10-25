@@ -37,6 +37,25 @@ export function verifyPassage(document: SourceDocument, value: Passage): void {
 
 /** Producers take the caller's guarded step transaction. No course links or access grants are inferred. */
 export class PostgresResearchRepository {
+  async getSources(tx: DbTransaction, ids: readonly string[]): Promise<SourceDocument[]> {
+    if (ids.length === 0) return [];
+    const rows = (await tx.query<SourceRow>("SELECT * FROM unfurl.research_source_documents WHERE id=ANY($1::uuid[])", [[...new Set(ids)]])).rows;
+    const documents = new Map(rows.map((row) => { const value = source(row); return [value.id, value] as const; }));
+    return ids.map((id) => { const value = documents.get(id); if (!value) throw conflict(); return value; });
+  }
+  async getPassages(tx: DbTransaction, ids: readonly string[]): Promise<Passage[]> {
+    if (ids.length === 0) return [];
+    const rows = (await tx.query<PassageRow>("SELECT * FROM unfurl.research_passages WHERE id=ANY($1::uuid[])", [[...new Set(ids)]])).rows;
+    const passages = new Map(rows.map((row) => { const value = passage(row); return [value.id, value] as const; }));
+    const documents = new Map((await this.getSources(tx, [...new Set(rows.map((row) => row.source_id))])).map((value) => [value.id, value]));
+    return ids.map((id) => {
+      const value = passages.get(id);
+      const document = value ? documents.get(value.sourceId) : null;
+      if (!value || !document) throw conflict();
+      verifyPassage(document, value);
+      return value;
+    });
+  }
   async getSource(tx: DbTransaction, id: string): Promise<SourceDocument | null> {
     const row = (await tx.query<SourceRow>("SELECT * FROM unfurl.research_source_documents WHERE id=$1", [id])).rows[0];
     return row ? source(row) : null;

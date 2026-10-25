@@ -1,0 +1,24 @@
+.workspace { display: grid; gap: var(--space-6); min-width: 0; }
+.specification { white-space: pre-wrap; line-height: 1.6; }
+.editor, .explanation { display: grid; gap: var(--space-2); font-weight: 600; }
+.editor p, .original p, .runActions p { font-weight: 400; color: var(--color-muted); font-size: .875rem; }
+.editor textarea, .explanation textarea { width: 100%; padding: var(--space-4); border: 1px solid var(--color-border); border-radius: var(--radius-control); background: var(--color-surface-inset); color: var(--color-ink); resize: vertical; line-height: 1.6; }
+.editor textarea { font-family: ui-monospace, Consolas, monospace; font-size: .875rem; tab-size: 4; white-space: pre; }
+.workspace textarea:focus-visible, .sourceLines input:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 3px; }
+.original { display: grid; gap: var(--space-3); }
+.original h3, .runs h3 { font-size: 1rem; }
+.sourceLines { overflow: auto; border: 1px solid var(--color-line-soft); border-radius: var(--radius-control); padding: var(--space-2); }
+.sourceLines label { display: flex; align-items: baseline; gap: var(--space-3); padding: .2rem .5rem; min-width: max-content; }
+.sourceLines label:has(input:checked) { background: var(--color-selected); }
+.sourceLines span { min-width: 2ch; color: var(--color-muted); text-align: right; font-variant-numeric: tabular-nums; }
+.sourceLines code { white-space: pre; font-size: .875rem; }
+.runs { display: grid; gap: var(--space-4); border-top: 1px solid var(--color-line-soft); padding-top: var(--space-6); }
+.runActions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-3); }
+.runActions p { flex: 1 1 15rem; }
+.runs dl { display: grid; gap: var(--space-3); margin: 0; }
+.runs dt { font-size: .8rem; color: var(--color-muted); }
+.runs dd { margin: .25rem 0 0; }
+.runs pre { max-height: 20rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font-size: .85rem; }
+.case { padding: var(--space-4) 0; border-bottom: 1px solid var(--color-line-soft); }
+.case h4 { margin: 0 0 var(--space-3); }
+

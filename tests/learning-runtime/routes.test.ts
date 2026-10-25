@@ -3,10 +3,10 @@ import { NextRequest } from "next/server";
 vi.mock("server-only", () => ({}));
 vi.mock("@/server/auth/session", () => ({ requireActor: vi.fn() }));
 vi.mock("@/server/auth/config", () => ({ requireAuthConfiguration: () => ({ origin: "http://127.0.0.1:3000" }) }));
-vi.mock("@/server/learning/service", () => ({ learningService: { loadSession: vi.fn(), getActivity: vi.fn(), startActivity: vi.fn(), saveInput: vi.fn(), dispatchAction: vi.fn(), retryAction: vi.fn(), advance: vi.fn(), revisit: vi.fn() } }));
+vi.mock("@/server/learning/service", () => ({ learningService: { loadSession: vi.fn(), loadContext: vi.fn(), getActivity: vi.fn(), startActivity: vi.fn(), saveInput: vi.fn(), dispatchAction: vi.fn(), retryAction: vi.fn(), advance: vi.fn(), revisit: vi.fn(), submitAttempt: vi.fn(), requestHint: vi.fn(), revealAnswer: vi.fn(), getEvaluation: vi.fn(), acknowledgeFeedback: vi.fn() } }));
 import { requireActor } from "@/server/auth/session";
 import { learningService } from "@/server/learning/service";
-import { loadSessionRoute, startActivityRoute, saveInputRoute, revisitRoute } from "@/server/learning/routes";
+import { loadSessionRoute, loadContextRoute, getEvaluationRoute, requestHintRoute, submitAttemptRoute, acknowledgeFeedbackRoute, startActivityRoute, saveInputRoute, revisitRoute } from "@/server/learning/routes";
 import { ServiceFault } from "@/server/auth/errors";
 
 const actor = { id: crypto.randomUUID(), sessionId: crypto.randomUUID(), email: null }, id = crypto.randomUUID(), key = crypto.randomUUID();
@@ -44,5 +44,26 @@ describe("learning API authority boundary", () => {
     vi.mocked(learningService.revisit).mockRejectedValue(new ServiceFault(403, "forbidden", "learning.revisitNotAvailable"));
     expect((await revisitRoute(request(body), id)).status).toBe(403);
     expect(learningService.revisit).toHaveBeenCalledWith(actor, id, { key, body });
+  });
+  it("bounds context pagination and rejects injected query fields", async () => {
+    vi.mocked(learningService.loadContext).mockRejectedValue(new ServiceFault(404, "not_found", "learning.notFound"));
+    const page = (query: string) => new NextRequest(`http://127.0.0.1:3000/api/v1/enrollments/${id}/context?${query}`);
+    expect((await loadContextRoute(page("limit=20&cursor=opaque"), id)).status).toBe(404);
+    expect(learningService.loadContext).toHaveBeenCalledWith(actor, id, { limit: 20, cursor: "opaque" });
+    vi.mocked(learningService.loadContext).mockClear();
+    for (const query of ["limit=101", "limit=", "limit=2.5", "learnerId=other", "cursor="]) expect((await loadContextRoute(page(query), id)).status).toBe(400);
+    expect(learningService.loadContext).not.toHaveBeenCalled();
+  });
+  it("evaluation GET does not acknowledge feedback; assistance and submissions reject authority fields", async () => {
+    vi.mocked(learningService.getEvaluation).mockRejectedValue(new ServiceFault(404, "not_found", "learning.notFound"));
+    expect((await getEvaluationRoute(request(), id)).status).toBe(404);
+    expect(learningService.acknowledgeFeedback).not.toHaveBeenCalled();
+    expect((await requestHintRoute(request({ taskId: id, taskVersion: 1, hintIndex: 0, content: "injected" }), id)).status).toBe(400);
+    expect((await submitAttemptRoute(request({ taskId: id, awardedXp: 25 }), id)).status).toBe(400);
+    expect(learningService.requestHint).not.toHaveBeenCalled();
+    expect(learningService.submitAttempt).not.toHaveBeenCalled();
+    vi.mocked(learningService.acknowledgeFeedback).mockRejectedValue(new ServiceFault(409, "revision_conflict", "learning.evaluationChanged"));
+    expect((await acknowledgeFeedbackRoute(request({ expectedEvaluationRevision: 2 }), id)).status).toBe(409);
+    expect(learningService.acknowledgeFeedback).toHaveBeenCalledWith(actor, id, { key, body: { expectedEvaluationRevision: 2 } });
   });
 });

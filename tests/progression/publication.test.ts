@@ -43,6 +43,15 @@ function setup(options: {
     publication: { eligible: options.eligible !== false, requiredLevel: 3, reasons: options.eligible === false ? ["Reach level 3"] : [] },
   }));
   const query = vi.fn(async (sql: string, values: unknown[] = []) => {
+    if (sql.includes("SELECT id, visibility, current_ready_version_id")) {
+      return { rows: [{
+        id: courseId,
+        visibility: options.visibility ?? "private",
+        current_ready_version_id: versionTwo,
+        published_version_id: options.publishedVersionId ?? null,
+        revision: options.revision ?? 7,
+      }], rowCount: 1 };
+    }
     if (sql.startsWith("INSERT INTO unfurl.idempotency")) {
       order.push("idempotency");
       return { rows: options.replay ? [] : [{ key }], rowCount: options.replay ? 0 : 1 };
@@ -78,6 +87,24 @@ function setup(options: {
 }
 
 describe("publication service", () => {
+  it("reads owner course CAS and account eligibility in one current transaction", async () => {
+    const state = setup({ eligible: false });
+    expect(await state.service.getVisibility(actor, courseId)).toEqual({
+      courseId,
+      visibility: "private",
+      currentReadyVersionId: versionTwo,
+      publishedVersionId: null,
+      revision: 7,
+      progress: {
+        xpTotal: 499,
+        level: 2,
+        xpToNextLevel: 1,
+        publication: { eligible: false, requiredLevel: 3, reasons: ["Reach level 3"] },
+      },
+    });
+    expect(state.readAccountProgress).toHaveBeenCalledWith(expect.anything(), actor.id);
+  });
+
   it("publishes only the explicit passed ready version from a completed generation run", async () => {
     const state = setup();
     const receipt = await state.service.setVisibility(actor, courseId, {

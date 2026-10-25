@@ -209,7 +209,7 @@ function AccountCreator({ actorId, conversationId = null, store = chatStore, con
     </div>
   </section>;
 
-  const courses = <CourseArtifactsPanel artifacts={artifacts} selectedCourseId={conversation?.selectedCourseId ?? null} onSelect={(id) => session.selectCourse(id)}
+  const courses = <CourseArtifactsPanel actorId={actorId} artifacts={artifacts} selectedCourseId={conversation?.selectedCourseId ?? null} onSelect={(id) => session.selectCourse(id)}
     getCurrentArtifact={(id) => session.getSnapshot().conversation?.artifacts.find((artifact) => artifact.courseId === id)} onArtifactChange={(artifact) => session.updateArtifact(artifact)}
     onApproval={(courseId, approval) => session.acknowledgeApproval(courseId, approval)} awaitingSnapshotCourseIds={state.stream?.pendingSnapshotCourseIds ?? []}
     {...(onApprove ? { onApprove } : {})} {...(onEditMetadata ? { onEditMetadata } : {})} />;

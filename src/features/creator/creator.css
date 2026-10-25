@@ -9,7 +9,7 @@
 .creator-actions li span, .creator-actions li p { color: var(--color-muted); }
 .creator-actions li p { margin-top: 6px; font-size: 14px; }
 .creator-program { background: var(--color-surface); min-width: 0; }
-.creator-program__header { padding: 28px 28px 22px; border-bottom: 1px solid var(--color-line-soft); }
+.creator-program__header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 28px 28px 22px; border-bottom: 1px solid var(--color-line-soft); }
 .creator-program__header h2 { font-size: 20px; }
 .creator-program__header p { color: var(--color-muted); margin-top: 8px; font-size: 14px; }
 .creator-program__body { padding: 28px; font-size: 15px; line-height: 1.7; }
@@ -29,8 +29,18 @@
 .creator-program__module-heading span { color: var(--color-muted); font-size: 14px; font-variant-numeric: tabular-nums; }
 .creator-program__module-heading h4 { font-size: 17px; line-height: 1.4; }
 .creator-program__module-meta { margin-top: 8px; font-size: 14px; color: var(--color-muted); }
+.creator-program__evidence > p + p { margin-top: 8px; }
+.creator-program__evidence h4 { margin: 18px 0 8px; font-size: 14px; }
+.creator-program__evidence-status { width: fit-content; padding: 3px 9px; border-radius: 999px; font-size: 13px; font-weight: 700; }
+.creator-program__evidence-status--verified { color: var(--color-success); background: color-mix(in srgb, var(--color-success) 10%, transparent); }
+.creator-program__evidence-status--needs_research { color: var(--color-muted); background: var(--color-surface-inset); }
+.creator-program__evidence-status--blocked { color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 9%, transparent); }
+.creator-program__sources { list-style: none; padding-left: 0 !important; }
+.creator-program__sources a { display: inline-flex; align-items: center; gap: 6px; color: var(--color-link); overflow-wrap: anywhere; }
+.creator-program__sources span { display: block; color: var(--color-muted); font-size: 13px; }
 .creator-program__footer { position: sticky; bottom: 0; display: grid; gap: 16px; padding: 22px 28px; border-top: 1px solid var(--color-line-soft); background: var(--color-surface); font-size: 14px; }
 .creator-program__approved { display: flex; align-items: center; gap: 8px; color: var(--color-success); }
+.creator-program__generation-facts { display: grid; gap: 4px; margin-top: 8px; color: var(--color-muted); font-size: 13px; line-height: 1.55; }
 .creator { display: flex; flex-direction: column; min-width: 0; min-height: calc(100dvh - 4.25rem); }
 .creator-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; min-height: 88px; padding: 16px clamp(20px, 3vw, 44px); }
 .creator-header__title { min-width: 0; flex: 1; }
@@ -111,8 +121,27 @@
 .creator-artifacts__heading h2 { font-size: 24px; line-height: 1.3; overflow-wrap: anywhere; }
 .creator-artifacts__heading > p { margin-top: 14px; color: var(--color-muted); font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
 .creator-artifacts__metadata { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 14px; color: var(--color-muted); font-size: 14px; }
+.creator-artifacts__metadata > div { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 2px; }
 .creator-artifacts__no-program { padding: 28px; color: var(--color-muted); font-size: 14px; }
 .creator-metadata-form { display: grid; gap: 20px; }
+.creator-ready { display: grid; gap: 12px; padding: 24px 28px; border-top: 1px solid var(--color-line-soft); background: color-mix(in srgb, var(--color-success) 5%, var(--color-surface)); }
+.creator-ready h3 { font-size: 17px; }
+.creator-ready p { color: var(--color-muted); font-size: 14px; line-height: 1.6; }
+.creator-ready > div:not(.uf-notice) { display: flex; flex-wrap: wrap; gap: 10px; }
+.uf-dialog:has(.creator-program-editor) { width: min(860px, calc(100vw - 32px)); }
+.creator-program-editor { display: grid; gap: 32px; }
+.creator-program-editor__section { display: grid; gap: 18px; }
+.creator-program-editor__section > h3, .creator-program-editor__section-heading h3 { font-size: 18px; }
+.creator-program-editor__section > p, .creator-program-editor__section-heading p { color: var(--color-muted); font-size: 14px; line-height: 1.6; }
+.creator-program-editor__section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.creator-program-editor__cards { display: grid; gap: 16px; }
+.creator-program-editor__card { display: grid; gap: 16px; min-width: 0; padding: 18px; border: 1px solid var(--color-line-soft); border-radius: 14px; }
+.creator-program-editor__card legend { padding: 0 6px; font-size: 14px; font-weight: 700; }
+.creator-program-editor__order { display: flex; flex-wrap: wrap; gap: 4px; margin: -8px 0; }
+.creator-program-editor__checks { display: grid; gap: 9px; }
+.creator-program-editor__checks > span { font-size: 14px; font-weight: 700; }
+.creator-program-editor__checks label { display: flex; align-items: flex-start; gap: 10px; color: var(--color-muted); font-size: 14px; line-height: 1.5; }
+.creator-program-editor__checks input { flex: 0 0 auto; margin-top: 3px; accent-color: var(--color-ink); }
 .creator-history__import { margin: 18px 4px 0; text-align: left; white-space: normal; }
 .creator-import, .creator-conflict { display: grid; gap: 20px; line-height: 1.65; }
 .creator-import fieldset { display: grid; gap: 8px; min-width: 0; padding: 0; border: 0; }
@@ -159,7 +188,10 @@
   .creator-message--user { max-width: 95%; }
   .creator-message--user .creator-message__text { padding: 14px 16px; }
   .creator-conversation__content { padding-top: 12px; }
-  .creator-program__body, .creator-program__header, .creator-program__footer, .creator-artifacts__selection, .creator-artifacts__heading { padding-inline: 20px; }
+  .creator-program__body, .creator-program__header, .creator-program__footer, .creator-artifacts__selection, .creator-artifacts__heading, .creator-ready { padding-inline: 20px; }
+  .creator-program__header, .creator-program-editor__section-heading { align-items: stretch; flex-direction: column; }
+  .creator-artifacts__metadata { align-items: flex-start; flex-direction: column; }
+  .creator-artifacts__metadata > div { justify-content: flex-start; }
 }
 @media (max-width: 359px) {
   .creator-introduction h1 { font-size: 30px; }

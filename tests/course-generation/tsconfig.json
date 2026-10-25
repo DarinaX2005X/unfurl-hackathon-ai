@@ -1,0 +1,6 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": { "incremental": false },
+  "include": ["../../next-env.d.ts", "../../src/server/course-generation/**/*.ts", "../../src/server/course-validation/**/*.ts", "../../src/server/course-materialization/**/*.ts", "./*.ts"],
+  "exclude": ["../../node_modules"]
+}

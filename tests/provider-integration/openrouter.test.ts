@@ -98,6 +98,24 @@ describe("paid completion boundary (simulated provider, no live quality claim)",
     expect(limited.budget.markUnknown).toHaveBeenCalledWith(expect.anything(), "rate_limited");
     expect(limited.fetcher).toHaveBeenCalledTimes(1);
   });
+  it("persists safe non-2xx diagnostics and replays the same failure without another dispatch", async () => {
+    const h = harness(); const input = request();
+    h.fetcher.mockResolvedValue(new Response(JSON.stringify({ error: { code: 400, message: "private prompt and key", metadata: { raw: "hidden reasoning" } } }),
+      { status: 400, headers: { "x-request-id": "request-123" } }));
+    await expect(h.model.complete(input, new AbortController().signal)).rejects.toThrow("provider.unavailable");
+    expect(h.saved()?.receipt.result).toMatchObject({ kind: "http_error", httpStatus: 400, upstreamCode: 400, correlationId: "request-123", bodyDigestAvailable: true });
+    expect(JSON.stringify(h.saved())).not.toMatch(/private prompt|hidden reasoning/);
+    expect(h.budget.recordResponse).toHaveBeenCalledWith(expect.anything(), expect.anything(), null);
+    await expect(h.model.complete(input, new AbortController().signal)).rejects.toThrow("provider.unavailable");
+    expect(h.fetcher).toHaveBeenCalledTimes(1);
+  });
+  it("bounds error bodies while retaining safe status and the unknown hold", async () => {
+    const h = harness();
+    h.fetcher.mockResolvedValue(new Response("x".repeat(20000), { status: 502 }));
+    await expect(h.model.complete(request(), new AbortController().signal)).rejects.toThrow("provider.unavailable");
+    expect(h.saved()?.receipt.result).toMatchObject({ httpStatus: 502, bodyDigestAvailable: false });
+    expect(h.budget.releaseUnsent).not.toHaveBeenCalled();
+  });
   it("blocks unavailable capability before reserve and abort before dispatch", async () => {
     const h = harness(); vi.mocked(h.gate.assertAvailable).mockRejectedValue(new Error("unavailable"));
     await expect(h.model.complete(request(), new AbortController().signal)).rejects.toThrow();

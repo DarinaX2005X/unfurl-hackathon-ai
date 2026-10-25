@@ -9,6 +9,7 @@ import { mechanics as foundations } from "./mechanics/foundations";
 import { mechanics as investigation } from "./mechanics/investigation";
 import { mechanics as construction } from "./mechanics/construction";
 import { mechanics as communication } from "./mechanics/communication";
+import { mechanics as python } from "./mechanics/python";
 
 const capacity: RegisteredMechanic<CapacityConfig, CapacityResponse> = {
   configSchema: CapacityConfigSchema,
@@ -25,7 +26,7 @@ export function getMechanic(id: string, version: number): RegisteredMechanic<Cap
 
 export interface ProductionMechanicHandle {
   id: string;
-  version: 2;
+  version: 2 | 3;
   parseTask(value: unknown): import("@/domain/mechanics").TaskPublic<JsonValue>;
   parseResponse(value: unknown): JsonValue;
   createInitialResponse(config: unknown): JsonValue;
@@ -33,7 +34,7 @@ export interface ProductionMechanicHandle {
   summarizeResponse(response: unknown): string;
   Renderer: (props: TaskRendererProps<JsonValue, JsonValue>) => ReturnType<typeof createElement>;
 }
-function validatedHandle<C extends JsonValue, R extends JsonValue>(registration: ProductionMechanic<C, R>): ProductionMechanicHandle {
+function validatedHandle<C extends JsonValue, R extends JsonValue, V extends 2 | 3>(registration: ProductionMechanic<C, R, V>): ProductionMechanicHandle {
   const descriptor = registration.descriptor;
   const parseResponse = (value: unknown) => parseFamilyResponse(descriptor, value);
   return Object.freeze({
@@ -50,8 +51,8 @@ function validatedHandle<C extends JsonValue, R extends JsonValue>(registration:
 }
 // Erasure is confined to this validated adapter: no caller can reach a typed function without parsing first.
 export const productionMechanics: readonly ProductionMechanicHandle[] = Object.freeze(
-  [...foundations, ...investigation, ...construction, ...communication].map((registration) =>
-    validatedHandle(registration as unknown as ProductionMechanic<JsonValue, JsonValue>)),
+  [...foundations, ...investigation, ...construction, ...communication, ...python].map((registration) =>
+    validatedHandle(registration as unknown as ProductionMechanic<JsonValue, JsonValue, 2 | 3>)),
 );
 export function getProductionMechanic(id: string, version: number): ProductionMechanicHandle | null {
   return productionMechanics.find((entry) => entry.id === id && entry.version === version) ?? null;

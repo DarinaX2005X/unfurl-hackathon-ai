@@ -49,6 +49,15 @@ export function createHttpLearning(fetcher: typeof fetch = (...args) => fetch(..
       ...(options.signal ? { signal: options.signal } : {}) }, accepts);
   const readOptions = (signal?: AbortSignal) => signal ? { signal } : {};
   return {
+    loadContext: (id, query = {}, signal) => {
+      signal?.throwIfAborted();
+      const parsed = contract.LearningContextQuerySchema.safeParse(query);
+      if (!parsed.success) return Promise.resolve(failed(crypto.randomUUID(), true));
+      const params = new URLSearchParams();
+      if (parsed.data.cursor) params.set("cursor", parsed.data.cursor);
+      if (parsed.data.limit) params.set("limit", String(parsed.data.limit));
+      return request([id], `/enrollments/${id}/context${params.size ? `?${params}` : ""}`, "GET", contract.LearningContextSchema, readOptions(signal), (data) => data.enrollmentId === id);
+    },
     loadSession: (id, signal) => request([id], `/enrollments/${id}/session`, "GET", contract.LearningSessionSchema, readOptions(signal), (data) => data.enrollment.id === id),
     startActivity: (id, input, options) => mutation([id], `/enrollments/${id}/activity-sessions`, "POST", contract.StartActivityInputSchema, contract.ActivityStateSchema, input, options,
       (data) => data.activity.enrollmentId === id && data.activity.taskId === input.taskId && data.activity.taskVersion === input.taskVersion),

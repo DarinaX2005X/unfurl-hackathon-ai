@@ -3,6 +3,7 @@ import {
   AccessibleCourseDetailSchema,
   AssessmentReviewRequestSchema,
   CourseSchema,
+  EvaluationReceiptSchema,
   LearningSessionSchema,
   SupportOfferSchema,
 } from "../../src/domain";
@@ -58,6 +59,18 @@ describe("catalog and learning contract joins", () => {
     });
     expect(resolved.resolution).toBe("uncertain");
     expect(AssessmentReviewRequestSchema.safeParse({ ...resolved, status: "running" }).success).toBe(false);
+  });
+
+  it("requires the immutable submitted input identity on every evaluation receipt", () => {
+    const evaluation = {
+      id: id("24"), attemptId: id("25"), status: "evaluated" as const, outcome: "correct" as const,
+      dimensions: [], feedback: { explanation: "Correct.", nextAction: "continue" as const }, awardedXp: 25,
+    };
+    const submittedInput = { activitySessionId: id("26"), inputRevision: 3, responseDigest: "a".repeat(64) };
+    expect(EvaluationReceiptSchema.parse({ evaluation, revision: 1, review: null, submittedInput }).submittedInput)
+      .toEqual(submittedInput);
+    expect(EvaluationReceiptSchema.safeParse({ evaluation, revision: 1, review: null }).success).toBe(false);
+    expect(EvaluationReceiptSchema.safeParse({ evaluation, revision: 1, review: null, submittedInput: null }).success).toBe(false);
   });
 
   it("rejects a learning projection joined across another enrollment", () => {

@@ -97,7 +97,33 @@
 .uf-start-course__book::before { content: ""; position: absolute; inset: 12px 16px 12px 22px; border-radius: 3px 14px 14px 3px; background: #fffefa; }
 .uf-start-course__book span { position: absolute; left: 28px; right: 28px; height: 2px; z-index: 1; background: #d8d1c3; }
 .uf-start-course__book span:first-child { top: 44px; }.uf-start-course__book span:last-child { top: 64px; }
-.uf-share-dialog { display: grid; gap: 24px; min-width: min(560px, 75vw); }
+.uf-dialog:has(.uf-share-dialog) { width: min(680px, calc(100vw - 32px)); }
+.uf-share-dialog { display: grid; gap: 24px; min-width: 0; }
+.uf-visibility { display: grid; gap: 16px; padding-bottom: 24px; border-bottom: 1px solid var(--color-border); }
+.uf-visibility__heading { display: flex; align-items: start; justify-content: space-between; gap: 18px; }
+.uf-visibility__heading h3, .uf-share-links h3 { font-size: 19px; }
+.uf-visibility__heading p { margin-top: 5px; color: var(--color-muted); font-size: 14px; }
+.uf-visibility__unsaved { flex-shrink: 0; padding: 5px 9px; border-radius: 999px; background: var(--color-selected); color: var(--color-action-hover); font-size: 12px; font-weight: 750; }
+.uf-visibility__choices, .uf-visibility__version { display: grid; gap: 8px; margin: 0; padding: 0; border: 0; }
+.uf-visibility__choices legend, .uf-visibility__version legend { margin-bottom: 8px; font-size: 14px; font-weight: 750; }
+.uf-visibility__choices label, .uf-visibility__version label { position: relative; display: grid; grid-template-columns: auto auto minmax(0, 1fr); align-items: start; gap: 11px; padding: 14px; border: 1px solid var(--color-border); border-radius: 14px; cursor: pointer; transition: border-color var(--motion-hover) var(--ease-out), background-color var(--motion-hover) var(--ease-out), transform var(--motion-press) var(--ease-out); }
+.uf-visibility__choices label:has(input:checked), .uf-visibility__version label:has(input:checked) { border-color: var(--color-action); background: var(--color-selected); }
+.uf-visibility__choices label:focus-within, .uf-visibility__version label:focus-within { outline: 3px solid color-mix(in srgb, var(--color-action) 28%, transparent); outline-offset: 2px; }
+.uf-visibility__choices label:not([aria-disabled="true"]):active, .uf-visibility__version label:active { transform: translateY(1px); }
+.uf-visibility__choices label[aria-disabled="true"] { cursor: not-allowed; opacity: .62; }
+.uf-visibility__choices:disabled label, .uf-visibility__version:disabled label { cursor: wait; opacity: .68; }
+.uf-visibility__choices input, .uf-visibility__version input { width: 17px; height: 17px; margin: 2px 0 0; accent-color: var(--color-action); }
+.uf-visibility__icon { display: grid; place-items: center; color: var(--color-action-hover); }
+.uf-visibility__choices label > span:last-child, .uf-visibility__version label > span { display: grid; gap: 3px; }
+.uf-visibility__choices strong, .uf-visibility__version strong { font-size: 15px; }
+.uf-visibility__choices small, .uf-visibility__version small { color: var(--color-muted); font-size: 13px; line-height: 1.45; }
+.uf-visibility__version label { grid-template-columns: auto minmax(0, 1fr); }
+.uf-visibility__version > p { color: var(--color-muted); font-size: 13px; }
+.uf-visibility__gate { padding: 12px 14px; border-radius: 12px; background: var(--color-surface-inset); color: var(--color-muted); font-size: 13px; }
+.uf-visibility__gate--ready { color: var(--color-action-hover); }
+.uf-visibility__save { display: flex; align-items: center; gap: 14px; }
+.uf-visibility__save p { color: var(--color-muted); font-size: 13px; }
+.uf-share-links { display: grid; gap: 16px; }
 .uf-share-dialog__created { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 10px; padding: 18px; border-radius: 16px; background: var(--color-selected); }
 .uf-share-dialog__heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 18px; }
 .uf-share-dialog__heading h3 { font-size: 19px; }.uf-share-dialog__heading p { margin-top: 5px; max-width: 46ch; color: var(--color-muted); font-size: 14px; }
@@ -111,6 +137,7 @@
   .uf-course-card__link:hover .uf-course-art__shadow { transform: scaleX(1.04); opacity: .12; }
   .uf-course-card__link:hover .uf-course-card__footer > :last-child { background: var(--color-selected); color: var(--color-action-hover); }
   .uf-course-detail__program summary:hover { background: var(--color-selected); }
+  .uf-visibility__choices label:not([aria-disabled="true"]):hover, .uf-visibility__version label:hover { border-color: var(--color-action); background: var(--color-surface); }
 }
 @media (max-width: 1100px) {
   .uf-collection-empty { padding: 28px; gap: 8px; }
@@ -136,10 +163,11 @@
   .uf-course-detail__program summary > :nth-child(2) { flex: 1; min-width: 120px; overflow-wrap: anywhere; }
   .uf-course-detail__module-time { margin-left: 0; }
   .uf-owned-unready { grid-template-columns: 1fr; min-height: 0; }.uf-owned-unready__paper { min-height: 220px; }
-  .uf-share-dialog { min-width: 0; }.uf-share-dialog__created { grid-template-columns: 1fr; }.uf-share-dialog__heading { align-items: stretch; flex-direction: column; }
+  .uf-share-dialog { min-width: 0; }.uf-share-dialog__created { grid-template-columns: 1fr; }.uf-share-dialog__heading, .uf-visibility__heading, .uf-visibility__save { align-items: stretch; flex-direction: column; }
 }
 @media (max-width: 360px) { .uf-collection-filters__query { flex-wrap: wrap; } .uf-collection-filters__query > .uf-field { flex-basis: 100%; } }
 @media (prefers-reduced-motion: reduce) {
-  .uf-course-art__cover, .uf-course-art__pages, .uf-course-art__shadow, .uf-course-card__link, .uf-course-card__footer > :last-child, .uf-course-detail__program summary { transition: none; }
+  .uf-course-art__cover, .uf-course-art__pages, .uf-course-art__shadow, .uf-course-card__link, .uf-course-card__footer > :last-child, .uf-course-detail__program summary, .uf-visibility__choices label, .uf-visibility__version label { transition: none; }
+  .uf-visibility__choices label:active, .uf-visibility__version label:active { transform: none; }
   .uf-course-card__link:hover .uf-course-art__cover, .uf-course-card__link:hover .uf-course-art__pages, .uf-course-card__link:hover .uf-course-art__shadow, .uf-course-card__link:active .uf-course-art__cover { transform: none; }
 }

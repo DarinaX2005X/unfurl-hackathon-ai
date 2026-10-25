@@ -81,4 +81,54 @@ describe("migration static guardrails (live PostgreSQL proof still required)", (
     expect(sql).toContain("one_staging_version_per_approval");
     expect(sql).not.toContain("unique (content_digest)");
   });
+
+  it("makes Python execution fenced, quota bounded, cleanup proven and retry explicit", () => {
+    expect(sql).toContain("create table unfurl.code_execution_runs");
+    expect(sql).toContain("job_fencing_token bigint not null");
+    expect(sql).toContain("Live execution job claim does not authorize Python mutation");
+    expect(sql).toContain("reserved_count between 1 and 60");
+    expect(sql).toContain("reserved_count between 1 and 20");
+    expect(sql).toContain("code_execution_one_global_active");
+    expect(sql).toContain("code_execution_one_learner_active");
+    expect(sql).toContain("'ambiguous', 'cleanup_pending', 'completed', 'unavailable'");
+    expect(sql).toContain("status = 'completed' and disposition = 'deleted'");
+    expect(sql).toContain("prior.status <> 'unavailable' or prior.disposition not in ('not_created', 'deleted')");
+    expect(sql).toContain("code_execution_no_delete before delete");
+    expect(sql).toContain("runtime_profile = 'python_stdlib_v1'");
+    expect(sql).toContain("provider_session_id text");
+    expect(sql).toContain("vercel/sandbox/python@sha256:3bc79de820271c18e2506c132ce20cc15c6215c0ae5725575b1d8e37ecca0218");
+    expect(sql).toContain("sandbox_plan is null or sandbox_plan = 'hobby'");
+    expect(sql).toContain("sandbox_project_owner_id = sandbox_team_id and sandbox_team_blocked = false");
+    expect(sql).toContain("create table unfurl.python_execution_admissions");
+    expect(sql).toContain("Python admission outcome is immutable");
+    expect(sql).toContain("python_capability_short_lived");
+  });
+
+  it("records uncertain validation without weakening passed-only readiness and keeps receipts immutable", () => {
+    expect(sql).toContain("verdict in ('passed', 'failed', 'uncertain')");
+    expect(sql).toContain("version_validation_receipt_immutable before update or delete");
+    expect(sql).toContain("task_validation_receipt_immutable before update or delete");
+    expect(sql).toContain("v.verdict = 'passed'");
+    const materialization = readFileSync(fileURLToPath(new URL("../../src/server/mechanics/materialization.ts", import.meta.url)), "utf8");
+    expect(materialization).toContain('receipt.verdict !== "passed"');
+  });
+
+  it("separates explicit semantic retry epochs from lease recovery", () => {
+    expect(sql).toContain("add column retry_epoch integer not null default 0");
+    expect(sql).toContain("create table unfurl.execution_job_retry_receipts");
+    expect(sql).toContain("Execution retry epoch requires an explicit receipt");
+    expect(sql).toContain("o.state in ('dispatched','unknown')");
+    expect(sql).toContain("advance_execution_job_retry(uuid,uuid,uuid,integer,jsonb)");
+  });
+
+  it("binds pre-ready Python authoring checks to generation-owned checkpoints", () => {
+    expect(sql).toContain("create table unfurl.python_authoring_validations");
+    expect(sql).toContain("course.task.candidate");
+    expect(sql).toContain("course.task.cases");
+    expect(sql).toContain("Python authoring authority is stale");
+    expect(sql).toContain("item#>>'{response,source}'=new.source");
+    expect(sql).toContain("item->>'role' not in ('public','hidden')");
+    expect(sql).toContain("Python authoring fences are stale");
+    expect(sql).toContain("o.state in ('reserved','dispatched','unknown')");
+  });
 });

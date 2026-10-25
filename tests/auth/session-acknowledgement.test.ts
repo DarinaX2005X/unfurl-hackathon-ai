@@ -1,13 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest, type NextResponse } from "next/server";
 vi.mock("server-only", () => ({}));
-const mocks = vi.hoisted(() => ({ signIn: vi.fn(), signUp: vi.fn(), signOut: vi.fn(), profile: vi.fn(), identity: vi.fn(), apply: vi.fn() }));
+const mocks = vi.hoisted(() => ({ signIn: vi.fn(), createUser: vi.fn(), signOut: vi.fn(), profile: vi.fn(), identity: vi.fn(), apply: vi.fn() }));
 vi.mock("../../src/server/auth/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../src/server/auth/client")>();
-  return { ...actual, createRequestAuth: () => ({
-    client: { auth: { signInWithPassword: mocks.signIn, signUp: mocks.signUp, signOut: mocks.signOut } },
-    apply: mocks.apply,
-  }) };
+  return {
+    ...actual,
+    createAdminAuthClient: () => ({ auth: { admin: { createUser: mocks.createUser } } }),
+    createRequestAuth: () => ({
+      client: { auth: { signInWithPassword: mocks.signIn, signOut: mocks.signOut } },
+      apply: mocks.apply,
+    }),
+  };
 });
 vi.mock("../../src/server/auth/profile", () => ({ accountSession: mocks.profile }));
 vi.mock("../../src/server/auth/session", () => ({ requireVerifiedIdentity: mocks.identity }));
@@ -19,7 +23,7 @@ beforeEach(() => {
   vi.stubEnv("APP_ORIGIN", "http://127.0.0.1:3000");
   vi.stubEnv("DATABASE_URL", "postgresql://test.invalid/db");
   mocks.signIn.mockReset().mockResolvedValue({ data: { session: {} }, error: null });
-  mocks.signUp.mockReset().mockResolvedValue({ data: { session: {} }, error: null });
+  mocks.createUser.mockReset().mockResolvedValue({ data: { user: {} }, error: null });
   mocks.signOut.mockReset().mockResolvedValue({ error: null });
   mocks.identity.mockReset().mockResolvedValue({});
   mocks.profile.mockReset().mockRejectedValue(new Error("storage unavailable"));

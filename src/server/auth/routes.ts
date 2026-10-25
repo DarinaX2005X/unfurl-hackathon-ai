@@ -2,11 +2,11 @@ import "server-only";
 import { z } from "zod";
 import { NextResponse, type NextRequest } from "next/server";
 import {
-  PasswordResetRequestSchema, SignInInputSchema, SignUpInputSchema, UpdatePasswordInputSchema, UpdateProfileInputSchema,
+  SignInInputSchema, SignUpInputSchema, UpdatePasswordInputSchema, UpdateProfileInputSchema,
 } from "../../domain/account";
 import { IdSchema } from "../../domain/common";
 import { safeReturnTo } from "../../lib/auth-return-to";
-import { createRequestAuth } from "./client";
+import { createAdminAuthClient, createRequestAuth } from "./client";
 import { isDatabaseConfigured, readAuthConfiguration, requireAccountConfiguration } from "./config";
 import { providerFault, ServiceFault, unavailable } from "./errors";
 import { assertSameOrigin, failure, readInput, success } from "./http";
@@ -15,12 +15,6 @@ import { getVerifiedIdentity, requireVerifiedIdentity } from "./session";
 
 type RequestAuth = ReturnType<typeof createRequestAuth>;
 type AuthOperation = "sign-in" | "sign-up" | "forgot-password" | "reset-password" | "sign-out";
-
-function callbackUrl(origin: string, returnTo: unknown): string {
-  const callback = new URL("/auth/callback", origin);
-  callback.searchParams.set("returnTo", safeReturnTo(returnTo));
-  return callback.toString();
-}
 
 export async function handleAuthMutation(request: NextRequest, operation: AuthOperation): Promise<NextResponse> {
   let auth: RequestAuth | undefined;
@@ -40,29 +34,27 @@ export async function handleAuthMutation(request: NextRequest, operation: AuthOp
       response = success({ status: "authenticated", session: await accountSession(verified), redirectTo: safeReturnTo(input.returnTo) });
     } else if (operation === "sign-up") {
       const input = await readInput(request, SignUpInputSchema);
-      const result = await auth.client.auth.signUp({
-        email: input.email, password: input.password,
-        options: {
-          emailRedirectTo: callbackUrl(config.origin, input.returnTo),
-          ...(input.displayName ? { data: { display_name: input.displayName } } : {}),
-        },
+      const created = await createAdminAuthClient(config).auth.admin.createUser({
+        email: input.email,
+        password: input.password,
+        email_confirm: true,
+        ...(input.displayName ? { user_metadata: { display_name: input.displayName } } : {}),
       });
-      if (result.error) {
-        // The response to an already registered email must not enumerate accounts.
-        if (!["user_already_exists", "email_exists"].includes(result.error.code ?? "")) throw providerFault(result.error);
+      // A retry after a duplicate or an ambiguous lost create response is safe only
+      // when the supplied password can authenticate that account. Never mutate an
+      // existing user to make registration appear successful.
+      const result = await auth.client.auth.signInWithPassword({ email: input.email, password: input.password });
+      if (result.error || !result.data.session) {
+        const duplicate = ["user_already_exists", "email_exists"].includes(created.error?.code ?? "");
+        if (created.error && !duplicate) throw providerFault(created.error);
+        if (result.error) throw providerFault(result.error);
+        throw unavailable();
       }
-      if (result.data.session) {
-        unacknowledgedSession = true;
-        const verified = await requireVerifiedIdentity(auth.client);
-        response = success({ status: "authenticated", session: await accountSession(verified), redirectTo: safeReturnTo(input.returnTo) });
-      } else {
-        response = success({ status: "confirmation_required", email: input.email, returnTo: safeReturnTo(input.returnTo) });
-      }
+      unacknowledgedSession = true;
+      const verified = await requireVerifiedIdentity(auth.client);
+      response = success({ status: "authenticated", session: await accountSession(verified), redirectTo: safeReturnTo(input.returnTo) });
     } else if (operation === "forgot-password") {
-      const input = await readInput(request, PasswordResetRequestSchema);
-      const result = await auth.client.auth.resetPasswordForEmail(input.email, { redirectTo: callbackUrl(config.origin, input.returnTo) });
-      if (result.error) throw providerFault(result.error);
-      response = success({ status: "recovery_email_requested" });
+      throw new ServiceFault(404, "not_found", "auth.passwordRecoveryUnavailable");
     } else if (operation === "reset-password") {
       const input = await readInput(request, UpdatePasswordInputSchema);
       await requireVerifiedIdentity(auth.client);

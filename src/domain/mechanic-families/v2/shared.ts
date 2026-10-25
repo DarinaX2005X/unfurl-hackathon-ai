@@ -28,10 +28,10 @@ export type SubmissionIssue = {
 export type MechanicActionKind = "run" | "prediction.commit" | "experiment.query" |
   "intervention.apply" | "dialogue.turn";
 
-export interface FamilyDescriptor<C extends JsonValue, R extends JsonValue>
+export interface FamilyDescriptor<C extends JsonValue, R extends JsonValue, V extends 2 | 3 = 2>
   extends MechanicDefinition<C, R> {
-  version: 2;
-  responseSchemaVersion: 2;
+  version: V;
+  responseSchemaVersion: V;
   actions: MechanicActionKind[];
   requirements: Array<"model" | "activity" | "sandbox">;
   limitations: string[];
@@ -46,8 +46,8 @@ function assertFamilyKind(value: JsonValue, id: string): void {
 }
 
 /** Project public fields, then enforce the exact versioned family join. */
-export function parseFamilyTask<C extends JsonValue, R extends JsonValue>(
-  descriptor: FamilyDescriptor<C, R>, value: unknown,
+export function parseFamilyTask<C extends JsonValue, R extends JsonValue, V extends 2 | 3 = 2>(
+  descriptor: FamilyDescriptor<C, R, V>, value: unknown,
 ): TaskPublic<C> {
   const task = serializePublicTask(value, descriptor.configSchema);
   if (task.mechanicId !== descriptor.id || task.mechanicVersion !== descriptor.version ||
@@ -58,8 +58,8 @@ export function parseFamilyTask<C extends JsonValue, R extends JsonValue>(
   return task;
 }
 
-export function parseFamilyResponse<C extends JsonValue, R extends JsonValue>(
-  descriptor: FamilyDescriptor<C, R>, value: unknown,
+export function parseFamilyResponse<C extends JsonValue, R extends JsonValue, V extends 2 | 3 = 2>(
+  descriptor: FamilyDescriptor<C, R, V>, value: unknown,
 ): R {
   const response = descriptor.responseSchema.parse(value);
   assertFamilyKind(response, descriptor.id);

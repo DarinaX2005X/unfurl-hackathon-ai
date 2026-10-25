@@ -8,6 +8,11 @@ export type GapBasis = { outcomeId: Id; dimensionId: string; basisEvidenceIds: I
 const independent = (entry: ConfirmableEvidence) => isCurrentConfirmedEvidence(entry) && entry.assistance === "independent";
 const distinct = (left: ConfirmableEvidence, right: ConfirmableEvidence) => left.taskId !== right.taskId && left.evidenceGroupId !== right.evidenceGroupId;
 
+/** A new attempt ID on an already offered case cannot erase a previous decision about support. */
+export function hasFreshSupportBasis(current: readonly Pick<ConfirmableEvidence, "taskId" | "evidenceGroupId">[], prior: readonly Pick<ConfirmableEvidence, "taskId" | "evidenceGroupId">[]): boolean {
+  return prior.length === 0 || current.some((entry) => prior.every((previous) => previous.taskId !== entry.taskId && previous.evidenceGroupId !== entry.evidenceGroupId));
+}
+
 /** Conservative product guardrail: no inference from time, one error, or repeated variants. */
 export function findSupportGapBasis(input: {
   enrollmentId: Id; courseVersionId: Id; outcomeId: Id; dimensionId: string; evidence: readonly ConfirmableEvidence[];

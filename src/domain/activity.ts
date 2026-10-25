@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { DigestSchema, IdSchema, IsoDateTimeSchema, JsonValueSchema, RevisionSchema, type JsonValue } from "./common";
 import { BlockSchema, FiniteNumberSchema, FiniteValuesSchema, LocalIdSchema, MECHANIC_LIMITS, NamedQuantitySchema, NonemptyTextSchema } from "./mechanic-families/v2/shared";
+import { PythonExecutionObservationSchema } from "./mechanic-families/v3/python";
 
 const MAX_RESPONSE_BYTES = 131_072;
 
@@ -89,6 +90,7 @@ const PublicCaseResultSchema = z.object({
 
 /** Only explicitly public observations belong here; hidden tests are never cases. */
 export const PublicObservationSchema = z.discriminatedUnion("kind", [
+  PythonExecutionObservationSchema,
   z.object({ kind: z.literal("values"), values: z.array(NamedQuantitySchema).min(1).max(MECHANIC_LIMITS.variables) }).strict(),
   z.object({ kind: z.literal("trace"), states: z.array(z.object({
     step: z.number().int().positive().max(MECHANIC_LIMITS.steps), values: FiniteValuesSchema,
@@ -98,7 +100,7 @@ export const PublicObservationSchema = z.discriminatedUnion("kind", [
 ]).superRefine((observation, context) => {
   const ids = observation.kind === "values" ? observation.values.map((value) => value.id) :
     observation.kind === "trace" ? observation.states.map((state) => state.step) :
-    observation.kind === "case_results" ? observation.cases.map((result) => result.caseId) :
+    observation.kind === "case_results" || observation.kind === "python_execution" ? observation.cases.map((result) => result.caseId) :
     observation.revealedFacts.map((fact) => fact.id);
   if (new Set<string | number>(ids).size !== ids.length) context.addIssue({ code: "custom", message: "Observation identifiers must be unique" });
 });

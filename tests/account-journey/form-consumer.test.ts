@@ -18,16 +18,16 @@ function transport(data: unknown, status = 200) {
 }
 
 describe("account forms through the HTTP account consumer", () => {
-  it("sends one registration with exact password and course continuation while keeping confirmation client-only", async () => {
-    const fetcher = transport({ data: { status: "confirmation_required", email: "learner@example.com", returnTo } });
+  it("sends one registration with exact password and continues with the authenticated server session", async () => {
+    const fetcher = transport({ data: { status: "authenticated", session, redirectTo: returnTo } });
     const result = await submitAuthForm(createHttpAccount(fetcher), "signup", values, returnTo, new AbortController().signal);
-    expect(result).toEqual({ kind: "complete", result: { status: "confirmation_required", email: "learner@example.com", returnTo } });
+    expect(result).toEqual({ kind: "complete", result: { status: "authenticated", session, redirectTo: returnTo } });
     const [url, init] = fetcher.mock.calls[0]!;
     expect(url).toBe("/api/auth/sign-up");
     expect(init).toMatchObject({ method: "POST", credentials: "same-origin", cache: "no-store" });
     expect(JSON.parse(init!.body as string)).toEqual({ email: "learner@example.com", password: values.password, displayName: "Learning person", returnTo });
     expect(fetcher).toHaveBeenCalledTimes(1);
-    expect(result).not.toHaveProperty("result.session");
+    expect(result).toHaveProperty("result.session", session);
   });
 
   it("keeps a short existing password valid for sign-in and defaults direct entry to the homepage", async () => {
@@ -47,15 +47,12 @@ describe("account forms through the HTTP account consumer", () => {
     expect(entered.email).toBe(values.email);
   });
 
-  it("carries the exact course through login, signup, recovery links and password update", async () => {
+  it("carries the exact course through login, signup and authenticated password update", async () => {
     let destination = returnTo;
-    for (const link of [routes.login, routes.signup, routes.forgotPassword, routes.login]) {
+    for (const link of [routes.login, routes.signup, routes.resetPassword, routes.login]) {
       destination = new URL(link(destination), "https://unfurl.example").searchParams.get("returnTo")!;
       expect(destination).toBe(returnTo);
     }
-    const resetRequest = transport({ data: { status: "recovery_email_requested" } });
-    await submitAuthForm(createHttpAccount(resetRequest), "forgot-password", values, destination, new AbortController().signal);
-    expect(JSON.parse(resetRequest.mock.calls[0]![1]!.body as string)).toEqual({ email: "learner@example.com", returnTo });
     const passwordRequest = transport({ data: { status: "password_updated", redirectTo: returnTo } });
     await submitAuthForm(createHttpAccount(passwordRequest), "reset-password", values, destination, new AbortController().signal);
     expect(JSON.parse(passwordRequest.mock.calls[0]![1]!.body as string)).toEqual({ password: values.password, returnTo });

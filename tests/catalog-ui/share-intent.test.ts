@@ -19,7 +19,7 @@ describe("share creation intent", () => {
   it("reuses the same key and request body after a transport-unknown failure", () => {
     const first = shareCreationIntent(null, input, () => ids.request);
     const retained = settleShareCreation(first, unavailable);
-    const retry = shareCreationIntent(retained, input, () => ids.missing);
+    const retry = shareCreationIntent(retained, { ...input, expectedCourseRevision: 5 }, () => ids.missing);
     expect(retry).toBe(first);
     expect(retry.key).toBe(ids.request);
     expect(retry.input).toEqual(input);

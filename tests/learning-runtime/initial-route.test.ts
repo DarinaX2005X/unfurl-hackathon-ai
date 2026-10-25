@@ -1,9 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 vi.mock('server-only', () => ({}));
-import { createInitialLearningRoute } from '@/server/learning/initial-route';
+import { createInitialLearningRoute, createNormalProgramEntries } from '@/server/learning/initial-route';
 import { program } from './fixtures';
 
 describe("atomic enrollment route initializer", () => {
+  it("validates a persisted generation program before readiness without a learner identity", () => {
+    const input = program();
+    const expected = createInitialLearningRoute(input).route.next;
+    const { enrollmentId: _enrollment, ...candidate } = input;
+    void _enrollment;
+    candidate.version = { ...candidate.version, state: "validating", readyAt: null };
+    expect(createNormalProgramEntries(candidate).next).toEqual(expected);
+    candidate.lessons[0]!.blocks = [];
+    expect(() => createNormalProgramEntries(candidate)).toThrow("normal lesson");
+  });
   it("preserves version and authored task-block order, reading and all branches, excluding optional support", () => {
     const input = program();
     const before = structuredClone(input);

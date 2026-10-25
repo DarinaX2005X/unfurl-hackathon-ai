@@ -127,8 +127,8 @@ export function AccountPage() {
               </section>
               <section className="uf-account-page__section uf-account-page__access" aria-labelledby="access-heading">
                 <h2 id="access-heading">Password and access</h2>
-                <div className="uf-account-stack"><div><Link className="uf-text-link" href={routes.forgotPassword(routes.account)}>Reset your password</Link></div>
-                  <p className="uf-account-secondary">We will send a reset link to the email you enter.</p>
+                <div className="uf-account-stack"><div><Link className="uf-text-link" href={routes.resetPassword(routes.account)}>Change your password</Link></div>
+                  <p className="uf-account-secondary">You can change it while this account is signed in.</p>
                   <SignOutButton actorId={account.session.identity.id} />
                 </div>
               </section>

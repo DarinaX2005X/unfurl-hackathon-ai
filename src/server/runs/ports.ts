@@ -2,6 +2,7 @@ import "server-only";
 import type { z } from "zod";
 import type { JsonValue } from "../../domain/common";
 import type { ChatEvent } from "../../domain/generation";
+import type { GenerationEvent } from "../../domain/generation-observer";
 import type { BudgetOperationContext } from "../budget/ports";
 import type { DbTransaction } from "../db";
 
@@ -12,13 +13,17 @@ export type ExecutionTarget =
   | { kind: "evaluation"; evaluationId: string; targetEvaluationRevision: number }
   | { kind: "activity_action"; activityActionId: string };
 export type ExecutionKind = ExecutionTarget["kind"];
-export interface JobClaim { jobId: string; leaseOwner: string; fencingToken: string; target: ExecutionTarget }
+export interface JobClaim { jobId: string; leaseOwner: string; fencingToken: string; retryEpoch: number; target: ExecutionTarget }
 export type StepDigests = { schema: string; capability: string; validationPolicy: string; approval: string | null };
 export type ChatEventPayload = ChatEvent extends infer Event ? Event extends ChatEvent ? Omit<Event, "id" | "runId" | "branchId" | "seq" | "at"> : never : never;
+export type GenerationEventPayload = GenerationEvent extends infer Event ? Event extends GenerationEvent ? Omit<Event, "id" | "runId" | "courseId" | "branchId" | "seq" | "at"> : never : never;
 
 export interface StepEffectContext {
   stepId: string;
+  stepFence: { jobId: string; jobLeaseOwner: string; jobFencingToken: string; retryEpoch: number;
+    stepId: string; stepLeaseOwner: string; stepFencingToken: string };
   signal: AbortSignal;
+  deadlineAt: number;
   /** Stable across crashes and workflow deliveries. A new paid retry needs an explicit new attempt. */
   budgetOperation(name: string, attempt?: number): BudgetOperationContext;
 }
@@ -41,6 +46,11 @@ export interface RunContext {
   /** One new bounded effect per advance; already committed steps can be replayed without another effect. */
   step<Input extends JsonValue, Output extends JsonValue, Result extends JsonValue>(spec: DurableStep<Input, Output, Result>): Promise<Result>;
   emitChat(tx: DbTransaction, payload: ChatEventPayload): Promise<ChatEvent>;
+  emitGeneration(tx: DbTransaction, payload: GenerationEventPayload): Promise<GenerationEvent>;
+  /** Called inside the final step.commit, after saving the final assistant message. */
+  completeTurn(tx: DbTransaction, result: { status: "succeeded" | "awaiting_user" }): Promise<void>;
+  /** Called inside the final step.commit, after ready-version and course-pointer writes. */
+  completeGeneration(tx: DbTransaction, result: { courseVersionId: string }): Promise<void>;
 }
 export type AdvanceResult = { status: "continue" } | { status: "awaiting_user" } | { status: "succeeded" };
 export interface RunHandler {

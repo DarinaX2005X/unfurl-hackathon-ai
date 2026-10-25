@@ -3,6 +3,7 @@ import { expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 import { withSystemTransaction } from "../../src/server/db";
 import { cancelGenerationInTransaction, enqueueAcceptedRun } from "../../src/server/runs/enqueue";
+import { retryRunInTransaction } from "../../src/server/runs/retry";
 
 it.skipIf(process.env.RUN_LIVE_RUN_ENQUEUE !== "1")("atomically enqueues once and invalidates a cancelled generation's job/step fences (rollback)", async () => {
   const ids = { conversation: randomUUID(), branch: randomUUID(), message: randomUUID(), course: randomUUID(), draft: randomUUID(),
@@ -39,6 +40,12 @@ it.skipIf(process.env.RUN_LIVE_RUN_ENQUEUE !== "1")("atomically enqueues once an
     expect((await tx.query<{ fencing_token: string }>("SELECT fencing_token::text FROM unfurl.run_steps WHERE id=$1", [ids.step])).rows[0]?.fencing_token).toBe("2");
     expect((await tx.query<{ n: number }>("SELECT count(*)::int AS n FROM unfurl.generation_events WHERE run_id=$1", [ids.run])).rows[0]?.n).toBe(2);
     expect((await tx.query<{ n: number }>("SELECT count(*)::int AS n FROM unfurl.outbox WHERE job_id=$1 AND operation='cancel'", [job.jobId])).rows[0]?.n).toBe(1);
+    const retried=await retryRunInTransaction(tx,{id:owner,sessionId:randomUUID(),email:null},ids.run,"generation");
+    expect(retried.runId).not.toBe(ids.run);
+    expect((await tx.query("SELECT source_run_id,state FROM unfurl.course_versions WHERE id=$1",[ids.version])).rows[0]).toEqual({source_run_id:retried.runId,state:"building"});
+    expect((await tx.query<{n:number}>("SELECT count(*)::int AS n FROM unfurl.course_versions WHERE approval_id=$1",[ids.approval])).rows[0]?.n).toBe(1);
+    expect((await tx.query("SELECT status FROM unfurl.generation_runs WHERE id=$1",[ids.run])).rows[0]?.status).toBe("cancelled");
+    expect((await tx.query("SELECT retry_of_run_id FROM unfurl.generation_runs WHERE id=$1",[retried.runId])).rows[0]?.retry_of_run_id).toBe(ids.run);
     await tx.query("SET CONSTRAINTS ALL IMMEDIATE");
     throw rollback;
   })).rejects.toBe(rollback);

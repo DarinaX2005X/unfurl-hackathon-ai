@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { IdSchema, IsoDateTimeSchema, JsonValueSchema, RevisionSchema } from "./common";
-import { ActivitySessionPublicSchema, InputSnapshotSchema } from "./activity";
+import { ActivitySessionPublicSchema, InputIdentitySchema, InputSnapshotSchema } from "./activity";
 import { LocalIdSchema } from "./mechanic-families/v2/shared";
 import { TaskPublicSchema } from "./mechanics";
 
@@ -159,6 +159,7 @@ export const EvaluationReceiptSchema = z.object({
   evaluation: EvaluationSchema,
   revision: RevisionSchema,
   review: AssessmentReviewRequestSchema.nullable(),
+  submittedInput: InputIdentitySchema,
 }).strict();
 
 export const LearningSessionSchema = z.object({

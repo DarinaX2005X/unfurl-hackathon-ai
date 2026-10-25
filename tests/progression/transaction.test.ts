@@ -4,6 +4,7 @@ import type { DbTransaction } from "../../src/server/db";
 import {
   applyEvaluationProgressTx,
   lockLearnerCourseStableTaskTx,
+  previewEvaluationAwardTx,
   readAccountProgressTx,
 } from "../../src/server/progression";
 
@@ -26,26 +27,44 @@ type Scenario = {
   reviewState?: "confirmed" | "contested" | "superseded";
   award?: { amount: 10 | 25; evaluationId: string };
   adjustmentTotal?: number;
+  semanticAwardedXp?: number;
+  latestSemanticRevision?: number | null;
 };
 
 function transaction(scenario: Scenario = {}) {
   const statements: Array<{ sql: string; values: unknown[] }> = [];
+  const semanticStatus = scenario.semanticStatus ?? "evaluated";
+  const semanticOutcome = scenario.semanticOutcome === undefined ? "correct" : scenario.semanticOutcome;
+  const assistance = scenario.assistance ?? "independent";
+  const expectedAward = semanticStatus === "evaluated" && semanticOutcome === "correct"
+    ? scenario.award
+      ? scenario.award.evaluationId === evaluationId ? scenario.award.amount : 0
+      : assistance === "independent" ? 25 : assistance === "hinted" ? 10 : 0
+    : 0;
   const identity = {
     evaluation_id: evaluationId,
     current_revision: scenario.currentRevision ?? 1,
+    current_status: semanticStatus,
     attempt_id: attemptId,
     learner_id: learnerId,
     enrollment_id: enrollmentId,
     activity_session_id: activityId,
     course_id: courseId,
     task_id: taskId,
-    assistance: scenario.assistance ?? "independent",
-    semantic_status: scenario.semanticStatus ?? "evaluated",
-    semantic_outcome: scenario.semanticOutcome === undefined ? "correct" : scenario.semanticOutcome,
+    assistance,
+    semantic_status: semanticStatus,
+    semantic_outcome: semanticOutcome,
+    semantic_awarded_xp: scenario.semanticAwardedXp ?? expectedAward,
   };
   const query = vi.fn(async (sql: string, values: unknown[] = []) => {
     statements.push({ sql, values });
     if (sql.includes("FROM unfurl.evaluations evaluation")) return { rows: [identity], rowCount: 1 };
+    if (sql.includes("SELECT attempt_id, status, outcome, awarded_xp FROM unfurl.evaluation_revisions")) {
+      return { rows: [], rowCount: 0 };
+    }
+    if (sql.includes("SELECT max(revision)::int AS revision")) {
+      return { rows: [{ revision: scenario.latestSemanticRevision ?? null }], rowCount: 1 };
+    }
     if (sql.includes("FROM unfurl.enrollments") && sql.includes("FOR UPDATE")) return { rows: [{ id: enrollmentId }], rowCount: 1 };
     if (sql.includes("FROM unfurl.activity_sessions")) return { rows: [{ id: activityId }], rowCount: 1 };
     if (sql.includes("FROM unfurl.learner_evidence") && !sql.includes("original_evidence")) {
@@ -87,6 +106,29 @@ describe("progression transaction boundary", () => {
     const award = sql.findIndex((item) => item.includes("INSERT INTO unfurl.xp_awards"));
     expect([advisory, enrollment, activity, evaluation, award]).toEqual([...([advisory, enrollment, activity, evaluation, award])].sort((a, b) => a - b));
     expect(state.statements[award]?.values.slice(1)).toEqual([learnerId, courseId, taskId, evidenceId, "xp-v1", 25]);
+  });
+
+  it("previews the immutable semantic award under the same authority locks", async () => {
+    const first = transaction();
+    expect(await previewEvaluationAwardTx(first.tx, {
+      attemptId, evaluationId, evaluationRevision: 1, status: "evaluated", outcome: "correct",
+    })).toBe(25);
+    const hintedAfterPrior = transaction({ assistance: "independent", award: { amount: 10, evaluationId: id("40") } });
+    expect(await previewEvaluationAwardTx(hintedAfterPrior.tx, {
+      attemptId, evaluationId, evaluationRevision: 1, status: "evaluated", outcome: "correct",
+    })).toBe(0);
+    const uncertain = transaction({ award: { amount: 25, evaluationId } });
+    expect(await previewEvaluationAwardTx(uncertain.tx, {
+      attemptId, evaluationId, evaluationRevision: 1, status: "uncertain", outcome: null,
+    })).toBe(0);
+  });
+
+  it("rejects a semantic row whose immutable awarded XP disagrees with the ledger policy", async () => {
+    const state = transaction({ semanticAwardedXp: 0 });
+    await expect(applyEvaluationProgressTx(state.tx, {
+      evaluationId, evaluationRevision: 1,
+    })).rejects.toMatchObject({ status: 503, messageKey: "progress.awardAttributionMismatch" });
+    expect(state.statements.some((item) => item.sql.includes("INSERT INTO unfurl.xp_awards"))).toBe(false);
   });
 
   it("does not consume the award identity for a zero-XP result", async () => {

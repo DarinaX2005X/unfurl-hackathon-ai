@@ -6,8 +6,7 @@ export interface CreatedShareLink { grantId: string; url: string }
 
 export function shareCreationIntent(current: ShareCreationIntent | null, input: CreateShareInput,
   createKey: () => string = () => crypto.randomUUID()): ShareCreationIntent {
-  if (current && current.input.courseVersionId === input.courseVersionId
-    && current.input.expectedCourseRevision === input.expectedCourseRevision) return current;
+  if (current) return current;
   return { key: createKey(), input };
 }
 

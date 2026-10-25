@@ -5,8 +5,8 @@ import {
   canonicalResponseJson, sameInputIdentity, validateInputSnapshot,
   type ActivityActionRequest, type PublicObservation,
 } from "@/domain/activity";
-import type { JsonValue } from "@/domain/common";
-import { TaskPrivateSchema, type TaskPrivate, type TaskPublic } from "@/domain/mechanics";
+import { IdSchema, type JsonValue } from "@/domain/common";
+import { TaskPrivateSchema, TaskPrivateCandidateSchema, type TaskPrivate, type TaskPrivateCandidate, type TaskPublic } from "@/domain/mechanics";
 import {
   causalInterventionDescriptor, experimentalInvestigationDescriptor, outcomePredictionDescriptor,
   evaluateCausalModel, predictOutcome,
@@ -14,9 +14,11 @@ import {
 import { MECHANIC_LIMITS, parseFamilyResponse, parseFamilyTask, type SubmissionIssue } from "@/domain/mechanic-families/v2/shared";
 import { ExperimentalInvestigationPrivateSchema, experimentalObservation } from "@/server/evaluation/investigation";
 import { ConstructionSubmissionError, runConstructionActivity } from "@/server/evaluation/construction";
-import type { AuthoritativeActivity } from "@/server/evaluation/contracts";
+import { ActivityContextSessionSchema, type AuthoritativeActivity } from "@/server/evaluation/contracts";
 import { ServiceFault } from "@/server/auth/errors";
 import { getServerMechanic } from "@/server/mechanics/registry";
+import { PythonArtifactConfigSchema, PythonArtifactResponseSchema, PythonRepairConfigSchema, PythonRepairResponseSchema,
+  type ExecutionJson } from "@/domain/mechanic-families/v3/python";
 
 export function invalidLearningFields(issues: readonly { path: readonly PropertyKey[]; message: string }[]): ServiceFault {
   const fieldErrors: Record<string, string> = {};
@@ -34,7 +36,8 @@ function conflict(messageKey: string, revision: number): never {
 
 export type PreparedActivityAction = {
   action: ActivityActionRequest["action"]; cost: 0 | 1; budgetLimit: number;
-  execution: { kind: "deterministic"; observation: PublicObservation | null } | { kind: "dialogue" };
+  execution: { kind: "deterministic"; observation: PublicObservation | null } | { kind: "dialogue" } |
+    { kind: "python"; source: string; cases: Array<{ id: string; input: ExecutionJson }>; runtimeProfile: "python_stdlib_v1" };
 };
 
 export function activityBudgetLimit(task: TaskPublic): number {
@@ -52,11 +55,35 @@ export function activityBudgetLimit(task: TaskPublic): number {
 export async function prepareActivityAction(input: {
   task: TaskPublic; privateTask: TaskPrivate; activity: AuthoritativeActivity; request: ActivityActionRequest;
 }): Promise<PreparedActivityAction> {
+  const validated = TaskPrivateSchema.parse(input.privateTask);
+  const { validationReceiptId: _receipt, ...candidate } = validated;
+  void _receipt;
+  const { enrollmentId: _enrollmentId, ...session } = ActivitySessionPublicSchema.parse(input.activity.session);
+  void _enrollmentId;
+  return prepareBoundedActivityAction({ ...input, activity: { ...input.activity, session }, privateTask: candidate });
+}
+
+const ValidationBindingSchema = z.object({ generationRunId: IdSchema, runStepId: IdSchema,
+  candidateDigest: z.string().regex(/^[a-f0-9]{64}$/), approvalDigest: z.string().regex(/^[a-f0-9]{64}$/),
+  caseId: z.string().trim().min(1).max(128) }).strict();
+/** Same pure action rules for a generation candidate, before a validation receipt exists. */
+export async function prepareCandidateActivityAction(input: {
+  task: TaskPublic; privateTask: TaskPrivateCandidate; activity: AuthoritativeActivity; request: ActivityActionRequest;
+  /** The generation repository must verify these persisted joins before calling this pure helper. */
+  validationBinding: z.infer<typeof ValidationBindingSchema>;
+}): Promise<PreparedActivityAction> {
+  ValidationBindingSchema.parse(input.validationBinding);
+  return prepareBoundedActivityAction(input);
+}
+
+async function prepareBoundedActivityAction(input: {
+  task: TaskPublic; privateTask: TaskPrivateCandidate; activity: AuthoritativeActivity; request: ActivityActionRequest;
+}): Promise<PreparedActivityAction> {
   try {
     const request = ActivityActionRequestSchema.parse(input.request);
-    const session = ActivitySessionPublicSchema.parse(input.activity.session);
+    const session = ActivityContextSessionSchema.parse(input.activity.session);
     const snapshot = await validateInputSnapshot(input.activity.input);
-    const privateTask = TaskPrivateSchema.parse(input.privateTask);
+    const privateTask = TaskPrivateCandidateSchema.parse(input.privateTask);
     const handle = getServerMechanic(input.task.mechanicId, input.task.mechanicVersion);
     if (!handle) throw new ServiceFault(503, "service_unavailable", "learning.mechanicUnavailable", false);
     const task = handle.parseTask(input.task);
@@ -73,6 +100,7 @@ export async function prepareActivityAction(input: {
     let budgetLimit: number = MECHANIC_LIMITS.actions;
     let observation: PublicObservation | null = null;
     let dialogue = false;
+    let python: Extract<PreparedActivityAction["execution"], { kind: "python" }> | null = null;
 
     if (task.mechanicId === "outcome_prediction") {
       const config = parseFamilyTask(outcomePredictionDescriptor, task).config;
@@ -104,6 +132,11 @@ export async function prepareActivityAction(input: {
       fields(causalInterventionDescriptor.validateSubmission(config, answer).filter((issue) => issue.path[0] !== "observationReceiptId"));
       if (canonicalResponseJson(action.assignments) !== canonicalResponseJson(answer.assignments)) invalid("action", "Save these assignments before applying the intervention.");
       observation = { kind: "values", values: evaluateCausalModel(config, action.assignments) };
+    } else if (action.kind === "run" && task.mechanicVersion === 3) {
+      const config = task.mechanicId === "artifact_construction" ? PythonArtifactConfigSchema.parse(task.config) : PythonRepairConfigSchema.parse(task.config);
+      const answer = task.mechanicId === "artifact_construction" ? PythonArtifactResponseSchema.parse(response) : PythonRepairResponseSchema.parse(response);
+      if (!answer.source.trim()) invalid("source", "Write or repair the function before running its public cases.");
+      python = { kind: "python", source: answer.source, cases: config.publicCases.map(({ id, input }) => ({ id, input })), runtimeProfile: config.runtimeProfile };
     } else if (action.kind === "run") {
       observation = runConstructionActivity(task, response);
     } else if (action.kind === "dialogue.turn") {
@@ -121,8 +154,8 @@ export async function prepareActivityAction(input: {
     if (session.events.length >= 100 || (cost > 0 && (session.remainingActions < cost || reserved + cost > budgetLimit))) {
       throw new ServiceFault(409, "revision_conflict", "learning.actionBudgetExhausted", false, { currentRevision: session.revision });
     }
-    return { action, cost, budgetLimit, execution: dialogue ? { kind: "dialogue" } :
-      { kind: "deterministic", observation: observation === null ? null : PublicObservationSchema.parse(observation) } };
+    return { action, cost, budgetLimit, execution: python ?? (dialogue ? { kind: "dialogue" } :
+      { kind: "deterministic", observation: observation === null ? null : PublicObservationSchema.parse(observation) }) };
   } catch (error) {
     if (error instanceof z.ZodError || error instanceof ConstructionSubmissionError) throw invalidLearningFields(error.issues);
     throw error;

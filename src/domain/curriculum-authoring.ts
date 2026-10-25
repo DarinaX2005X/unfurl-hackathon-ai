@@ -83,7 +83,21 @@ export const CurriculumMutationResultSchema = z.object({
   }
 });
 export type CurriculumMutationResult = z.infer<typeof CurriculumMutationResultSchema>;
-export const CurriculumAuthoringSnapshotSchema = CurriculumMutationResultSchema.safeExtend({ evidence: CurriculumEvidencePublicSchema });
+export const CurriculumAuthoringSnapshotSchema = CurriculumMutationResultSchema.safeExtend({
+  evidence: CurriculumEvidencePublicSchema,
+  generationRun: GenerationRunSchema.nullable(),
+  languageRun: AgentTurnRunSchema.nullable(),
+}).superRefine((value, ctx) => {
+  if (value.generationRun && (value.generationRun.courseId !== value.artifact.courseId
+    || value.generationRun.approvalId !== value.artifact.approval?.id
+    || value.generationRun.sourceDraftRevision !== value.draft.revision
+    || value.generationRun.ownerId !== value.artifact.approval?.approvedBy)) {
+    ctx.addIssue({ code: "custom", path: ["generationRun"], message: "The build must belong to this exact approval" });
+  }
+  if (value.languageRun && value.languageRun.conversationId !== value.draft.conversationId) {
+    ctx.addIssue({ code: "custom", path: ["languageRun"], message: "The language request must belong to this curriculum's conversation" });
+  }
+});
 export type CurriculumAuthoringSnapshot = z.infer<typeof CurriculumAuthoringSnapshotSchema>;
 
 export const CurriculumApprovalResultSchema = z.object({

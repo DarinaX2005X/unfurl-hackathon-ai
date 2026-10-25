@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 import { curriculumDigest } from "../../src/domain/course";
 import { projectCurriculumEvidence, validateCurriculumEvidence } from "../../src/server/curriculum-research/validation";
+import { researchFingerprint } from "../../src/server/curriculum-research/persistence";
 import { ids, moreIds, researchFixture } from "./fixtures";
 
 describe("curriculum evidence validation", () => {
@@ -85,5 +86,16 @@ describe("curriculum evidence validation", () => {
     const view = projectCurriculumEvidence(draft, evidence, facts, issues);
     expect(view.status).toBe("needs_research");
     expect(view.outcomes[0]!.support).toBe("unverified");
+  });
+
+  it("distinguishes substantive grounding from retrieval timestamps and transport identities", async () => {
+    const { evidence, facts, source, claim } = await researchFixture();
+    const original = researchFingerprint(evidence, facts);
+    source.retrievedAt = "2026-10-25T12:00:00.000Z";
+    claim.createdAt = source.retrievedAt;
+    claim.runStepId = ids.missing;
+    expect(researchFingerprint(evidence, facts)).toBe(original);
+    evidence.rationale = "A changed evidence-based rationale for choosing the learning sequence.";
+    expect(researchFingerprint(evidence, facts)).not.toBe(original);
   });
 });

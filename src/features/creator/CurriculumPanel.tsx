@@ -1,10 +1,13 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { Check } from "lucide-react";
+import { Check, ExternalLink, Pencil } from "lucide-react";
 import { Button, Notice } from "@/components/ui";
 import { assertCurrentApproval, curriculumDigest, validateCurriculum, type CurriculumApproval, type CurriculumDraft } from "@/domain/course";
+import type { CurriculumEvidencePublic } from "@/domain/curriculum-authoring";
+import type { AgentTurnRun, GenerationRun } from "@/domain/generation";
 import { languageLabel } from "./languages";
+import type { GenerationStreamState } from "./generation-stream";
 
 export interface ApproveCurriculumInput { courseId: string; draftId: string; revision: number; contentDigest: string }
 export type ApproveCurriculum = (input: ApproveCurriculumInput) => Promise<CurriculumApproval>;
@@ -33,9 +36,20 @@ export interface CurriculumPanelProps {
   approval?: CurriculumApproval | null;
   awaitingApproval?: boolean;
   showTitle?: boolean;
+  evidence?: CurriculumEvidencePublic;
+  generationRun?: GenerationRun | null;
+  languageRun?: AgentTurnRun | null;
+  generation?: GenerationStreamState;
+  generationConnectionError?: boolean;
+  cancelPending?: boolean;
+  onCancelBuild?: () => void;
+  retryPending?: boolean;
+  retryError?: boolean;
+  onRetryBuild?: () => void;
+  onEdit?: () => void;
 }
 
-export function CurriculumPanel({ draft, currentRevision, onApprove, approval = null, awaitingApproval = false, showTitle = true }: CurriculumPanelProps) {
+export function CurriculumPanel({ draft, currentRevision, onApprove, approval = null, awaitingApproval = false, showTitle = true, evidence, generationRun = null, languageRun = null, generation, generationConnectionError = false, cancelPending = false, onCancelBuild, retryPending = false, retryError = false, onRetryBuild, onEdit }: CurriculumPanelProps) {
   const [pending, setPending] = useState(false);
   const [receipt, setReceipt] = useState<CurriculumApproval | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -45,6 +59,7 @@ export function CurriculumPanel({ draft, currentRevision, onApprove, approval = 
   const isCurrent = draft.revision === currentRevision;
   const blockers = draft.unresolvedQuestions.some((question) => question.blocking);
   const valid = validateCurriculum(draft).length === 0;
+  const researchReady = evidence === undefined || evidence.status === "verified";
   const minutes = draft.modules.reduce((total, module) => total + module.estimatedStudyMinutes, 0);
   const moduleNames = new Map(draft.modules.map((module) => [module.id, module.title]));
 
@@ -62,8 +77,8 @@ export function CurriculumPanel({ draft, currentRevision, onApprove, approval = 
 
   return <section className="creator-program" aria-label="Course program">
     <header className="creator-program__header">
-      <h2>Course program</h2>
-      <p>Version {draft.revision} in {languageLabel(draft.contentLanguage)}</p>
+      <div><h2>Course program</h2><p>Version {draft.revision} in {languageLabel(draft.contentLanguage)}</p></div>
+      {onEdit && <Button variant="quiet" size="compact" onClick={onEdit}><Pencil size={16} aria-hidden="true" />Edit program</Button>}
     </header>
     <div className="creator-program__body">
       {showTitle && <h3 className="creator-program__title">{draft.title}</h3>}
@@ -84,16 +99,60 @@ export function CurriculumPanel({ draft, currentRevision, onApprove, approval = 
         </li>)}</ol>
       </section>
       {draft.unresolvedQuestions.length > 0 && <section className="creator-program__section"><h3>Questions to resolve</h3><ul>{draft.unresolvedQuestions.map((question) => <li key={question.id}>{question.text}{question.blocking && <strong> Needed before approval</strong>}</li>)}</ul></section>}
+      {evidence && <section className="creator-program__section creator-program__evidence"><h3>Research check</h3>
+        <p className={`creator-program__evidence-status creator-program__evidence-status--${evidence.status}`}>{evidence.status === "verified" ? "Sources verified" : evidence.status === "blocked" ? "Research is blocked" : "Research needs to be refreshed"}</p>
+        <p>{evidence.rationale}</p>
+        {evidence.limitations.length > 0 && <><h4>Limitations</h4><ul>{evidence.limitations.map((item, index) => <li key={index}>{item}</li>)}</ul></>}
+        {evidence.sources.length > 0 && <><h4>Sources</h4><ul className="creator-program__sources">{evidence.sources.map((source) => <li key={source.sourceId}><a href={source.url} target="_blank" rel="noreferrer">{source.title}<ExternalLink size={14} aria-hidden="true" /></a>{source.extractionState === "truncated" && <span>Partial extract</span>}</li>)}</ul></>}
+      </section>}
     </div>
     <footer className="creator-program__footer">
       {!isCurrent && <Notice tone="warning">A newer program is being loaded. Review it before approving.</Notice>}
+      {evidence?.status === "needs_research" && <Notice tone="info">Your changes are saved. Research support is being refreshed before this version can be approved.</Notice>}
+      {evidence?.status === "blocked" && <Notice tone="warning">Research could not verify this program yet. Keep the saved draft and try again when the source issue is resolved.</Notice>}
+      {generationRun && <Notice tone={generationRun.status === "failed" ? "error" : generationRun.status === "succeeded" ? "success" : "info"}
+        action={onCancelBuild ? <Button variant="quiet" size="compact" pending={cancelPending} onClick={onCancelBuild}>Cancel build</Button>
+          : onRetryBuild ? <Button variant="quiet" size="compact" pending={retryPending} onClick={onRetryBuild}>Retry build</Button> : undefined}>
+        <p>{generationStatus(generationRun)}</p>
+        {generation && <GenerationFacts generation={generation} />}
+      </Notice>}
+      {generationConnectionError && generationRun && !["succeeded", "failed", "cancelled"].includes(generationRun.status) && <Notice tone="warning">Live build updates were interrupted. The approved program is safe; reconnecting…</Notice>}
+      {retryError && <Notice tone="error">The build could not be retried. Your approved program is still safe; try again.</Notice>}
+      {languageRun && <Notice tone={languageRun.status === "failed" ? "error" : languageRun.status === "succeeded" ? "success" : "info"}>{languageStatus(languageRun)}</Notice>}
       {error && <Notice tone="error">{error}</Notice>}
       {approved && isCurrent ? <p className="creator-program__approved" role="status"><Check size={18} aria-hidden="true" /> Version {draft.revision} approved</p> : <>
         <p>{blockers ? "Answer the open questions in the conversation before approving." : "Check the scope and sequence before lessons are created."}</p>
-        {onApprove && awaitingApproval && <Button onClick={() => void handleApprove()} pending={pending} disabled={!isCurrent || blockers || !valid}>Approve version {draft.revision}</Button>}
+        {onApprove && awaitingApproval && <Button onClick={() => void handleApprove()} pending={pending} disabled={!isCurrent || blockers || !valid || !researchReady}>Approve version {draft.revision}</Button>}
       </>}
     </footer>
   </section>;
+}
+
+function GenerationFacts({ generation }: { generation: GenerationStreamState }) {
+  const complete = generation.modules.filter((module) => module.status === "complete");
+  return <div className="creator-program__generation-facts">
+    {complete.length > 0 && <p>{complete.length} of {generation.modules.length} sections saved: {complete.map((module) => module.title).join(", ")}.</p>}
+    {generation.validation && <p>Validation checked {generation.validation.checked} items: {generation.validation.passed} passed, {generation.validation.failed} need attention.</p>}
+  </div>;
+}
+
+function generationStatus(run: GenerationRun): string {
+  if (run.status === "succeeded") return "Course build complete. The ready course link will appear here shortly.";
+  if (run.status === "failed") return "The course build stopped before completion. Your approved program is still saved.";
+  if (run.status === "cancelled") return "The course build was cancelled. Your approved program is still saved.";
+  const phases: Record<GenerationRun["phase"], string> = {
+    briefing: "Preparing the course build…", researching: "Researching the course…", outlining: "Checking the course outline…",
+    awaiting_approval: "Waiting for program approval…", module_research: "Researching each section…",
+    building_tasks: "Building lessons and practice…", validating: "Validating the course before release…",
+  };
+  return phases[run.phase];
+}
+
+function languageStatus(run: AgentTurnRun): string {
+  if (run.status === "succeeded") return "The requested language version is ready to be checked.";
+  if (run.status === "failed") return "The language version could not be created. Your current course is unchanged.";
+  if (run.status === "cancelled") return "The language request was cancelled. Your current course is unchanged.";
+  return "Creating the requested language version. Your current course remains available.";
 }
 
 function formatStudyTime(minutes: number): string {

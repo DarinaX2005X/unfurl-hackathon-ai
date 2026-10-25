@@ -133,6 +133,7 @@ const privateKeys = new Set([
   "rubric", "basisRubric", "explanationRubric", "acceptedEvidence", "acceptedGraphs",
   "reviewedClaim", "hiddenHypothesisId", "referenceQuantity", "requiredFinalFacts",
   "acceptedLocationSets", "oracle", "hiddenFacts", "disclosureRules", "scenarioConstraints", "permittedOutcomes",
+  "hiddenCases", "acceptedFaultRegions", "repairLocationDimensionId", "testSetId",
 ]);
 
 function assertPublicConfig(value: JsonValue): void {

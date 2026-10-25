@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
-import { prepareActivityAction, validateLearningSubmission } from "@/server/learning/actions";
-import { responseDigest, type ActivityAction, type ActivityActionRequest, type InputSnapshot } from "@/domain/activity";
+import { prepareActivityAction, prepareCandidateActivityAction, validateLearningSubmission } from "@/server/learning/actions";
+import { responseDigest, type ActivityAction, type ActivityActionRequest, type ActivitySessionPublic, type InputSnapshot } from "@/domain/activity";
 import type { JsonValue } from "@/domain/common";
 import type { TaskPrivate, TaskPublic } from "@/domain/mechanics";
 import type { AuthoritativeActivity } from "@/server/evaluation/contracts";
@@ -10,8 +10,9 @@ import { task, prediction, intervention, tracing } from "../mechanics/investigat
 
 async function setup(currentTask: TaskPublic<JsonValue>, response: JsonValue, action: ActivityAction) {
   const snapshot: InputSnapshot = { activitySessionId: crypto.randomUUID(), inputRevision: 1, responseDigest: await responseDigest(response), response };
-  const activity: AuthoritativeActivity = { session: { id: snapshot.activitySessionId, enrollmentId: crypto.randomUUID(), taskId: currentTask.id,
-    taskVersion: currentTask.taskVersion, revision: 1, inputRevision: 1, status: "active", remainingActions: 6, events: [] },
+  const session: ActivitySessionPublic = { id: snapshot.activitySessionId, enrollmentId: crypto.randomUUID(), taskId: currentTask.id,
+    taskVersion: currentTask.taskVersion, revision: 1, inputRevision: 1, status: "active", remainingActions: 6, events: [] };
+  const activity: AuthoritativeActivity = { session,
     input: snapshot, receipts: [], receiptInputs: [], assistance: "independent", revealedFactIds: [], committedPredictionReceiptId: null, predictionBeforeObservation: false };
   const privateTask: TaskPrivate = { taskId: currentTask.id, taskVersion: currentTask.taskVersion,
     evaluationSpec: { kind: "deterministic", evaluatorId: currentTask.mechanicId, evaluatorVersion: 2, secretConfig: null },
@@ -22,6 +23,19 @@ async function setup(currentTask: TaskPublic<JsonValue>, response: JsonValue, ac
 }
 
 describe("activity acceptance before reservation", () => {
+  it("uses identical action rules for an unvalidated candidate while ready task entry requires the validation receipt", async () => {
+    const answer = { ...outcomePredictionDescriptor.createInitialResponse(prediction), interval: { lower: 7, upper: 7, unit: "unitless" as const } };
+    const input = await setup(task(prediction), answer, { kind: "prediction.commit" });
+    const { validationReceiptId: _receipt, ...candidate } = input.privateTask;
+    void _receipt;
+    const { enrollmentId: _enrollment, ...session } = input.activity.session as typeof input.activity.session & { enrollmentId: string };
+    void _enrollment;
+    const candidateInput = { ...input, privateTask: candidate, activity: { ...input.activity, session }, validationBinding: {
+      generationRunId: crypto.randomUUID(), runStepId: crypto.randomUUID(), candidateDigest: "a".repeat(64), approvalDigest: "b".repeat(64), caseId: "prediction-1" } };
+    expect(await prepareCandidateActivityAction(candidateInput)).toEqual(await prepareActivityAction(input));
+    await expect(prepareActivityAction({ ...input, privateTask: candidate as TaskPrivate })).rejects.toThrow();
+    await expect(prepareCandidateActivityAction({ ...candidateInput, privateTask: { ...candidate, taskId: crypto.randomUUID() } })).rejects.toMatchObject({ status: 503 });
+  });
   it("prediction commits cost zero and require a real interval without requiring finished receipts", async () => {
     const currentTask = task(prediction);
     const draft = outcomePredictionDescriptor.createInitialResponse(prediction);

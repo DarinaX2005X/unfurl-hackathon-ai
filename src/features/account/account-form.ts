@@ -62,7 +62,7 @@ export async function submitAuthForm(
 export function accountErrorMessage(error: ApiError): string {
   const detail = error.error;
   if (detail.messageKey === "auth.invalidCredentials") return "The email or password was not accepted. Check both and try again.";
-  if (detail.messageKey === "auth.emailConfirmationRequired") return "Check your email for a confirmation link before signing in.";
+  if (detail.messageKey === "auth.emailConfirmationRequired") return "This account still requires email confirmation, but email delivery is not available. Contact the site owner for help.";
   if (detail.code === "rate_limited") return "Too many attempts. Wait a moment, then try again.";
   if (detail.code === "revision_conflict") return "Your profile changed in another tab. Load the latest version before saving again. Your edits are still here.";
   if (detail.code === "unauthenticated") return "Your session has ended. Sign in again to continue.";

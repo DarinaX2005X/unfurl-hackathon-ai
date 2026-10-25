@@ -17,6 +17,8 @@ import {
   expressionNodeCount, type PlanConstructionConfig,
 } from "@/domain/mechanic-families/v2/construction";
 import { InformationGapConfigSchema, RoleSimulationConfigSchema } from "@/domain/mechanic-families/v2/communication";
+import { PythonArtifactConfigSchema, PythonRepairConfigSchema, parseExecutionValue } from "@/domain/mechanic-families/v3/python";
+import { PythonArtifactPrivateSchema, PythonRepairPrivateSchema } from "@/server/evaluation/python";
 import {
   convertQuantity, evaluateBoundedModel, evaluateExpression, validateExpression, withinTolerance,
   type BoundedVariable, type Expr,
@@ -139,6 +141,25 @@ function experimentWithinBudget(config: ReturnType<typeof ExperimentalInvestigat
 
 /** Pure cross-schema checks; prose interpretation is explicitly left to external receipts. */
 export function inspectFamilyCandidate(task: TaskPublic, data: JsonObject): ValidationCheckId[] {
+  if (task.mechanicVersion === 3) {
+    const config = task.mechanicId === "artifact_construction" ? PythonArtifactConfigSchema.parse(task.config) : PythonRepairConfigSchema.parse(task.config);
+    const privateData = task.mechanicId === "artifact_construction" ? PythonArtifactPrivateSchema.parse(data) : PythonRepairPrivateSchema.parse(data);
+    if (privateData.comparator.kind === "numeric_tolerance") {
+      requireCondition(config.outputShape.type === "number", "Numeric Python comparison requires a numeric output shape");
+      const magnitude = Math.max(Math.abs(config.outputShape.minimum), Math.abs(config.outputShape.maximum));
+      requireCondition(Number.isFinite(privateData.comparator.absolute + privateData.comparator.relative * magnitude), "Numeric Python comparison exceeds a finite tolerance window");
+    }
+    for (const item of privateData.hiddenCases) {
+      parseExecutionValue(config.inputShape, item.input);
+      parseExecutionValue(config.outputShape, item.expected);
+      requireCondition(privateData.comparator.kind !== "numeric_tolerance" || typeof item.expected === "number", "Numeric Python comparison requires numeric expected outputs");
+    }
+    if (task.mechanicId === "diagnosis_repair") {
+      requireCondition(PythonRepairPrivateSchema.parse(data).acceptedFaultRegions.every((region) => region.endLine <= config.starterSource.split("\n").length), "An accepted fault region is absent from the original Python source");
+    }
+    // Pure authoring cannot execute code. Readiness must join stored execution proof.
+    return ["reachability"];
+  }
   const external = new Set<ValidationCheckId>();
   const reachable = (result: boolean | null) => {
     requireCondition(result !== false, "The authored goal has no reachable witness within its declared bounds");

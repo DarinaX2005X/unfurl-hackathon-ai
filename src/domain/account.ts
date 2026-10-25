@@ -65,14 +65,7 @@ export const AuthenticatedResultSchema = z.object({
   redirectTo: z.string().min(1).max(2_048),
 }).strict();
 
-export const SignUpResultSchema = z.discriminatedUnion("status", [
-  AuthenticatedResultSchema,
-  z.object({
-    status: z.literal("confirmation_required"),
-    email: z.email().max(254),
-    returnTo: z.string().min(1).max(2_048),
-  }).strict(),
-]);
+export const SignUpResultSchema = AuthenticatedResultSchema;
 
 export const PasswordResetRequestedSchema = z.object({
   status: z.literal("recovery_email_requested"),

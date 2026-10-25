@@ -8,6 +8,9 @@ import { CurriculumResearchEvidenceSchema, SourceClaimSchema, type CurriculumRes
 
 export const outcomeEvidenceDigest = (outcome: Outcome): string => jsonDigest(outcome);
 export const moduleEvidenceDigest = (module: ModuleOutline): string => jsonDigest(module);
+export const briefEvidenceDigest = (draft: CurriculumDraft): string => jsonDigest({
+  goal: draft.goal, audience: draft.audience, assumedKnowledge: draft.assumedKnowledge, contentLanguage: draft.contentLanguage,
+});
 
 export interface CurriculumEvidenceFacts {
   ownerId: string;
@@ -32,6 +35,7 @@ export async function validateCurriculumEvidence(
   }
   const evidence = parsed.data;
   if (evidence.contentDigest !== await curriculumDigest(draft)) add("stale_evidence", ["contentDigest"], "Research belongs to different curriculum content");
+  if (evidence.briefDigest !== briefEvidenceDigest(draft)) add("stale_evidence", ["briefDigest"], "Research must account for the current goal, audience, prerequisites and language");
   const sources = new Map(sourcesParsed.data.map((source) => [source.id, source]));
   const passages = new Map(passagesParsed.data.map((passage) => [passage.id, passage]));
   const claims = new Map(claimsParsed.data.map((claim) => [claim.id, claim]));

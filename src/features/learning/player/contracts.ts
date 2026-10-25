@@ -33,9 +33,9 @@ export interface TaskRendererProps<C extends JsonValue, R extends JsonValue> {
   activity?: ActivityController;
 }
 
-export interface ProductionMechanic<C extends JsonValue, R extends JsonValue>
+export interface ProductionMechanic<C extends JsonValue, R extends JsonValue, V extends 2 | 3 = 2>
   extends RegisteredMechanic<C, R> {
-  descriptor: FamilyDescriptor<C, R>;
+  descriptor: FamilyDescriptor<C, R, V>;
 }
 
 export interface RegisteredMechanic<C extends JsonValue, R extends JsonValue> {

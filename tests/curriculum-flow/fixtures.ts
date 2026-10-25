@@ -3,7 +3,7 @@ import { curriculumDigest } from "../../src/domain/course";
 import type { CourseArtifactRef } from "../../src/domain/chat";
 import type { SourceDocument, Passage } from "../../src/server/research/ports";
 import type { CurriculumResearchEvidence, SourceClaim } from "../../src/server/curriculum-research/contracts";
-import { moduleEvidenceDigest, outcomeEvidenceDigest, type CurriculumEvidenceFacts } from "../../src/server/curriculum-research/validation";
+import { briefEvidenceDigest, moduleEvidenceDigest, outcomeEvidenceDigest, type CurriculumEvidenceFacts } from "../../src/server/curriculum-research/validation";
 
 export { curriculum, ids, timestamp };
 export const moreIds = {
@@ -32,7 +32,7 @@ export async function researchFixture() {
     text: "Model capacity should be assessed with held-out data.", passageIds: [passage.id], outcomeIds: draft.outcomes.map((item) => item.id),
     scope: { subject: "Generalization", version: null }, support: "direct", unresolvedConflicts: [], createdAt: timestamp };
   const evidence: CurriculumResearchEvidence = {
-    schemaVersion: 1, contentDigest: await curriculumDigest(draft), rationale: "Learn to distinguish fitted behavior from evidence on unseen data before selecting capacity.",
+    schemaVersion: 1, contentDigest: await curriculumDigest(draft), briefDigest: briefEvidenceDigest(draft), rationale: "Learn to distinguish fitted behavior from evidence on unseen data before selecting capacity.",
     outcomeEvidence: draft.outcomes.map((outcome) => ({ outcomeId: outcome.id, outcomeDigest: outcomeEvidenceDigest(outcome), claimIds: [claim.id],
       rationale: "The source motivates comparison with held-out observations." })),
     moduleEstimates: draft.modules.map((module) => ({ moduleId: module.id, moduleDigest: moduleEvidenceDigest(module), minMinutes: 20, maxMinutes: 80,

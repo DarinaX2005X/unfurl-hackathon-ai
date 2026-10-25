@@ -11,6 +11,15 @@ export const dynamic = "force-dynamic";
 
 type Context = { params: Promise<{ id: string }> };
 
+export async function GET(request: NextRequest, context: Context) {
+  try {
+    const actor = await requireActor();
+    return success(await publicationService.getVisibility(actor, (await context.params).id));
+  } catch (error) {
+    return failure(error, request);
+  }
+}
+
 export async function PATCH(request: NextRequest, context: Context) {
   try {
     assertSameOrigin(request);

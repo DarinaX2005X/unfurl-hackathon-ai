@@ -1,6 +1,6 @@
 import type { JsonValue } from "@/domain/common";
 import type { TaskPublic, MechanicId } from "@/domain/mechanics";
-import { responseDigest, type ActivityAction, type ActionReceipt, type InputSnapshot, type PublicObservation } from "@/domain/activity";
+import { responseDigest, type ActivityAction, type ActionReceipt, type ActivitySessionPublic, type InputSnapshot, type PublicObservation } from "@/domain/activity";
 import {
   StateTracingConfigSchema, OutcomePredictionConfigSchema, CauseDiagnosisConfigSchema, ExperimentalInvestigationConfigSchema,
   CausalInterventionConfigSchema, EstimationConfigSchema, StrategySelectionConfigSchema, SourceInvestigationConfigSchema,
@@ -52,7 +52,7 @@ export const strategy = StrategySelectionConfigSchema.parse({ kind: "strategy_se
 export const source = SourceInvestigationConfigSchema.parse({ kind: "source_investigation", claim: "Train-fitted preprocessing guarantees robust predictions at every new organization.", sources: [{ id: "synthetic", url: "https://example.invalid/synthetic-preprocessing", title: "Synthetic preprocessing fixture", retrievedAt: "2026-10-25T00:00:00.000Z", contentDigest: "a".repeat(64), passages: [{ id: "scope", text: "Synthetic fixture: fitting preprocessing on training data avoids using held-out data to determine preprocessing parameters. This says nothing about robustness at new organizations." }] }] });
 
 type Step = { id: string; action: ActivityAction; response: JsonValue; observation: PublicObservation | null };
-export async function activity<C extends JsonValue, R extends JsonValue>(currentTask: TaskPublic<C>, finalResponse: R, steps: Step[]): Promise<AuthoritativeActivity> {
+export async function activity<C extends JsonValue, R extends JsonValue>(currentTask: TaskPublic<C>, finalResponse: R, steps: Step[]): Promise<AuthoritativeActivity & { session: ActivitySessionPublic }> {
   const sessionId = crypto.randomUUID();
   const receiptInputs: InputSnapshot[] = [];
   const receipts: ActionReceipt[] = [];

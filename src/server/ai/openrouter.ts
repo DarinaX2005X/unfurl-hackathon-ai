@@ -5,7 +5,9 @@ import type { BudgetPort, BudgetReservation, ProviderResponseReceipt } from "../
 import { worstCaseMicroUsd } from "../budget/calculations";
 import { usdToMicroUsdCeil } from "../budget/money";
 import { MAX_OUTPUT_TOKENS, MAX_PROVIDER_DURATION_MS, MODEL_ID, OPENROUTER_BASE_URL, PROVIDER_TAG, SEARCH_POLICY } from "./constants";
-import { ProviderFailure, retryAfterMilliseconds } from "./failure";
+import { ProviderFailure } from "./failure";
+import { httpFailureReceipt, httpFailureReceiptSchema } from "./error-receipt";
+import { providerWireSchema } from "./wire-schema";
 import { boundedResponseText } from "./http";
 import { canonicalJson, digestBytes, jsonDigest, parseProviderJson } from "./json";
 import type { ModelEvidence, ModelPort, ModelRequestBase, ModelResult, NativeUsage, ProviderCapabilityGate, StructuredRequest, TextCompleted, TextDelta, TextRequest } from "./ports";
@@ -44,7 +46,7 @@ export class OpenRouterModel implements ModelPort {
   capabilities() { return this.dependencies.gate.snapshot(); }
   async generateStructured<T>(request: StructuredRequest<T>, signal: AbortSignal): Promise<ModelResult<T>> {
     let schema: JsonObject;
-    try { schema = z.toJSONSchema(request.schema) as JsonObject; } catch { throw new ProviderFailure("invalid_output"); }
+    try { schema = providerWireSchema(z.toJSONSchema(request.schema) as JsonObject); } catch { throw new ProviderFailure("invalid_output"); }
     const completion = await this.complete(request, signal, { schema, schemaName: `${request.schemaId}_${request.schemaVersion}` });
     try {
       const parsed = request.schema.safeParse(JSON.parse(completion.content) as unknown);
@@ -101,8 +103,12 @@ export class OpenRouterModel implements ModelPort {
         body: canonicalJson(body), signal: combined, redirect: "error", cache: "no-store",
       });
       if (!response.ok) {
-        await response.body?.cancel();
-        throw new ProviderFailure(response.status === 429 ? "rate_limited" : "unavailable", retryAfterMilliseconds(response.headers.get("retry-after")));
+        const receipt = await httpFailureReceipt(response, options.schema);
+        await this.dependencies.budget.recordResponse(reserved, receipt, null);
+        responseSaved = true;
+        const failure = httpFailureReceiptSchema.parse(receipt.result);
+        await this.dependencies.budget.markUnknown(reserved, failure.failure);
+        throw new ProviderFailure(failure.failure, failure.retryAfterMs);
       }
       const raw = await boundedResponseText(response);
       let decoded: unknown;
@@ -152,6 +158,8 @@ export class OpenRouterModel implements ModelPort {
     }
   }
   private replay(request: ModelRequestBase, reserved: BudgetReservation, receipt: ProviderResponseReceipt, replayed: boolean): PaidCompletion {
+    const httpFailure = httpFailureReceiptSchema.safeParse(receipt.result);
+    if (httpFailure.success) throw new ProviderFailure(httpFailure.data.failure, httpFailure.data.retryAfterMs);
     const result = recoverySchema.safeParse(receipt.result);
     if (!result.success || !receipt.providerRequestId) throw new ProviderFailure("invalid_output");
     const data = result.data;

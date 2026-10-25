@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 
-// Live rollback-only proof for migrations 005-006. No provider or HTTP calls.
+// Live rollback-only proof for migrations 005-020. No provider, VM or HTTP calls.
 // node --env-file=.env.local supabase/verify-catalog-learning-schema.mjs --project-ref <ref>
 const args = process.argv.slice(2);
 const expectedRef = args[args.indexOf("--project-ref") + 1];
@@ -10,6 +10,8 @@ const checks = [];
 let client;
 let phase = "configuration";
 const digest = "b".repeat(64);
+const pythonImage = "vercel/sandbox/python@sha256:3bc79de820271c18e2506c132ce20cc15c6215c0ae5725575b1d8e37ecca0218";
+const sha256 = (value) => createHash("sha256").update(value, "utf8").digest("hex");
 const check = (name, condition) => {
   assert.ok(condition, `check_failed:${name}`);
   checks.push(name);
@@ -18,8 +20,10 @@ const check = (name, condition) => {
 async function rejected(name, sql, values, expectedCodes) {
   await client.query(`SAVEPOINT ${name}`);
   let code;
-  try { await client.query(sql, values); } catch (error) { code = error.code; }
+  let message;
+  try { await client.query(sql, values); } catch (error) { code = error.code; message = error.message; }
   await client.query(`ROLLBACK TO SAVEPOINT ${name}`);
+  if (!expectedCodes.includes(code)) console.error(JSON.stringify({ check: name, observedCode: code ?? null, observedMessage: message ?? null }));
   check(name, expectedCodes.includes(code));
 }
 
@@ -36,9 +40,9 @@ try {
     application_name: "unfurl-learning-schema-proof" });
   await client.connect();
   const receipts = await client.query("SELECT version FROM unfurl_meta.schema_migrations WHERE version = ANY($1::text[])", [
-    ["202610250005_catalog_and_learning.sql", "202610250006_learning_traversal.sql", "202610250007_share_contract_repairs.sql", "202610250008_research_provenance.sql"],
+    ["202610250005_catalog_and_learning.sql", "202610250006_learning_traversal.sql", "202610250007_share_contract_repairs.sql", "202610250008_research_provenance.sql", "202610250009_python_execution.sql", "202610250010_validation_receipts.sql", "202610250011_python_runtime_repairs.sql", "202610250012_python_quota_guard.sql", "202610250013_python_capability_authority.sql", "202610250014_python_admission_receipts.sql", "202610250015_python_capability_freshness.sql", "202610250016_execution_retry_epoch.sql", "202610250017_python_authoring_bindings.sql", "202610250018_authoring_fences_and_retry_holds.sql", "202610250019_python_authoring_execution.sql", "202610250020_python_oidc_execution_evidence.sql"],
   ]);
-  check("learning_migration_receipts", receipts.rowCount === 4);
+  check("learning_migration_receipts", receipts.rowCount === 16);
 
   phase = "fixture_graph";
   await client.query("BEGIN");
@@ -50,6 +54,9 @@ try {
     "conversation", "branch", "message", "course", "draft", "approval", "turnRun", "generationRun", "version", "validation",
     "lesson", "outcome", "module", "task", "taskValidation", "enrollment", "activity", "action", "attempt", "evaluation",
     "evidence", "award", "adjustment", "review", "support", "jobEvaluation", "jobAction",
+    "versionValidationUncertain", "taskValidationUncertain", "capability", "execution1", "execution2", "execution3",
+    "admission", "admissionExecution", "jobGeneration", "candidateStep", "casePlanStep", "authoringStep",
+    "authoringValidation", "validationCase", "authoringExecution",
     "source", "passage", "search", "claim", "languageIntent", "searchOperation", "badSearchOperation",
   ].map((name) => [name, randomUUID()]));
 
@@ -126,11 +133,96 @@ try {
     (id,task_version,course_version_id,mechanic_id,mechanic_version,outcome_ids,instruction,content_language,config,available_hints,response_schema_version)
     VALUES($1,1,$2,'recall_reconstruction',2,$3,'Reconstruct it','en','{}',1,2)`, [ids.task, ids.version, [ids.outcome]]);
   await client.query("INSERT INTO unfurl.task_validation_receipts(id,task_id,task_version,verdict,document) VALUES($1,$2,1,'passed','{}')", [ids.taskValidation, ids.task]);
+  await client.query("INSERT INTO unfurl.version_validation_receipts(id,course_version_id,verdict,document) VALUES($1,$2,'uncertain','{}')", [ids.versionValidationUncertain, ids.version]);
+  await client.query("INSERT INTO unfurl.task_validation_receipts(id,task_id,task_version,verdict,document) VALUES($1,$2,1,'uncertain','{}')", [ids.taskValidationUncertain, ids.task]);
+  await rejected("version_validation_receipt_immutable", "UPDATE unfurl.version_validation_receipts SET verdict='failed' WHERE id=$1", [ids.versionValidationUncertain], ["23514"]);
+  await rejected("task_validation_receipt_immutable", "DELETE FROM unfurl.task_validation_receipts WHERE id=$1", [ids.taskValidationUncertain], ["23514"]);
   await client.query(`INSERT INTO unfurl.tasks_private
     (task_id,task_version,evaluation_spec,source_claim_ids,validation_receipt_id,hints,worked_example,evaluator_data,assessment)
     VALUES($1,1,$2,'{}',$3,$4,'A worked example',$5,$6)`, [ids.task,
     { kind: "deterministic", evaluatorId: "recall_reconstruction", evaluatorVersion: 2, secretConfig: {} }, ids.taskValidation,
     JSON.stringify(["Look at the causal boundary."]), {}, { evidenceGroupId: randomUUID(), role: "required", outcomes: [{ outcomeId: ids.outcome, dimensions: [{ dimensionId: "distinction", evaluationDimensionIds: ["numeric_cases"] }] }] }]);
+  const candidateDigest = "1".repeat(64), catalogDigest = "2".repeat(64), source = "def solve(payload):\n    return payload";
+  const executionCases = [{ id: "example", input: { value: 1 } }, { id: "held_out", input: { value: 2 } }];
+  const sourceDigest = sha256(source), casesDigest = sha256(JSON.stringify(executionCases));
+  phase = "authoring_fixture_job";
+  await client.query(`INSERT INTO unfurl.execution_jobs
+    (id,generation_run_id,status,attempt_count,lease_owner,lease_expires_at,fencing_token)
+    VALUES($1,$2,'running',1,'authoring-proof',now()+interval '5 minutes',1)`, [ids.jobGeneration, ids.generationRun]);
+  const stepSql = `INSERT INTO unfurl.run_steps
+    (id,job_id,step_key,input_digest,approval_digest,schema_digest,capability_digest,validation_policy_digest,
+      status,lease_owner,lease_expires_at,fencing_token,result_reference)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,1,$12)`;
+  phase = "authoring_fixture_candidate_step";
+  await client.query(stepSql, [ids.candidateStep, ids.jobGeneration, "candidate:proof", digest, digest,
+    "3".repeat(64), "4".repeat(64), "5".repeat(64), "succeeded", null, null, {
+      kind: "course.task.candidate", moduleId: ids.module, knowledgeStepId: randomUUID(),
+      candidate: { approvalDigest: digest, candidateDigest, capabilityCatalogDigest: catalogDigest,
+        task: { mechanicId: "artifact_construction", mechanicVersion: 3,
+          config: { publicCases: [executionCases[0]] } },
+        privateTask: { evaluatorData: { hiddenCases: [{ ...executionCases[1], expected: { value: 2 } }] } } },
+      authored: {}, authoringOperationId: randomUUID(),
+    }]);
+  phase = "authoring_fixture_case_step";
+  await client.query(stepSql, [ids.casePlanStep, ids.jobGeneration, "cases:proof", digest, digest,
+    "6".repeat(64), "7".repeat(64), "8".repeat(64), "succeeded", null, null, {
+      kind: "course.task.cases", candidateStepId: ids.candidateStep, candidateDigest, operationId: randomUUID(),
+      cases: [{ caseId: ids.validationCase, key: "valid_case", category: "valid", response: { source } }], alternativeSpaceProof: null,
+    }]);
+  phase = "authoring_fixture_execution_step";
+  await client.query(stepSql, [ids.authoringStep, ids.jobGeneration, "authoring-python:proof", digest, digest,
+    "9".repeat(64), "a".repeat(64), "c".repeat(64), "running", "authoring-proof", new Date(Date.now()+300000), null]);
+  const authoringCases = [{ id: "example", role: "public", inputDigest: "d".repeat(64), expectedDigest: null },
+    { id: "held_out", role: "hidden", inputDigest: "e".repeat(64), expectedDigest: "f".repeat(64) }];
+  phase = "authoring_fixture_binding";
+  const authoringBindingSql = `INSERT INTO unfurl.python_authoring_validations
+    (id,job_id,run_step_id,candidate_step_id,case_plan_step_id,validation_case_id,owner_id,generation_run_id,
+      course_id,course_version_id,approval_id,approval_digest,candidate_digest,capability_catalog_digest,source,
+      source_digest,cases_digest,case_key,case_category,case_bindings,execution_cases,candidate_step_schema_digest,
+      candidate_step_capability_digest,candidate_step_validation_policy_digest,case_plan_schema_digest,
+      case_plan_capability_digest,case_plan_validation_policy_digest,execution_schema_digest,
+      execution_capability_digest,execution_validation_policy_digest,job_lease_owner,job_fencing_token,
+      job_retry_epoch,step_lease_owner,step_fencing_token)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'valid_case','valid',$18,
+      $19,$20,$21,$22,$23,$24,$25,$26,$27,$28,'authoring-proof',1,0,'authoring-proof',1)`;
+  const authoringBindingValues = (id, boundSourceDigest = sourceDigest, boundCases = executionCases) => [id, ids.jobGeneration, ids.authoringStep,
+    ids.candidateStep, ids.casePlanStep, ids.validationCase, owner, ids.generationRun, ids.course, ids.version,
+    ids.approval, digest, candidateDigest, catalogDigest, source, boundSourceDigest, casesDigest, JSON.stringify(authoringCases), JSON.stringify(boundCases),
+    "3".repeat(64), "4".repeat(64), "5".repeat(64), "6".repeat(64), "7".repeat(64), "8".repeat(64),
+    "9".repeat(64), "a".repeat(64), "c".repeat(64)];
+  await rejected("python_authoring_source_digest_is_exact", authoringBindingSql,
+    authoringBindingValues(randomUUID(), "0".repeat(64)), ["23514"]);
+  await rejected("python_authoring_cases_are_exact", authoringBindingSql,
+    authoringBindingValues(randomUUID(), sourceDigest, [{ id: "forged", input: null }]), ["23514"]);
+  await client.query(authoringBindingSql, authoringBindingValues(ids.authoringValidation));
+  await rejected("python_authoring_binding_immutable", "UPDATE unfurl.python_authoring_validations SET source_digest=$2 WHERE id=$1",
+    [ids.authoringValidation, "f".repeat(64)], ["23514"]);
+  await client.query("UPDATE unfurl.execution_jobs SET fencing_token=2 WHERE id=$1", [ids.jobGeneration]);
+  await client.query("UPDATE unfurl.run_steps SET fencing_token=2 WHERE id=$1", [ids.authoringStep]);
+  await client.query(`INSERT INTO unfurl.code_execution_runs
+    (id,job_id,authoring_validation_id,course_version_id,owner_id,generation_run_id,course_id,approval_id,
+      approval_digest,candidate_digest,cases_digest,execution_cases,purpose,logical_execution_id,execution_attempt,
+      idempotency_key,request_digest,source_digest,runtime_digest,image_digest,runner_digest,runtime_profile,
+      runtime_image,job_lease_owner,job_fencing_token,job_retry_epoch,step_id,step_lease_owner,step_fencing_token,
+      quota_day,deadline_at,status)
+    VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,'authoring_validation',$1,1,$13,$14,$15,$16,$17,$18,
+      'python_stdlib_v1',$19,'authoring-proof',2,0,$20,'authoring-proof',2,
+      (now() at time zone 'UTC')::date,now()+interval '3 minutes','creating')`,
+  [ids.authoringExecution, ids.jobGeneration, ids.authoringValidation, ids.version, owner, ids.generationRun,
+    ids.course, ids.approval, digest, candidateDigest, casesDigest, JSON.stringify(executionCases), randomUUID(), digest,
+    sourceDigest, "d".repeat(64), "e".repeat(64), "f".repeat(64), pythonImage, ids.authoringStep]);
+  check("python_authoring_recovery_uses_current_fences",
+    (await client.query("SELECT learner_id IS NULL AS scoped FROM unfurl.code_execution_runs WHERE id=$1",
+      [ids.authoringExecution])).rows[0]?.scoped === true);
+  await client.query(`UPDATE unfurl.code_execution_runs SET status='unavailable',disposition='not_created',
+    safe_error='{"code":"proof_complete"}',audit='{"executionResult":{"status":"proof"}}',
+    unavailable_at=now(),updated_at=now() WHERE id=$1`, [ids.authoringExecution]);
+  check("python_authoring_consumes_global_not_learner_quota",
+    (await client.query(`SELECT g.reserved_count=1 AND NOT EXISTS (
+      SELECT 1 FROM unfurl.python_execution_learner_daily_quotas l WHERE l.quota_day=g.quota_day AND l.learner_id=$1
+    ) AS ok FROM unfurl.python_execution_global_daily_quotas g WHERE g.quota_day=(now() at time zone 'UTC')::date`,
+    [owner])).rows[0]?.ok === true);
+  phase = "course_graph";
   await client.query("UPDATE unfurl.course_versions SET state='ready',lesson_ids=$2,validation_receipt_id=$3,ready_at=now() WHERE id=$1", [ids.version, [ids.lesson], ids.validation]);
   await client.query("UPDATE unfurl.generation_runs SET status='succeeded',output_version_id=$2 WHERE id=$1", [ids.generationRun, ids.version]);
   await client.query("UPDATE unfurl.courses SET current_ready_version_id=$2,published_version_id=$2,visibility='public' WHERE id=$1", [ids.course, ids.version]);
@@ -213,6 +305,114 @@ try {
   await client.query("INSERT INTO unfurl.execution_jobs(id,activity_action_id) VALUES($1,$2)", [ids.jobAction, ids.action]);
   await rejected("execution_job_exactly_one_target", "INSERT INTO unfurl.execution_jobs(id,evaluation_id,target_evaluation_revision,activity_action_id) VALUES($1,$2,2,$3)", [randomUUID(), ids.evaluation, ids.action], ["23514"]);
 
+  phase = "python_execution_durability";
+  await client.query(`INSERT INTO unfurl.execution_capability_receipts
+    (id,capability,world,configuration_digest,test_version,passed,evidence_digest,evidence,expires_at,instance_id,
+      sandbox_team_id,sandbox_project_id,sandbox_project_owner_id,sandbox_runtime_profile,sandbox_image,
+      sandbox_image_digest,sandbox_runner_digest,sandbox_plan,sandbox_team_status,sandbox_team_blocked)
+    VALUES($1,'python_sandbox','vercel',$2,'python-v1',true,$2,'{}',now()+interval '5 minutes','rollback-proof',
+      'team-proof','project-proof','team-proof','python_stdlib_v1',$3,$2,$2,'hobby','active',false)`, [ids.capability, digest, pythonImage]);
+  await rejected("python_capability_binds_environment", `INSERT INTO unfurl.execution_capability_receipts
+    (id,capability,world,configuration_digest,test_version,passed,evidence_digest,evidence,expires_at,instance_id)
+    VALUES($1,'python_sandbox','vercel',$2,'python-v1',true,$2,'{}',now()+interval '5 minutes','rollback-proof')`,
+  [randomUUID(), digest], ["23514"]);
+  await client.query(`UPDATE unfurl.execution_jobs SET status='running',attempt_count=1,lease_owner='python-proof',
+    lease_expires_at=now()+interval '5 minutes',fencing_token=1 WHERE id=ANY($1::uuid[])`, [[ids.jobEvaluation, ids.jobAction]]);
+  await client.query(`INSERT INTO unfurl.python_execution_admissions
+    (idempotency_key,execution_id,job_id,job_lease_owner,job_fencing_token,logical_execution_id,execution_attempt,request_digest,state)
+    VALUES($1,$2,$3,'python-proof',1,$2,1,$4,'assessing')`, [ids.admission, ids.admissionExecution, ids.jobAction, digest]);
+  await client.query(`UPDATE unfurl.python_execution_admissions SET state='unavailable',result='{"status":"quota"}',updated_at=now()
+    WHERE idempotency_key=$1`, [ids.admission]);
+  await rejected("python_admission_outcome_is_immutable", `UPDATE unfurl.python_execution_admissions
+    SET state='dispatch',result=null,updated_at=now() WHERE idempotency_key=$1`, [ids.admission], ["23514"]);
+
+  const actionExecutionSql = `INSERT INTO unfurl.code_execution_runs
+    (id,job_id,activity_action_id,learner_id,enrollment_id,course_version_id,task_id,task_version,
+      activity_session_id,input_revision,response_digest,execution_cases,purpose,logical_execution_id,execution_attempt,
+      retry_of_execution_id,idempotency_key,request_digest,source_digest,runtime_digest,image_digest,runner_digest,
+      runtime_profile,runtime_image,job_lease_owner,job_fencing_token,quota_day,deadline_at,status)
+    VALUES($1,$2,$3,$4,$5,$6,$7,1,$8,1,$9,$19,'public_run',$10,$11,$12,$13,$9,$14,$15,$16,$17,
+      'python_stdlib_v1',$18,'python-proof',1,
+      (now() at time zone 'UTC')::date,now()+interval '3 minutes','creating')`;
+  const actionExecutionValues = (id, logicalId, attempt, retryId, key = randomUUID()) => [
+    id, ids.jobAction, ids.action, owner, ids.enrollment, ids.version, ids.task, ids.activity, digest,
+    logicalId, attempt, retryId, key, "c".repeat(64), "d".repeat(64), "e".repeat(64), "f".repeat(64), pythonImage,
+    JSON.stringify([{ id: "example", input: { value: 1 } }]),
+  ];
+  await client.query(actionExecutionSql, actionExecutionValues(ids.execution1, ids.execution1, 1, null));
+  const firstExecution = (await client.query("SELECT resource_name,status FROM unfurl.code_execution_runs WHERE id=$1", [ids.execution1])).rows[0];
+  check("python_resource_name_is_deterministic", firstExecution?.resource_name === `unfurl-py-${ids.execution1.replaceAll("-", "")}` && firstExecution?.status === "creating");
+  await rejected("unsafe_retry_while_create_active", actionExecutionSql,
+    actionExecutionValues(ids.execution2, ids.execution1, 2, ids.execution1), ["23514"]);
+
+  const gradeExecutionSql = `INSERT INTO unfurl.code_execution_runs
+    (id,job_id,attempt_id,learner_id,enrollment_id,course_version_id,task_id,task_version,
+      activity_session_id,input_revision,response_digest,execution_cases,purpose,logical_execution_id,execution_attempt,
+      idempotency_key,request_digest,source_digest,runtime_digest,image_digest,runner_digest,runtime_profile,runtime_image,
+      job_lease_owner,job_fencing_token,quota_day,deadline_at,status)
+    VALUES($1,$2,$3,$4,$5,$6,$7,1,$8,1,$9,$17,'grade',$10,1,$11,$9,$12,$13,$14,$15,
+      'python_stdlib_v1',$16,'python-proof',1,
+      (now() at time zone 'UTC')::date,now()+interval '3 minutes','creating')`;
+  const gradeExecutionValues = () => [randomUUID(), ids.jobEvaluation, ids.attempt, owner, ids.enrollment,
+    ids.version, ids.task, ids.activity, digest, randomUUID(), randomUUID(), "c".repeat(64), "d".repeat(64), "e".repeat(64), "f".repeat(64), pythonImage,
+    JSON.stringify([{ id: "hidden", input: { value: 1 } }])];
+  await rejected("global_active_slot_is_exclusive", gradeExecutionSql, gradeExecutionValues(), ["23505"]);
+  await client.query(`UPDATE unfurl.code_execution_runs SET status='unavailable',disposition='not_created',
+    safe_error='{"code":"create_failed"}',audit='{"disposition":"not_created"}',unavailable_at=now(),updated_at=now() WHERE id=$1`, [ids.execution1]);
+  await client.query(actionExecutionSql, actionExecutionValues(ids.execution2, ids.execution1, 2, ids.execution1));
+  await client.query("UPDATE unfurl.code_execution_runs SET status='ambiguous',create_ambiguous_at=now(),updated_at=now() WHERE id=$1", [ids.execution2]);
+  await rejected("ambiguous_create_cannot_retry", actionExecutionSql,
+    actionExecutionValues(ids.execution3, ids.execution1, 3, ids.execution2), ["23514"]);
+  await client.query("UPDATE unfurl.code_execution_runs SET status='cleanup_pending',cleanup_pending_at=now(),updated_at=now() WHERE id=$1", [ids.execution2]);
+  await client.query(`UPDATE unfurl.code_execution_runs SET status='unavailable',disposition='deleted',disposed_at=now(),
+    safe_error='{"code":"create_ambiguous"}',audit='{"disposition":"deleted"}',unavailable_at=now(),updated_at=now() WHERE id=$1`, [ids.execution2]);
+  await client.query(actionExecutionSql, actionExecutionValues(ids.execution3, ids.execution1, 3, ids.execution2));
+
+  await client.query("SAVEPOINT stale_python_fence");
+  await client.query("UPDATE unfurl.execution_jobs SET fencing_token=2 WHERE id=$1", [ids.jobAction]);
+  let staleFenceCode;
+  try { await client.query("UPDATE unfurl.code_execution_runs SET updated_at=now() WHERE id=$1", [ids.execution3]); }
+  catch (error) { staleFenceCode = error.code; }
+  await client.query("ROLLBACK TO SAVEPOINT stale_python_fence");
+  check("stale_python_fence_is_rejected", staleFenceCode === "40001");
+
+  const oidcEvidence = { source: "vercel_oidc_signed_claim_v1", teamId: "team-proof", projectId: "prj_proof",
+    environment: "production", issuer: "https://oidc.vercel.com/proof", subject: "owner:team-proof:project:prj_proof",
+    issuedAt: new Date(Date.now()-1000).toISOString(), expiresAt: new Date(Date.now()+300000).toISOString(), plan: "hobby",
+    runtimeProfile: "python_stdlib_v1", image: pythonImage, imageDigest: "e".repeat(64), runnerDigest: "f".repeat(64),
+    runtimeDigest: "d".repeat(64) };
+  await client.query("UPDATE unfurl.code_execution_runs SET capability_evidence=$2,updated_at=now() WHERE id=$1",
+    [ids.execution3, oidcEvidence]);
+  await rejected("python_oidc_execution_evidence_is_immutable",
+    "UPDATE unfurl.code_execution_runs SET capability_evidence=capability_evidence||'{\"plan\":\"pro\"}'::jsonb,updated_at=now() WHERE id=$1",
+    [ids.execution3], ["23514"]);
+  await client.query(`UPDATE unfurl.code_execution_runs SET status='running',provider_sandbox_id='sb-proof',provider_session_id='session-proof',
+    sandbox_created_at=now(),updated_at=now() WHERE id=$1`, [ids.execution3]);
+  await client.query(`UPDATE unfurl.code_execution_runs SET status='collecting',provider_command_ids=ARRAY['cmd-proof'],
+    command_started_at=now(),updated_at=now() WHERE id=$1`, [ids.execution3]);
+  await rejected("provider_command_identity_is_append_only",
+    "UPDATE unfurl.code_execution_runs SET provider_command_ids=ARRAY['cmd-changed'],updated_at=now() WHERE id=$1",
+    [ids.execution3], ["23514"]);
+  await client.query("UPDATE unfurl.code_execution_runs SET status='cleanup_pending',cleanup_pending_at=now(),updated_at=now() WHERE id=$1", [ids.execution3]);
+  await client.query(`UPDATE unfurl.code_execution_runs SET status='completed',disposition='deleted',result=$2,result_digest=$3,
+    audit='{"disposition":"deleted"}',disposed_at=now(),completed_at=now(),updated_at=now() WHERE id=$1`,
+  [ids.execution3, { stdout: "ok", stderr: "", exitCode: 0 }, "a".repeat(64)]);
+  await rejected("completed_execution_cannot_retry", actionExecutionSql,
+    actionExecutionValues(randomUUID(), ids.execution1, 4, ids.execution3), ["23514"]);
+  await rejected("completed_result_is_immutable", "UPDATE unfurl.code_execution_runs SET result='{}',updated_at=now() WHERE id=$1", [ids.execution3], ["23514"]);
+  await rejected("python_quota_cannot_decrement", `UPDATE unfurl.python_execution_global_daily_quotas
+    SET reserved_count=reserved_count-1 WHERE quota_day=(now() at time zone 'UTC')::date`, [], ["23514"]);
+  const quota = (await client.query(`SELECT g.reserved_count AS global_count,l.reserved_count AS learner_count
+    FROM unfurl.python_execution_global_daily_quotas g JOIN unfurl.python_execution_learner_daily_quotas l USING(quota_day)
+    WHERE g.quota_day=(now() at time zone 'UTC')::date AND l.learner_id=$1`, [owner])).rows[0];
+  check("python_attempts_consume_monotonic_quota", quota?.global_count === 4 && quota?.learner_count === 3);
+  await client.query(`UPDATE unfurl.execution_jobs SET status='waiting',lease_owner=null,lease_expires_at=null WHERE id=$1`, [ids.jobEvaluation]);
+  const retryTarget = { kind: "evaluation", evaluationId: ids.evaluation, targetEvaluationRevision: 2 };
+  const retryEpoch = (await client.query(`SELECT unfurl.advance_execution_job_retry($1,$2,$3,0,$4) AS epoch`,
+    [randomUUID(), ids.jobEvaluation, owner, retryTarget])).rows[0]?.epoch;
+  check("explicit_retry_epoch_cas", retryEpoch === 1);
+  await rejected("claim_cannot_increment_retry_epoch", "UPDATE unfurl.execution_jobs SET retry_epoch=2 WHERE id=$1", [ids.jobEvaluation], ["23514"]);
+
   await client.query("INSERT INTO unfurl.enrollment_lesson_traversal(enrollment_id,course_version_id,lesson_id) VALUES($1,$2,$3)", [ids.enrollment, ids.version, ids.lesson]);
   for (const [name, table, column, value] of [
     ["activity_input_immutable", "activity_inputs", "response", { changed: true }],
@@ -230,7 +430,9 @@ try {
 
   const protectedTables = ["activity_inputs", "activity_actions", "evaluation_revisions", "xp_award_adjustments", "assessment_review_requests",
     "feedback_acknowledgements", "support_offers", "support_offer_tasks", "enrollment_lesson_traversal", "research_source_documents",
-    "research_passages", "research_searches", "source_claims", "curriculum_revision_evidence", "course_language_revision_intents"];
+    "research_passages", "research_searches", "source_claims", "curriculum_revision_evidence", "course_language_revision_intents",
+    "python_execution_global_daily_quotas", "python_execution_learner_daily_quotas", "code_execution_runs",
+    "python_execution_admissions", "execution_job_retry_receipts", "python_authoring_validations"];
   const protection = await client.query(`SELECT count(*)::int AS count FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace
     WHERE n.nspname='unfurl' AND c.relname=ANY($1::text[]) AND c.relrowsecurity AND c.relforcerowsecurity`, [protectedTables]);
   check("learning_tables_force_rls", protection.rows[0]?.count === protectedTables.length);
@@ -243,7 +445,7 @@ try {
 } catch (error) {
   await client?.query("ROLLBACK").catch(() => undefined);
   const code = error instanceof assert.AssertionError ? error.message : (error.code ?? error.message ?? "live_check_failed");
-  console.error(JSON.stringify({ ok: false, phase, code }));
+  console.error(JSON.stringify({ ok: false, phase, code, constraint: error.constraint ?? null, message: error.message ?? null }));
   process.exitCode = 1;
 } finally {
   await client?.end();

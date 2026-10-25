@@ -2,8 +2,9 @@ import "server-only";
 import { z } from "zod";
 import type { NextRequest } from "next/server";
 import { IdSchema } from "@/domain/common";
-import { ActivityActionRequestSchema, SaveActivityInputSchema } from "@/domain/activity";
-import { ActionRetryInputSchema, RouteRevisionInputSchema, StartActivityInputSchema, RevisitInputSchema } from "@/application/learning-port";
+import { ActivityActionRequestSchema, SaveActivityInputSchema, SubmitActivityAttemptSchema } from "@/domain/activity";
+import { ActionRetryInputSchema, RouteRevisionInputSchema, StartActivityInputSchema, RevisitInputSchema,
+  LearningContextQuerySchema, HintInputSchema, EvaluationRevisionInputSchema, SupportRequestSchema, SupportResponseInputSchema } from "@/application/learning-port";
 import { requireActor } from "@/server/auth/session";
 import { assertSameOrigin, failure, readInput, success } from "@/server/auth/http";
 import { invalidLearningFields } from "./actions";
@@ -25,6 +26,68 @@ async function mutationInput<T>(request: NextRequest, schema: z.ZodType<T>) {
 export async function loadSessionRoute(request: NextRequest, enrollmentId: string) {
   try { return success(await learningService.loadSession(await requireActor(), id(enrollmentId))); }
   catch (error) { return failure(error, request); }
+}
+export async function loadContextRoute(request: NextRequest, enrollmentId: string) {
+  try {
+    const actor = await requireActor();
+    const parameters = Object.fromEntries(request.nextUrl.searchParams);
+    const query = parse(LearningContextQuerySchema, { ...parameters,
+      ...(parameters.limit !== undefined ? { limit: Number(parameters.limit) } : {}) });
+    return success(await learningService.loadContext(actor, id(enrollmentId), query));
+  } catch (error) { return failure(error, request); }
+}
+export async function getEvaluationRoute(request: NextRequest, attemptId: string) {
+  try { return success(await learningService.getEvaluation(await requireActor(), id(attemptId))); }
+  catch (error) { return failure(error, request); }
+}
+export async function submitAttemptRoute(request: NextRequest, enrollmentId: string) {
+  try {
+    const { actor, command } = await mutationInput(request, SubmitActivityAttemptSchema);
+    const result = await learningService.submitAttempt(actor, id(enrollmentId), command);
+    return success(result.data, result.status);
+  } catch (error) { return failure(error, request); }
+}
+export async function requestHintRoute(request: NextRequest, enrollmentId: string) {
+  try {
+    const { actor, command } = await mutationInput(request, HintInputSchema);
+    const result = await learningService.requestHint(actor, id(enrollmentId), command);
+    return success(result.data, result.status);
+  } catch (error) { return failure(error, request); }
+}
+export async function revealAnswerRoute(request: NextRequest, enrollmentId: string) {
+  try {
+    const { actor, command } = await mutationInput(request, StartActivityInputSchema);
+    const result = await learningService.revealAnswer(actor, id(enrollmentId), command);
+    return success(result.data, result.status);
+  } catch (error) { return failure(error, request); }
+}
+export async function acknowledgeFeedbackRoute(request: NextRequest, attemptId: string) {
+  try {
+    const { actor, command } = await mutationInput(request, EvaluationRevisionInputSchema);
+    const result = await learningService.acknowledgeFeedback(actor, id(attemptId), command);
+    return success(result.data, result.status);
+  } catch (error) { return failure(error, request); }
+}
+export async function requestSupportRoute(request: NextRequest, enrollmentId: string) {
+  try {
+    const { actor, command } = await mutationInput(request, SupportRequestSchema);
+    const result = await learningService.requestSupport(actor, id(enrollmentId), command);
+    return success(result.data, result.status);
+  } catch (error) { return failure(error, request); }
+}
+export async function respondToSupportRoute(request: NextRequest, enrollmentId: string, offerId: string) {
+  try {
+    const { actor, command } = await mutationInput(request, SupportResponseInputSchema);
+    const result = await learningService.respondToSupport(actor, id(enrollmentId), id(offerId), command);
+    return success(result.data, result.status);
+  } catch (error) { return failure(error, request); }
+}
+export async function returnFromSupportRoute(request: NextRequest, enrollmentId: string, offerId: string) {
+  try {
+    const { actor, command } = await mutationInput(request, RouteRevisionInputSchema);
+    const result = await learningService.returnFromSupport(actor, id(enrollmentId), id(offerId), command);
+    return success(result.data, result.status);
+  } catch (error) { return failure(error, request); }
 }
 export async function getActivityRoute(request: NextRequest, activityId: string) {
   try { return success(await learningService.getActivity(await requireActor(), id(activityId))); }

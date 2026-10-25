@@ -1,8 +1,9 @@
 import "server-only";
 import { createServerClient, type CookieOptions } from "@supabase/ssr";
+import { createClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { NextResponse, type NextRequest } from "next/server";
-import { requireAuthConfiguration, type AuthConfiguration } from "./config";
+import { requireAuthConfiguration, requireSignupAdminKey, type AuthConfiguration } from "./config";
 
 export const PRIVATE_CACHE_HEADERS = {
   "Cache-Control": "private, no-store, max-age=0",
@@ -71,5 +72,12 @@ export async function createServerAuthClient() {
         }
       },
     },
+  });
+}
+
+export function createAdminAuthClient(config = requireAuthConfiguration()) {
+  return createClient(config.url, requireSignupAdminKey(), {
+    auth: { autoRefreshToken: false, persistSession: false },
+    global: { fetch: authFetch },
   });
 }

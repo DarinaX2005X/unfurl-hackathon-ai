@@ -15,7 +15,7 @@ describe("mounted account route contract", () => {
     expect(html).toContain('name="email"');
     expect(html).toMatch(/autocomplete="current-password"/i);
     expect(html).toContain(`href="${routes.signup(destination)}"`);
-    expect(html).toContain(`href="${routes.forgotPassword(destination)}"`);
+    expect(html).not.toContain("Forgot password?");
     expect(html).toContain("After signing in, you will return to your conversation.");
   });
 
@@ -26,6 +26,8 @@ describe("mounted account route contract", () => {
     expect(signup).toContain('name="confirmPassword"');
     expect(signup).toMatch(/autocomplete="new-password"/i);
     expect(recovery).not.toContain('name="password"');
+    expect(recovery).not.toContain('name="email"');
+    expect(recovery).toContain("Email recovery is not available.");
     expect(recovery).toContain(`href="${routes.login(destination)}"`);
     expect(reset).toContain('name="confirmPassword"');
     expect(reset).not.toContain('name="email"');
@@ -42,12 +44,12 @@ describe("mounted account route contract", () => {
   it("keeps the safe continuation when an email link expires", async () => {
     const html = renderToStaticMarkup(await LoginRoute({ searchParams: Promise.resolve({ returnTo: destination, error: "expired_link" }) }));
     expect(html).toContain("This link has expired or was already used.");
-    expect(html).toContain(`href="${routes.forgotPassword(destination)}"`);
+    expect(html).not.toContain("request a new password link");
   });
 
   it("distinguishes an unavailable account callback from an expired email link", async () => {
     const html = renderToStaticMarkup(await LoginRoute({ searchParams: Promise.resolve({ returnTo: destination, error: "service_unavailable" }) }));
-    expect(html).toContain("Try opening your email link again, or sign in below.");
+    expect(html).toContain("Try again, or sign in below.");
     expect(html).not.toContain("This link has expired");
     expect(html).toContain(`href="${routes.signup(destination)}"`);
   });

@@ -18,7 +18,7 @@ export const SafeValidationSummarySchema = z.object({
 export const GenerationEventSchema = z.discriminatedUnion("type", [
   z.object({ ...generationIdentity, type: z.literal("generation.accepted"), status: z.literal("queued") }).strict(),
   z.object({ ...generationIdentity, type: z.literal("generation.phase.changed"), phase: RunPhaseSchema }).strict(),
-  z.object({ ...generationIdentity, type: z.literal("generation.module.completed"), moduleId: IdSchema, completedTasks: z.number().int().positive() }).strict(),
+  z.object({ ...generationIdentity, type: z.literal("generation.module.completed"), moduleId: IdSchema, completedTasks: z.number().int().nonnegative() }).strict(),
   z.object({ ...generationIdentity, type: z.literal("generation.validation.summary"), summary: SafeValidationSummarySchema }).strict(),
   z.object({ ...generationIdentity, type: z.literal("generation.succeeded"), courseVersionId: IdSchema }).strict(),
   z.object({ ...generationIdentity, type: z.literal("generation.failed"), error: ApiErrorDetailSchema }).strict(),

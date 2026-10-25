@@ -43,6 +43,7 @@ async function fixture(client: Client) {
   data.tasks.forEach((entry, index) => {
     entry.task.mechanicId = index === 2 ? "outcome_prediction" : "state_tracing";
     entry.task.config = index === 2 ? prediction : tracing;
+    entry.task.availableHints = 1;
     entry.assessment.outcomes[0]!.dimensions[0]!.evaluationDimensionIds = index === 2 ? ["prediction"] : ["step.1", "step.2"];
   });
   const ids = { conversation: crypto.randomUUID(), branch: crypto.randomUUID(), message: crypto.randomUUID(), draft: crypto.randomUUID() };
@@ -66,11 +67,11 @@ async function fixture(client: Client) {
     [lesson.id, version.id, lesson.moduleId, lesson.title, lesson.outcomeIds, JSON.stringify(lesson.blocks), lesson.taskIds]);
   for (const { task, assessment } of data.tasks) {
     await tx.query(`INSERT INTO unfurl.tasks_public(id,task_version,course_version_id,mechanic_id,mechanic_version,outcome_ids,instruction,content_language,config,available_hints,response_schema_version)
-      VALUES($1,1,$2,$3,2,$4,$5,'en',$6::jsonb,0,2)`, [task.id, version.id, task.mechanicId, task.outcomeIds, task.instruction, JSON.stringify(task.config)]);
+      VALUES($1,1,$2,$3,2,$4,$5,'en',$6::jsonb,1,2)`, [task.id, version.id, task.mechanicId, task.outcomeIds, task.instruction, JSON.stringify(task.config)]);
     const validationId = crypto.randomUUID();
     await tx.query("INSERT INTO unfurl.task_validation_receipts(id,task_id,task_version,verdict,document) VALUES($1,$2,1,'passed','{}')", [validationId, task.id]);
     await tx.query(`INSERT INTO unfurl.tasks_private(task_id,task_version,evaluation_spec,source_claim_ids,validation_receipt_id,hints,worked_example,evaluator_data,assessment)
-      VALUES($1,1,$2::jsonb,'{}',$3,'[]',null,$4::jsonb,$5::jsonb)`,
+      VALUES($1,1,$2::jsonb,'{}',$3,'["Use the declared update rule."]','Synthetic worked example',$4::jsonb,$5::jsonb)`,
     [task.id, JSON.stringify({ kind: "deterministic", evaluatorId: task.mechanicId, evaluatorVersion: 2, secretConfig: null }), validationId,
       JSON.stringify({ tolerance: { absTol: 1e-8, relTol: 1e-9 } }), JSON.stringify(assessment)]);
   }

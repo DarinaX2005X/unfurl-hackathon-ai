@@ -3,6 +3,8 @@
   "compilerOptions": { "incremental": false, "types": ["node"] },
   "include": [
     "../../src/domain/progression.ts",
+    "../../src/application/progression-port.ts",
+    "../../src/application/http-progression.ts",
     "../../src/server/progression/**/*.ts",
     "../../src/app/api/v1/me/progress/route.ts",
     "./*.test.ts"

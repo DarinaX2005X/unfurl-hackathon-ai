@@ -12,7 +12,7 @@ export async function projectLearningSession(tx: DbTransaction, enrollment: Enro
   createInitialLearningRoute({ enrollmentId: enrollment.id, ...program });
   if (route.targetOutcomeIds.length !== program.version.outcomes.length ||
     program.version.outcomes.some(({ id }) => !route.targetOutcomeIds.includes(id))) repository.invariant();
-  const lesson = enrollment.currentLessonId === null ? null : program.lessons.find(({ id }) => id === enrollment.currentLessonId) ?? repository.invariant();
+  let lesson = enrollment.currentLessonId === null ? null : program.lessons.find(({ id }) => id === enrollment.currentLessonId) ?? repository.invariant();
   const task = enrollment.currentTaskId === null ? null : program.tasks.find(({ task }) => task.id === enrollment.currentTaskId)?.task ?? repository.invariant();
   if (task && (!lesson || !lesson.taskIds.includes(task.id))) repository.invariant();
   const state = task ? await repository.findActivity(tx, enrollment, task.id, task.taskVersion) : null;
@@ -31,6 +31,9 @@ export async function projectLearningSession(tx: DbTransaction, enrollment: Enro
     }
     if (support.explanationBlock && !program.lessons.some((item) => item.id === support.explanationBlock!.lessonId &&
       item.blocks.some((block) => block.id === support.explanationBlock!.blockId && block.kind === "explanation"))) repository.invariant();
+    if (support.status === "accepted" && enrollment.currentTaskId === null && lesson && lesson.id === support.explanationBlock?.lessonId) {
+      lesson = { ...lesson, blocks: lesson.blocks.filter(({ id }) => id === support.explanationBlock!.blockId), taskIds: [] };
+    }
   }
   return LearningSessionSchema.parse({ enrollment, route: { ...route, coveredOutcomeIds: coverage.coveredOutcomeIds, pendingOutcomeIds: coverage.pendingOutcomeIds },
     lesson, task, progress: { ...account, completedRequiredOutcomes: coverage.completedRequiredOutcomes, totalRequiredOutcomes: coverage.totalRequiredOutcomes },

@@ -2,15 +2,28 @@ import { describe, expect, it, vi } from "vitest";
 import { createHttpAccount } from "../../src/application/http-account";
 
 describe("account HTTP boundary", () => {
-  it("returns a real confirmation pending result without manufacturing a session", async () => {
+  it("accepts only an authenticated signup result with a durable account session", async () => {
+    const actorId = "550e8400-e29b-41d4-a716-446655440000";
+    const session = {
+      identity: { id: actorId, email: "learner@example.com", emailConfirmed: true },
+      profile: { id: actorId, displayName: null, defaultContentLanguage: null, revision: 1, createdAt: "2026-10-25T00:00:00Z", updatedAt: "2026-10-25T00:00:00Z" },
+    };
     const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({
-      data: { status: "confirmation_required", email: "learner@example.com", returnTo: "/library" },
+      data: { status: "authenticated", session, redirectTo: "/library" },
     }));
     const account = createHttpAccount(fetcher);
     const input = { email: "learner@example.com", password: "long password", returnTo: "/library" };
     const result = await account.signUp(input);
-    expect(result).toEqual({ ok: true, data: { status: "confirmation_required", email: input.email, returnTo: "/library" } });
+    expect(result).toEqual({ ok: true, data: { status: "authenticated", session, redirectTo: "/library" } });
     expect(fetcher.mock.calls[0]?.[1]).toMatchObject({ method: "POST", credentials: "same-origin", cache: "no-store", body: JSON.stringify(input) });
+  });
+
+  it("rejects the obsolete confirmation-only signup payload", async () => {
+    const fetcher = vi.fn<typeof fetch>().mockResolvedValue(Response.json({
+      data: { status: "confirmation_required", email: "learner@example.com", returnTo: "/library" },
+    }));
+    const result = await createHttpAccount(fetcher).signUp({ email: "learner@example.com", password: "long password", returnTo: "/library" });
+    expect(result.ok).toBe(false);
   });
 
   it("does not accept unknown provider payloads as authenticated", async () => {

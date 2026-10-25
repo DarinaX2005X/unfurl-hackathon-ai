@@ -7,6 +7,66 @@ import type { DbTransaction } from "../db";
 import { ServiceFault, unavailable } from "../auth/errors";
 
 interface EnqueueRunRow { id: string; owner_id: string; conversation_id: string; branch_id: string; status: string; last_seq: number; course_id?: string }
+export type LearningJobTarget = { kind: "evaluation"; evaluationId: string; targetEvaluationRevision: number }
+  | { kind: "activity_action"; activityActionId: string };
+
+/** The learning service retains the authorized attempt/action even when dispatch is unavailable. */
+export async function enqueueLearningJobTx(tx: DbTransaction, input: LearningJobTarget, options: { dispatch: boolean }): Promise<{ jobId: string }> {
+  if (input.kind === "evaluation") {
+    IdSchema.parse(input.evaluationId);
+    if (!Number.isSafeInteger(input.targetEvaluationRevision) || input.targetEvaluationRevision < 1) throw unavailable("evaluation.unavailable");
+    const evaluation = (await tx.query<{ id: string; revision: number; status: string }>("SELECT id,revision,status FROM unfurl.evaluations WHERE id=$1 FOR UPDATE", [input.evaluationId])).rows[0];
+    const review = evaluation && evaluation.revision + 1 === input.targetEvaluationRevision && ["evaluated", "uncertain"].includes(evaluation.status)
+      ? (await tx.query<{ id: string }>(`SELECT r.id FROM unfurl.assessment_review_requests r JOIN unfurl.evaluations e ON e.id=r.evaluation_id AND e.attempt_id=r.attempt_id
+        WHERE r.evaluation_id=$1 AND r.expected_evaluation_revision=$2 AND e.revision=$2 AND r.status IN ('queued','unavailable') FOR UPDATE OF r`,
+      [input.evaluationId, evaluation.revision])).rows[0] : null;
+    if (!evaluation || !(evaluation.revision === input.targetEvaluationRevision && evaluation.status === "unavailable") && !review) throw new ServiceFault(409, "revision_conflict", "evaluation.changed");
+    const prior = (await tx.query<{ id: string }>("SELECT id FROM unfurl.execution_jobs WHERE evaluation_id=$1 AND target_evaluation_revision=$2", [input.evaluationId, input.targetEvaluationRevision])).rows[0];
+    if (prior) return { jobId: prior.id };
+    const jobId = randomUUID();
+    await tx.query("INSERT INTO unfurl.execution_jobs (id,evaluation_id,target_evaluation_revision,status) VALUES ($1,$2,$3,$4)", [jobId, input.evaluationId, input.targetEvaluationRevision, options.dispatch ? "queued" : "waiting"]);
+    if (review) await tx.query("UPDATE unfurl.assessment_review_requests SET execution_job_id=$2,updated_at=now() WHERE id=$1", [review.id, jobId]);
+    if (options.dispatch) await tx.query("INSERT INTO unfurl.outbox (id,job_id,operation) VALUES ($1,$2,'start')", [randomUUID(), jobId]);
+    return { jobId };
+  }
+  IdSchema.parse(input.activityActionId);
+  const action = (await tx.query<{ id: string; status: string }>("SELECT id,status FROM unfurl.activity_actions WHERE id=$1 FOR UPDATE", [input.activityActionId])).rows[0];
+  if (!action || action.status === "completed") throw new ServiceFault(409, "revision_conflict", "activity.changed");
+  const prior = (await tx.query<{ id: string }>("SELECT id FROM unfurl.execution_jobs WHERE activity_action_id=$1", [input.activityActionId])).rows[0];
+  if (prior) return { jobId: prior.id };
+  const jobId = randomUUID();
+  await tx.query("INSERT INTO unfurl.execution_jobs (id,activity_action_id,status) VALUES ($1,$2,$3)", [jobId, input.activityActionId, options.dispatch ? "queued" : "waiting"]);
+  if (options.dispatch) await tx.query("INSERT INTO unfurl.outbox (id,job_id,operation) VALUES ($1,$2,'start')", [randomUUID(), jobId]);
+  return { jobId };
+}
+
+/** Initial capability activation retains epoch zero; only an explicit paid retry may advance it. */
+export async function resumeLearningJobTx(tx: DbTransaction, input: LearningJobTarget, options: {
+  actorId: string; expectedRetryEpoch: number; explicitPaidRetry: boolean; retryReceiptId?: string;
+}): Promise<{ jobId: string; retryEpoch: number }> {
+  IdSchema.parse(options.actorId);
+  const owned = input.kind === "evaluation"
+    ? (await tx.query(`SELECT e.id FROM unfurl.evaluations e JOIN unfurl.attempts a ON a.id=e.attempt_id WHERE e.id=$1 AND a.learner_id=$2`, [input.evaluationId,options.actorId])).rowCount === 1
+    : (await tx.query(`SELECT a.id FROM unfurl.activity_actions a JOIN unfurl.activity_sessions s ON s.id=a.activity_session_id
+      JOIN unfurl.enrollments e ON e.id=s.enrollment_id WHERE a.id=$1 AND e.learner_id=$2`, [input.activityActionId,options.actorId])).rowCount === 1;
+  if (!owned) throw new ServiceFault(404,"not_found","evaluation.notFound");
+  // Domain target locks precede the job lock, matching worker authority checks.
+  await enqueueLearningJobTx(tx, input, { dispatch: false });
+  const key = input.kind === "evaluation" ? "evaluation_id=$1 AND target_evaluation_revision=$2" : "activity_action_id=$1";
+  const values = input.kind === "evaluation" ? [input.evaluationId, input.targetEvaluationRevision] : [input.activityActionId];
+  const job = (await tx.query<{ id: string; status: string; retry_epoch: number }>(`SELECT id,status,retry_epoch FROM unfurl.execution_jobs WHERE ${key} FOR UPDATE`, values)).rows[0];
+  if (!job || !["waiting","failed"].includes(job.status) || job.retry_epoch !== options.expectedRetryEpoch) throw new ServiceFault(409,"revision_conflict","evaluation.changed");
+  const previousEffects = (await tx.query<{ exists: boolean }>(`SELECT EXISTS(SELECT 1 FROM unfurl.run_steps WHERE job_id=$1) AS exists`, [job.id])).rows[0]?.exists;
+  let epoch = job.retry_epoch;
+  if (options.explicitPaidRetry) {
+    const receiptId = IdSchema.parse(options.retryReceiptId);
+    epoch = (await tx.query<{ epoch: number }>("SELECT unfurl.advance_execution_job_retry($1,$2,$3,$4,$5::jsonb) AS epoch", [receiptId,job.id,options.actorId,job.retry_epoch,JSON.stringify(input)])).rows[0]!.epoch;
+  } else if (job.retry_epoch !== 0 || previousEffects) throw new ServiceFault(409,"revision_conflict","evaluation.retryRequired");
+  await tx.query("UPDATE unfurl.execution_jobs SET status='queued',safe_error=NULL,updated_at=now() WHERE id=$1", [job.id]);
+  await tx.query(`INSERT INTO unfurl.outbox(id,job_id,operation) VALUES($1,$2,'resume') ON CONFLICT(job_id,operation)
+    DO UPDATE SET dispatched_at=NULL,available_at=now(),lease_owner=NULL,lease_expires_at=NULL,fencing_token=outbox.fencing_token+1,safe_error=NULL,updated_at=now()`, [randomUUID(),job.id]);
+  return { jobId: job.id, retryEpoch: epoch };
+}
 
 /** Caller has already checked real runtime admission. This producer performs no external I/O. */
 export async function enqueueAcceptedRun(tx: DbTransaction, input: { kind: "agent_turn" | "generation"; runId: string }): Promise<{ jobId: string }> {

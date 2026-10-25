@@ -3,9 +3,9 @@ import { NextRequest } from "next/server";
 vi.mock("server-only", () => ({}));
 vi.mock("../../src/server/auth/session", () => ({ requireActor: vi.fn() }));
 vi.mock("../../src/server/auth/config", () => ({ requireAuthConfiguration: () => ({ origin: "http://127.0.0.1:3000" }) }));
-vi.mock("../../src/server/publication", () => ({ publicationService: { setVisibility: vi.fn() } }));
+vi.mock("../../src/server/publication", () => ({ publicationService: { getVisibility: vi.fn(), setVisibility: vi.fn() } }));
 vi.mock("../../src/server/progression", () => ({ readAccountProgress: vi.fn() }));
-import { PATCH as patchVisibility } from "../../src/app/api/v1/courses/[id]/visibility/route";
+import { GET as getVisibility, PATCH as patchVisibility } from "../../src/app/api/v1/courses/[id]/visibility/route";
 import { GET as getProgress } from "../../src/app/api/v1/me/progress/route";
 import { requireActor } from "../../src/server/auth/session";
 import { publicationService } from "../../src/server/publication";
@@ -42,6 +42,26 @@ describe("progression and publication API boundaries", () => {
     expect(response.status).toBe(200);
     expect(publicationService.setVisibility).toHaveBeenCalledWith(actor, courseId, body, key);
     expect(response.headers.get("Cache-Control")).toContain("no-store");
+  });
+
+  it("reads an owner-scoped visibility projection without a mutation key", async () => {
+    const state = {
+      courseId,
+      visibility: "private" as const,
+      currentReadyVersionId: versionId,
+      publishedVersionId: null,
+      revision: 2,
+      progress: { xpTotal: 499, level: 2, xpToNextLevel: 1,
+        publication: { eligible: false, requiredLevel: 3, reasons: ["Reach level 3"] } },
+    };
+    vi.mocked(publicationService.getVisibility).mockResolvedValueOnce(state);
+    const response = await getVisibility(
+      new NextRequest(`http://127.0.0.1:3000/api/v1/courses/${courseId}/visibility`),
+      { params: Promise.resolve({ id: courseId }) },
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ data: state });
+    expect(publicationService.getVisibility).toHaveBeenCalledWith(actor, courseId);
   });
 
   it("rejects cross-origin, missing-key and browser authority fields before publication", async () => {

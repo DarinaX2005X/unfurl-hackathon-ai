@@ -2,12 +2,13 @@ import "server-only";
 import { z } from "zod";
 import { IdSchema, JsonValueSchema, type JsonValue } from "../../domain/common";
 import {
-  ActivityResponseSchema, canonicalResponseJson, sameInputIdentity,
+  ActivityResponseSchema, ActivitySessionPublicSchema, canonicalResponseJson, sameInputIdentity,
   type ActionReceipt, type ActivitySessionPublic, type InputSnapshot,
 } from "../../domain/activity";
 import type { Evaluation } from "../../domain/learning";
 import type { MechanicId, TaskPublic } from "../../domain/mechanics";
 import { LocalIdSchema, NonemptyTextSchema } from "../../domain/mechanic-families/v2/shared";
+import type { PythonEvaluationPort } from "../execution/python/contracts";
 
 export type GradeDecision =
   | { status: "evaluated"; outcome: "correct" | "partial" | "incorrect";
@@ -36,9 +37,33 @@ export const GradeDecisionSchema: z.ZodType<GradeDecision> = z.discriminatedUnio
   }
 });
 
-/** Constructed by the authorized learning service from stored records, never browser history. */
+/**
+ * Bounded evaluator view only. Learner services must still parse the full public
+ * session and authorize enrollment; validation repositories bind a generation run,
+ * step, candidate, approval and case before constructing this view.
+ */
+export const ActivityContextSessionSchema = z.object(ActivitySessionPublicSchema.shape).omit({ enrollmentId: true }).strict().superRefine((session, context) => {
+  if (session.status === "budget_exhausted" && session.remainingActions !== 0) {
+    context.addIssue({ code: "custom", path: ["remainingActions"], message: "An exhausted session has no remaining actions" });
+  }
+  const eventIds = new Set<string>();
+  let previousSequence = 0;
+  session.events.forEach((event, index) => {
+    if (eventIds.has(event.id) || event.seq <= previousSequence || event.seq > session.revision) {
+      context.addIssue({ code: "custom", path: ["events", index], message: "Events must be unique and in committed revision order" });
+    }
+    if (event.receipt.input.activitySessionId !== session.id || event.receipt.input.inputRevision > session.inputRevision) {
+      context.addIssue({ code: "custom", path: ["events", index], message: "Receipt belongs to another session or a future input" });
+    }
+    previousSequence = event.seq;
+    eventIds.add(event.id);
+  });
+});
+export type ActivityContextSession = z.infer<typeof ActivityContextSessionSchema>;
+
+/** Constructed by an authorized learner or generation-validation service from stored records, never browser history. */
 export interface AuthoritativeActivity {
-  session: ActivitySessionPublic;
+  session: ActivityContextSession | ActivitySessionPublic;
   input: InputSnapshot;
   receipts: readonly ActionReceipt[];
   /** Only stored historical inputs referenced by these receipts; content digests are verified by the service. */
@@ -69,10 +94,12 @@ export function receiptInputFor(activity: AuthoritativeActivity | null, receiptI
 export interface EvaluationContext {
   model: RubricJudge | null;
   signal: AbortSignal;
+  /** A learning job binds this port to its trusted immutable input and execution claim. */
+  python?: PythonEvaluationPort | null;
 }
-export interface EvaluatorRegistration<C extends JsonValue, R extends JsonValue, P> {
+export interface EvaluatorRegistration<C extends JsonValue, R extends JsonValue, P, V extends 2 | 3 = 2> {
   id: MechanicId;
-  version: 2;
+  version: V;
   privateSchema: z.ZodType<P>;
   evaluate(input: {
     task: TaskPublic<C>; response: R; privateData: P; activity: AuthoritativeActivity | null;

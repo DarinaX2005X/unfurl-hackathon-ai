@@ -3,6 +3,7 @@ import { IdSchema } from "../../domain/common";
 import {
   CourseVisibilityInputSchema,
   CourseVisibilityReceiptSchema,
+  CourseVisibilityStateSchema,
   type CourseVisibilityInput,
 } from "../../domain/progression";
 import type { Actor } from "../auth/actor";
@@ -58,6 +59,34 @@ export function createPublicationService(dependencies: PublicationDependencies =
   const readAccountProgress = dependencies.readAccountProgress ?? readAccountProgressTx;
 
   return {
+    async getVisibility(actor: Actor, courseId: string) {
+      const id = IdSchema.safeParse(courseId);
+      if (!id.success) throw new ServiceFault(400, "invalid_input", "publication.invalidInput");
+      return transactions.run(async (tx) => {
+        const result = await tx.query<{
+          id: string;
+          visibility: "private" | "unlisted" | "public";
+          current_ready_version_id: string | null;
+          published_version_id: string | null;
+          revision: number;
+        }>(
+          `SELECT id, visibility, current_ready_version_id, published_version_id, revision
+           FROM unfurl.courses WHERE id = $1 AND owner_id = $2`,
+          [id.data, actor.id],
+        );
+        const course = result.rows[0];
+        if (!course) throw new ServiceFault(404, "not_found", "catalog.notFound");
+        const progress = await readAccountProgress(tx, actor.id);
+        return CourseVisibilityStateSchema.parse({
+          courseId: course.id,
+          visibility: course.visibility,
+          currentReadyVersionId: course.current_ready_version_id,
+          publishedVersionId: course.published_version_id,
+          revision: course.revision,
+          progress,
+        });
+      });
+    },
     async setVisibility(actor: Actor, courseId: string, value: CourseVisibilityInput, key: string) {
       const id = IdSchema.safeParse(courseId);
       const body = CourseVisibilityInputSchema.safeParse(value);

@@ -27,7 +27,7 @@ export type QuestionEvidence = z.infer<typeof QuestionEvidenceSchema>;
 
 /** Stored only in immutable curriculum_revision_evidence; never accepted from PATCH/approve. */
 export const CurriculumResearchEvidenceSchema = z.object({
-  schemaVersion: z.literal(1), contentDigest: DigestSchema,
+  schemaVersion: z.literal(1), contentDigest: DigestSchema, briefDigest: DigestSchema,
   rationale: z.string().trim().min(1).max(12000),
   outcomeEvidence: z.array(z.object({
     outcomeId: IdSchema, outcomeDigest: DigestSchema, claimIds: z.array(IdSchema).min(1),

@@ -35,6 +35,12 @@ export function requireAuthConfiguration(): AuthConfiguration {
   return configuration;
 }
 
+export function requireSignupAdminKey(env: Environment = process.env): string {
+  const key = env.SUPABASE_SECRET_KEY;
+  if (!key) throw unavailable();
+  return key;
+}
+
 export function isDatabaseConfigured(): boolean {
   return Boolean(process.env.DATABASE_URL);
 }

@@ -60,7 +60,7 @@ describe("canonical private envelope", () => {
   it("projects only public top-level fields and rejects nested private payloads", () => {
     const publicTask = task(induction);
     expect(serializePublicTask({ ...publicTask, ...privateTask() }, JsonObjectSchema)).toEqual(publicTask);
-    for (const key of ["evaluatorData", "assessment", "workedExample", "rubric", "basisRubric", "explanationRubric", "acceptedGraphs", "acceptedEvidence", "hiddenFacts", "permittedOutcomes", "oracle"]) {
+    for (const key of ["evaluatorData", "assessment", "workedExample", "rubric", "basisRubric", "explanationRubric", "acceptedGraphs", "acceptedEvidence", "hiddenFacts", "permittedOutcomes", "oracle", "hiddenCases", "acceptedFaultRegions", "repairLocationDimensionId", "testSetId"]) {
       expect(() => serializePublicTask({ ...publicTask, config: { publicMaterial: [{ nested: { [key]: "private" } }] } }, JsonObjectSchema)).toThrow(/private field/);
     }
   });

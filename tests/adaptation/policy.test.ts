@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
-import { findSupportGapBasis, supportBasisDigest } from "@/server/adaptation/policy";
+import { findSupportGapBasis, hasFreshSupportBasis, supportBasisDigest } from "@/server/adaptation/policy";
 import type { ConfirmableEvidence } from "@/server/learning/evidence";
 
 const enrollmentId = crypto.randomUUID(), courseVersionId = crypto.randomUUID(), outcomeId = crypto.randomUUID();
@@ -43,5 +43,13 @@ describe("bounded conservative adaptation", () => {
       tasks: [{ lessonId: crypto.randomUUID(), taskId: crypto.randomUUID(), taskVersion: 1 }], explanationBlock: null };
     expect(supportBasisDigest(offer)).toBe(supportBasisDigest({ ...offer, target: { outcomeId, dimensionIds: ["a", "b", "a"] }, basisEvidenceIds: [enrollmentId, id, id] }));
     expect(supportBasisDigest(offer)).not.toBe(supportBasisDigest({ ...offer, reasonCode: "challenge" }));
+  });
+  it("requires a fresh independent case after an earlier automatic proposal", () => {
+    const a = observation(0), b = observation(3), c = observation(5);
+    expect(hasFreshSupportBasis([a, b], [])).toBe(true);
+    const repeated = [{ ...a, id: crypto.randomUUID() }, { ...b, id: crypto.randomUUID() }];
+    expect(hasFreshSupportBasis(repeated, [a, b])).toBe(false);
+    expect(hasFreshSupportBasis([a, { ...c, evidenceGroupId: b.evidenceGroupId }], [a, b])).toBe(false);
+    expect(hasFreshSupportBasis([a, c], [a, b])).toBe(true);
   });
 });
