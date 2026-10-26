@@ -16,6 +16,7 @@ import { attachSearchMemory, CompactSearchSchema, SearchMemorySchema } from "./s
 import { compactSourceMemory, ReadMemoryReceiptSchema, SourceMemorySchema } from "./source-memory";
 import { researchHistoryOrder, visibleResearchStepsCte } from "./research-visibility";
 import { ToolObservationSchema, type AgentToolAuthority } from "../agent-tools/contracts";
+import { ArtifactMemorySchema, compactArtifactMemory } from "./artifact-memory";
 
 export function jsonValue(value: unknown): JsonValue { return JsonValueSchema.parse(JSON.parse(JSON.stringify(value))); }
 export function jsonSchema<T>(schema: z.ZodType<T>): z.ZodType<JsonValue> { return schema.transform(jsonValue); }
@@ -29,6 +30,7 @@ export const ContextSnapshotSchema = z.object({
   recentTools: z.array(z.object({ tool: z.string(), ok: z.boolean(), summary: z.string(), data: JsonValueSchema }).strict()),
   searchMemory: SearchMemorySchema.optional(),
   sourceMemory: SourceMemorySchema.optional(),
+  artifactMemory: ArtifactMemorySchema.optional(),
   agentProtocol: z.literal("conversational-v3").optional(),
   readerCapabilities: ReaderCapabilitiesSchema.optional(),
   modelPolicy:ModelPolicySchema.optional(),
@@ -178,8 +180,10 @@ export async function captureContext(tx: DbTransaction, target: ExecutionTarget,
   }).reverse();
   const authority = await loadToolAuthority(tx, target, jobId);
   const artifacts = [];
+  const artifactRecords = [];
   for (const id of authority.artifactIds) {
     const { course, draft } = await requireCourseDraft(tx, agent.ownerId, id);
+    artifactRecords.push({ draft, courseRevision: course.revision });
     artifacts.push({ courseId: id, draftId: draft.id, courseRevision: course.revision, draftRevision: draft.revision,
       title: draft.title, goal: draft.goal, language: draft.contentLanguage, readyVersionId: course.currentReadyVersionId });
   }
@@ -210,6 +214,7 @@ export async function captureContext(tx: DbTransaction, target: ExecutionTarget,
   const searches = searchRows.map((row) => CompactSearchSchema.parse(row.search));
   const intent = (await tx.query<{ course_id: string; expected_course_revision: number; draft_id: string; expected_draft_revision: number; target_language: string }>(`SELECT * FROM unfurl.course_language_revision_intents WHERE run_id=$1 AND owner_id=$2`, [agent.runId, agent.ownerId])).rows[0];
   const snapshot = ContextSnapshotSchema.parse(attachSearchMemory({ kind: "context", index, now, currentMessage, recentMessages, artifacts, sources, recentTools,
+    artifactMemory: await compactArtifactMemory(artifactRecords),
     modelPolicy:await readActiveModelPolicy(tx),planningPolicy: { version: "planner-headroom-v1", maxOutputTokens: 32768 }, sourceMemory, agentProtocol: "conversational-v3", readerCapabilities: currentReaderCapabilities(),
     lastAssistantMessageId: commentaryRows[0]?.id ?? null, currentTurnCommentary,
     languageIntent: intent ? { courseId: intent.course_id, expectedCourseRevision: intent.expected_course_revision, draftId: intent.draft_id,
