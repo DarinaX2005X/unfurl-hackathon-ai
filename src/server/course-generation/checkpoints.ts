@@ -86,5 +86,6 @@ export const SourceClaimsProposalSchema = z.object({
 export const SourceClaimsCheckpointSchema = z.object({
   kind: z.literal("course.source.claims"), moduleId: IdSchema, sourceReadStepIds: z.array(IdSchema).min(1),
   operationId: IdSchema, proposal: SourceClaimsProposalSchema,
+  passageProjection: z.literal("exact-quote-v1").optional(),
   claims: z.array(SourceClaimSchema).min(1), passages: z.array(PassageSchema).min(1),
 }).strict();

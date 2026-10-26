@@ -125,7 +125,7 @@ export class ChatSession {
   private input() { return { text: this.state.composerText, pendingMessages: this.state.pendingMessages }; }
   private isSaved() { return this.detail !== null && sameInput(this.input(), this.detail.composerDraft); }
   private markInput() {
-    const status = this.state.composerConflict ? "conflict" : this.isSaved() ? "saved" : this.detail || this.state.composerText.trim() ? "saving" : "idle";
+    const status = this.state.composerConflict ? "conflict" : this.isSaved() ? "saved" : this.detail || this.sending ? "saving" : "idle";
     this.publish({ saveStatus: status });
     if (status === "saved" && !this.sendCommand && !this.saveCommand) this.options.recovery?.clear(this.options.actorId, this.detail!.conversation.id);
     else this.recovery();
@@ -180,7 +180,7 @@ export class ChatSession {
       this.publish({ composerText: buffer.text, pendingMessages: buffer.pendingMessages });
       if (buffer.sendCommand) this.deliveryErrors.set(buffer.sendCommand.messageId, transientError(buffer.sendCommand.requestId, "chat.deliveryUnknown"));
     }
-    if (this.requestedId === null) { if (buffer) { this.markInput(); await this.flush(); } return; }
+    if (this.requestedId === null) { if (buffer) this.markInput(); return; }
     this.publish({ loadStatus: "loading", storageError: null });
     try {
       const result = await this.request((signal) => this.conversations.get(this.requestedId!, signal));
@@ -207,12 +207,14 @@ export class ChatSession {
     this.publish({ composerText: text, storageError: null });
     this.markInput();
     if (this.autosave) clearTimeout(this.autosave);
-    this.autosave = setTimeout(() => { this.autosave = null; if (!this.sending) void this.flush(); }, this.options.autosaveDelay ?? 400);
+    this.autosave = this.detail ? setTimeout(() => { this.autosave = null; if (!this.sending) void this.flush(); }, this.options.autosaveDelay ?? 400) : null;
   }
 
-  flush(): Promise<boolean> {
+  flush(createForSend = false): Promise<boolean> {
     if (this.autosave) { clearTimeout(this.autosave); this.autosave = null; }
     if (!this.current() || this.deleting || this.delivering || this.state.composerConflict || this.state.loadStatus !== "ready") return Promise.resolve(false);
+    // Draft recovery, navigation, and autosave must never create a chat. Only Send may do so.
+    if (!this.detail && !createForSend) { this.recovery(); return Promise.resolve(true); }
     if (this.writing) return this.writing;
     this.writing = this.writeLatest().finally(() => { this.writing = null; });
     return this.writing;
@@ -275,18 +277,20 @@ export class ChatSession {
   async send(): Promise<void> {
     if (!this.current() || this.sending || this.deleting || this.state.stream?.pending || this.state.composerConflict || !this.state.composerText.trim()) return;
     this.sending = true;
+    const submittedText = this.state.composerText;
     try {
       // A new chat and the pending intent both need acknowledgement before delivery.
-      if (!await this.flush() || !this.detail) return;
+      if (!await this.flush(true) || !this.detail) return;
       const locale = this.options.userLocale?.();
-      const intent: PendingUserMessage = { messageId: this.createId(), requestId: this.createId(), text: this.state.composerText,
+      const intent: PendingUserMessage = { messageId: this.createId(), requestId: this.createId(), text: submittedText,
         ...(locale && ContentLanguageSchema.safeParse(locale).success ? { userLocale: locale } : {}) };
       const editing = this.state.editingMessageId;
       const pendingMessages = editing ? this.state.pendingMessages.map((item) => item.messageId === editing ? intent : item) : [...this.state.pendingMessages, intent];
-      if (!SaveComposerInputSchema.safeParse({ expectedRevision: this.detail.composerDraft.revision, text: "", pendingMessages }).success) {
+      const remainingText = this.state.composerText === submittedText ? "" : this.state.composerText;
+      if (!SaveComposerInputSchema.safeParse({ expectedRevision: this.detail.composerDraft.revision, text: remainingText, pendingMessages }).success) {
         this.publish({ storageError: { code: "invalid_input", messageKey: "chat.inputTooLarge", retryable: false, requestId: intent.requestId }, saveStatus: "error" }); return;
       }
-      this.publish({ composerText: "", pendingMessages, editingMessageId: null }); this.project(); this.markInput();
+      this.publish({ composerText: remainingText, pendingMessages, editingMessageId: null }); this.project(); this.markInput();
       if (!await this.flush()) return;
       await this.deliver(intent.messageId);
     } finally { this.sending = false; if (this.current() && !this.state.composerConflict && this.state.saveStatus !== "error") await this.flush(); }

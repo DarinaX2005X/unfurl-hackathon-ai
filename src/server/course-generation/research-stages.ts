@@ -15,6 +15,7 @@ import { ModuleKnowledgeCheckpointSchema, SourceClaimsCheckpointSchema, SourceCl
 import { GenerationEvidenceRepository, verifyStoredModelData } from "./repository";
 import { generationDigests, loadStage, mappedModelStage, modelStage, ModelStageSchema, type StageIndex } from "./stages";
 import { advanceApprovedModuleResearch } from "./approved-research";
+import { projectSourcePassages } from "./source-passage-projection";
 
 const ReadOutputSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("success"), document: SourceDocumentSchema }).strict(),
@@ -93,13 +94,14 @@ export async function advanceModuleResearch(input: {
         async commit(tx, proposal, operationId, stepId) {
           if (proposal.passages.length > 24 || proposal.passages.some((p) => p.sourceId !== sourceId || p.quote.length > 4000) || proposal.claims.some((c) => c.outcomeIds.some((id) => !section.outcomeIds.includes(id)))) throw new ProviderFailure("invalid_output");
           const passages = [], mapping = new Map<string, string>();
-          for (const proposed of proposal.passages) { const saved = await sources.savePassage(tx, proposed); passages.push(saved); mapping.set(proposed.id, saved.id); }
+          for (const proposed of projectSourcePassages(document, proposal.passages)) { const saved = await sources.savePassage(tx, proposed); passages.push(saved); mapping.set(proposed.id, saved.id); }
           const storedClaims = [];
           for (const claim of proposal.claims) {
             const passageIds = claim.passageIds.map((id) => { const mapped = mapping.get(id); if (!mapped) throw new ProviderFailure("invalid_output"); return mapped; });
             storedClaims.push(await claims.saveClaim(tx, { ...claim, passageIds, ownerId: binding.course.ownerId, runStepId: stepId, createdAt: new Date().toISOString() }, new Set([sourceId])));
           }
-          return { kind: "course.source.claims" as const, moduleId, sourceReadStepIds: [read.id], operationId, proposal, claims: storedClaims, passages };
+          return { kind: "course.source.claims" as const, moduleId, sourceReadStepIds: [read.id], operationId, proposal,
+            passageProjection: "exact-quote-v1" as const, claims: storedClaims, passages };
         } });
       return null;
     }

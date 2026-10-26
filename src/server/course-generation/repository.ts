@@ -23,6 +23,7 @@ import {
 } from "./checkpoints";
 import { ModuleKnowledgeSchema, type ModuleKnowledge } from "./contracts";
 import { approvedResearchFactsDigest, assertBatchItemProjection } from "./batch-provenance";
+import { projectSourcePassages } from "./source-passage-projection";
 
 const StepRowSchema = z.object({ id: IdSchema, input_digest: DigestSchema, result_reference: z.unknown(),
   schema_digest: DigestSchema, capability_digest: DigestSchema, validation_policy_digest: DigestSchema, approval_digest: DigestSchema,
@@ -180,13 +181,14 @@ export class GenerationEvidenceRepository {
     readStepIds: readonly string[]): Promise<CurriculumEvidenceFacts> {
     if (new Set(readStepIds).size !== readStepIds.length) return invalid();
     const sourceMap = new Map(binding.facts.sources.map((source) => [source.id, source]));
+    const readSourceIds = new Map<string, string>();
     const allowed = new Set(binding.facts.authorizedSourceIds);
     for (const stepId of readStepIds) {
       const read = await loadGenerationStep(tx, binding, stepId, SourceReadCheckpointSchema);
       if (read.result.moduleId !== knowledge.moduleId || read.result.approvalDigest !== binding.approval.contentDigest) return invalid();
       const source = await this.sources.getSource(tx, read.result.sourceId);
       if (!source || source.contentDigest !== read.result.contentDigest) return invalid();
-      allowed.add(source.id); sourceMap.set(source.id, source);
+      allowed.add(source.id); sourceMap.set(source.id, source); readSourceIds.set(stepId, source.id);
     }
     const approvedClaims = new Set(binding.facts.claims.map((claim) => claim.id));
     const claims = [];
@@ -201,8 +203,14 @@ export class GenerationEvidenceRepository {
         const savedClaim = extraction.result.claims.find((item) => item.id === claim.id);
         const proposed = extraction.result.proposal.claims.find((item) => item.id === claim.id);
         if (!savedClaim || !proposed || taskDigest(savedClaim) !== taskDigest(claim)) return invalid();
+        let proposedPassages = extraction.result.proposal.passages;
+        if (extraction.result.passageProjection === "exact-quote-v1") {
+          const source = sourceMap.get(readSourceIds.get(extraction.result.sourceReadStepIds[0]!) ?? "");
+          if (extraction.result.sourceReadStepIds.length !== 1 || !source) return invalid();
+          proposedPassages = projectSourcePassages(source, proposedPassages);
+        }
         const remappedIds = proposed.passageIds.map((id) => {
-          const original = extraction.result.proposal.passages.find((passage) => passage.id === id);
+          const original = proposedPassages.find((passage) => passage.id === id);
           if (!original) return invalid();
           const { id: _id, ...coordinates } = original; void _id;
           const stored = extraction.result.passages.find((passage) => {

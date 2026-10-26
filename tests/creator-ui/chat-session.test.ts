@@ -15,7 +15,7 @@ import { curriculum, ids, timestamp } from "../domain/fixtures";
 const branchId = "20000000-0000-4000-8000-000000000002";
 const runId = "20000000-0000-4000-8000-000000000003";
 const allSessions: ChatSession[] = [];
-afterEach(() => { for (const session of allSessions.splice(0)) session.dispose(); });
+afterEach(() => { for (const session of allSessions.splice(0)) session.dispose(); vi.useRealTimers(); });
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason: unknown) => void;
@@ -77,38 +77,70 @@ function action(run: string, seq: number, invocation: string, at = timestamp): A
 }
 
 describe("account-owned chat input", () => {
-  it("creates no record for an empty visit and only calls a server save acknowledged", async () => {
+  it("restores an unsent new draft locally without assigning a chat title or identity", async () => {
     const { port, records } = cloud();
-    const session = sessionFor(port);
+    const saved = new Map<string, string>(); const recovery = createChatRecovery(() => ({ getItem: (key) => saved.get(key) ?? null, setItem: (key, value) => { saved.set(key, value); }, removeItem: (key) => { saved.delete(key); } }));
+    const original = sessionFor(port, localApplication, null, recovery);
+    original.setComposer("An unfinished question"); await original.flush(); original.dispose();
+    const restored = sessionFor(port, localApplication, null, recovery); await restored.open(); await restored.flush();
+    expect(restored.getSnapshot()).toMatchObject({ composerText: "An unfinished question", conversation: null, saveStatus: "idle" });
+    expect(port.create).not.toHaveBeenCalled(); expect(port.saveComposer).not.toHaveBeenCalled(); expect(records.size).toBe(0);
+  });
+
+  it("continues debounced autosave for an existing chat without renaming or recreating it", async () => {
+    vi.useFakeTimers();
+    const { port, records } = cloud(detail()); const session = sessionFor(port, localApplication, ids.conversation);
+    await session.open(); session.setComposer("A draft reply"); await vi.advanceTimersByTimeAsync(60_001);
+    expect(records.get(ids.conversation)?.composerDraft.text).toBe("A draft reply");
+    expect(records.get(ids.conversation)?.conversation.title).toBe("A learning question");
+    expect(port.saveComposer).toHaveBeenCalledOnce(); expect(port.create).not.toHaveBeenCalled(); expect(port.rename).not.toHaveBeenCalled();
+    expect(session.getSnapshot().saveStatus).toBe("saved");
+  });
+
+  it("keeps a new chat local through typing, debounce and navigation flush until Send", async () => {
+    vi.useFakeTimers();
+    const { port, records } = cloud();
+    const services = { ...localApplication, sendMessage: vi.fn(localApplication.sendMessage) };
+    const session = sessionFor(port, services);
     await session.open(); await session.flush();
     session.setComposer("   "); await session.flush();
+    session.setComposer("First question");
+    await vi.advanceTimersByTimeAsync(60_001); await session.flush();
     expect(port.create).not.toHaveBeenCalled();
+    expect(port.saveComposer).not.toHaveBeenCalled();
+    expect(records.size).toBe(0);
+    expect(session.getSnapshot()).toMatchObject({ conversation: null, composerText: "First question", saveStatus: "idle" });
     const create = port.create;
     const gate = deferred<void>();
     port.create = vi.fn<ConversationPort["create"]>(async (...args) => { await gate.promise; return create(...args); });
-    session.setComposer("First question");
-    const writing = session.flush();
+    const sending = session.send();
     session.setComposer("First question with a later edit");
     expect(session.getSnapshot().saveStatus).toBe("saving");
-    gate.resolve(); expect(await writing).toBe(true);
+    gate.resolve(); await sending;
     expect(records.get(ids.conversation)?.composerDraft.text).toBe("First question with a later edit");
     expect(session.getSnapshot().saveStatus).toBe("saved");
     expect(port.create).toHaveBeenCalledOnce();
+    expect(services.sendMessage.mock.calls[0]![0].text).toBe("First question");
   });
 
-  it("replays a lost create acknowledgement with its original body after reload", async () => {
+  it("replays a lost create acknowledgement only on Send with its original body after reload", async () => {
     const { port, records } = cloud();
     const saved = new Map<string, string>(); const recovery = createChatRecovery(() => ({ getItem: (key) => saved.get(key) ?? null, setItem: (key, value) => { saved.set(key, value); }, removeItem: (key) => { saved.delete(key); } }));
     const create = port.create; let lose = true;
     port.create = vi.fn<ConversationPort["create"]>(async (...args) => { const result = await create(...args); if (lose) { lose = false; throw new Error("lost response"); } return result; });
     const original = sessionFor(port, localApplication, null, recovery);
-    original.setComposer("Original request"); expect(await original.flush()).toBe(false);
+    original.setComposer("Original request"); await original.send();
+    expect(original.getSnapshot().saveStatus).toBe("error");
     original.setComposer("Keep this later text too"); original.dispose();
     const restored = sessionFor(port, localApplication, null, recovery);
     await restored.open();
+    await restored.flush();
+    expect(port.create).toHaveBeenCalledTimes(1);
+    expect(restored.getSnapshot().composerText).toBe("Keep this later text too");
+    await restored.send();
     expect(port.create).toHaveBeenCalledTimes(2);
     expect(vi.mocked(port.create).mock.calls[1]?.slice(0, 2)).toEqual(vi.mocked(port.create).mock.calls[0]?.slice(0, 2));
-    expect(records.size).toBe(1); expect(restored.getSnapshot().composerText).toBe("Keep this later text too");
+    expect(records.size).toBe(1); expect(restored.getSnapshot().pendingMessages[0]?.text).toBe("Keep this later text too");
     expect(restored.getSnapshot().saveStatus).toBe("saved");
   });
 
@@ -143,7 +175,7 @@ describe("account-owned chat input", () => {
     const { port } = cloud(); const scope = new AccountScope(); const gate = deferred<ServiceResult<ConversationDetail>>();
     port.create = vi.fn(() => gate.promise);
     const session = sessionFor(port, localApplication, null, createChatRecovery(), scope);
-    session.setComposer("Account A private input"); const saving = session.flush();
+    session.setComposer("Account A private input"); const saving = session.send();
     scope.replaceActor(ids.sample); gate.resolve(ok(detail("Account A private input"))); await saving;
     expect(session.getSnapshot()).toMatchObject({ conversation: null, composerText: "", pendingMessages: [] });
     expect(vi.mocked(port.create).mock.calls[0]?.[2]?.aborted).toBe(true);

@@ -376,7 +376,7 @@ function AccountCreator({ actorId, conversationId = null, store = chatStore, con
       </form>
       <div className="creator-feedback">
         {composerText.length >= MESSAGE_LIMIT && <p className="creator-composer__limit" role="status">This message has reached the {MESSAGE_LIMIT.toLocaleString("en-US")} character limit.</p>}
-        {state.saveStatus === "error" && <Notice tone="error"><p>{chatStorageMessage(state.storageError)}</p><Button variant="quiet" size="compact" onClick={() => void session.flush()}>Retry saving</Button></Notice>}
+        {state.saveStatus === "error" && <Notice tone="error"><p>{chatStorageMessage(state.storageError)}</p><Button variant="quiet" size="compact" onClick={() => { if (conversation) void session.flush(); else void session.send(); }}>{conversation ? "Retry saving" : "Retry sending"}</Button></Notice>}
         {state.composerConflict && <Notice tone="warning"><p>Your saved input changed in another session. Both versions have been kept.</p><Button variant="quiet" size="compact" onClick={() => setConflictOpen(true)}>Review both versions</Button></Notice>}
         {editNotice && <Notice tone="info">Finish your current message first. If delivery wasn’t confirmed, retry that message before editing it.</Notice>}
         {runConnectionError && state.stream?.pending && <Notice tone="warning">Live response updates were interrupted. Reconnecting…</Notice>}
