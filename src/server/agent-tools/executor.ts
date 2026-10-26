@@ -10,6 +10,7 @@ import type { ModelPort } from "../ai/ports";
 import { ServiceFault } from "../auth/errors";
 import type { DbTransaction } from "../db";
 import { PostgresResearchRepository } from "../research/repository";
+import { sourceReadFailureObservation } from "../research/reader-capabilities";
 import { SearchResultSchema, SourceBlockSchema, SourceDocumentSchema, type ResearchPort } from "../research/ports";
 import { stableExecutionId } from "../runs/identity";
 import type { RunContext, StepEffectContext } from "../runs/ports";
@@ -212,7 +213,10 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
           limitations: output.result.limitations, snippetsAreReadSources: false,
         }); break;
         case "source": {
-          if (output.result.status !== "success") { result = observation(decision.tool, false, `This source could not be read (${output.result.status}).`, output.result); break; }
+          if (output.result.status !== "success") {
+            const failure=sourceReadFailureObservation(output.result,snapshot.readerCapabilities);
+            result = observation(decision.tool, false, failure.summary, failure.data); break;
+          }
           const source = await new PostgresResearchRepository().saveSource(tx, output.result.document);
           details = { source: { title: source.title, url: source.finalUrl }, sectionCount: source.blocks.length };
           result = observation(decision.tool, true, `Read ${source.title}.`, { sourceId: source.id, title: source.title, url: source.finalUrl,

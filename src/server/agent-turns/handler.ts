@@ -8,6 +8,7 @@ import { AgentDecisionReceiptSchema, agentDecisionSchemaForCapture, type AgentDe
 import { agentActionDetails, agentActionLabelKey } from "../agent-tools/action-details";
 import { stableExecutionId } from "../runs/identity";
 import { readAgentDecisionRetryPolicy } from "../runs/decision-policy";
+import { READER_CAPABILITY_INSTRUCTIONS } from "../research/reader-capabilities";
 import { executeAgentTool, prepareAgentDecision, type AgentToolDependencies } from "../agent-tools/executor";
 import * as repository from "./repository";
 import { ContextSnapshotSchema, type ContextSnapshot } from "./repository";
@@ -92,10 +93,13 @@ export function createAgentTurnHandler(dependencies: AgentToolDependencies, opti
           outputSchema: repository.jsonSchema(decisionSchema), resultSchema: repository.jsonSchema(AgentDecisionReceiptSchema),
           effect: async (step) => {
             const budget = step.budgetOperation("agent_decision");
+            const baseInstructions = policy.schemaVersion === 3 ? `${instructions}\n${searchMemoryInstructions}\n${conversationalInstructions}`
+              : policy.schemaVersion === 2 ? `${instructions}\n${searchMemoryInstructions}` : instructions;
+            // A new optional capture policy must never change an already paid request.
+            const readerVersion = snapshot.readerCapabilities?.version;
             const result = await dependencies.model.generateStructured({ operationId: budget.logicalOperationId, purpose: "turn_planning",
-              instructionVersion: policy.instructionVersion,
-              trustedInstructions: policy.schemaVersion === 3 ? `${instructions}\n${searchMemoryInstructions}\n${conversationalInstructions}`
-                : policy.schemaVersion === 2 ? `${instructions}\n${searchMemoryInstructions}` : instructions, untrustedInput: repository.jsonValue(snapshot),
+              instructionVersion: readerVersion ? `${policy.instructionVersion}:${readerVersion}` : policy.instructionVersion,
+              trustedInstructions: readerVersion ? `${baseInstructions}\n${READER_CAPABILITY_INSTRUCTIONS}` : baseInstructions, untrustedInput: repository.jsonValue(snapshot),
               model: MODEL_ID, maxOutputTokens: plannerOutputTokens(snapshot, step.stepFence.retryEpoch, retryPolicy),
               executionProfile: "longform_curriculum", deadlineAt: step.deadlineAt, budget,
               schema: decisionSchema, schemaId: "agent_decision", schemaVersion: policy.schemaVersion }, step.signal);

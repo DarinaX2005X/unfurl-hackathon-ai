@@ -9,6 +9,7 @@ import { canonicalJson } from "../ai/json";
 import type { ExecutionTarget } from "../runs/ports";
 import { requireCourseDraft } from "../curricula/repository";
 import { PostgresResearchRepository } from "../research/repository";
+import { currentReaderCapabilities, ReaderCapabilitiesSchema } from "../research/reader-capabilities";
 import { attachSearchMemory, CompactSearchSchema, SearchMemorySchema } from "./search-memory";
 import { compactSourceMemory, ReadMemoryReceiptSchema, SourceMemorySchema } from "./source-memory";
 import { researchHistoryOrder, visibleResearchStepsCte } from "./research-visibility";
@@ -27,6 +28,7 @@ export const ContextSnapshotSchema = z.object({
   searchMemory: SearchMemorySchema.optional(),
   sourceMemory: SourceMemorySchema.optional(),
   agentProtocol: z.literal("conversational-v3").optional(),
+  readerCapabilities: ReaderCapabilitiesSchema.optional(),
   lastAssistantMessageId: IdSchema.nullable().optional(),
   currentTurnCommentary: z.object({ messages: z.array(z.object({ messageId: IdSchema, text: z.string().min(1).max(20000) }).strict()).max(8),
     omittedCount: z.number().int().nonnegative() }).strict().optional(),
@@ -205,7 +207,7 @@ export async function captureContext(tx: DbTransaction, target: ExecutionTarget,
   const searches = searchRows.map((row) => CompactSearchSchema.parse(row.search));
   const intent = (await tx.query<{ course_id: string; expected_course_revision: number; draft_id: string; expected_draft_revision: number; target_language: string }>(`SELECT * FROM unfurl.course_language_revision_intents WHERE run_id=$1 AND owner_id=$2`, [agent.runId, agent.ownerId])).rows[0];
   const snapshot = ContextSnapshotSchema.parse(attachSearchMemory({ kind: "context", index, now, currentMessage, recentMessages, artifacts, sources, recentTools,
-    planningPolicy: { version: "planner-headroom-v1", maxOutputTokens: 32768 }, sourceMemory, agentProtocol: "conversational-v3",
+    planningPolicy: { version: "planner-headroom-v1", maxOutputTokens: 32768 }, sourceMemory, agentProtocol: "conversational-v3", readerCapabilities: currentReaderCapabilities(),
     lastAssistantMessageId: commentaryRows[0]?.id ?? null, currentTurnCommentary,
     languageIntent: intent ? { courseId: intent.course_id, expectedCourseRevision: intent.expected_course_revision, draftId: intent.draft_id,
       expectedDraftRevision: intent.expected_draft_revision, targetLanguage: intent.target_language } : null }, searches));
