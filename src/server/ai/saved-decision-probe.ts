@@ -15,8 +15,9 @@ import {OpenRouterAccounting} from "./accounting";
 import {jsonDigest} from "./json";
 import {providerWireSchema} from "./wire-schema";
 import type {JsonObject} from "../../domain/common";
+import type {HttpFailureDiagnostic} from "./error-receipt";
 
-export const SAVED_DECISION_PROBE_VERSION="saved-decision-real-schema-v1";
+export const SAVED_DECISION_PROBE_VERSION="saved-decision-native-schema-v2";
 export const SAVED_DECISION_PROBE_MAX_MICRO_USD=909312n;
 export const SavedDecisionProbeBindingSchema=z.object({jobId:z.uuid(),stepId:z.uuid()}).strict();
 export type SavedDecisionProbeBinding=z.infer<typeof SavedDecisionProbeBindingSchema>;
@@ -36,7 +37,10 @@ export async function prepareSavedDecisionProbe(binding:SavedDecisionProbeBindin
     const endedProbes=(await tx.query<{id:string;reserved_micro_usd:string}>(`SELECT id,reserved_micro_usd::text FROM unfurl.ai_provider_operations o
       WHERE purpose='capability_probe' AND run_step_id IS NULL AND state='unknown' AND dispatched_at<now()-interval '1835 seconds'
       AND NOT EXISTS(SELECT 1 FROM unfurl.ai_provider_responses r WHERE r.operation_id=o.id) ORDER BY created_at`)).rows;
-    return {row,logical,original,endedProbes};
+    const legacyProbeLogical=stableExecutionId(z.uuid().parse(process.env.AI_BUDGET_ID),`saved-decision-real-schema-v1:${binding.stepId}`);
+    const legacyProbe=(await tx.query<{id:string;request_digest:string}>("SELECT id,request_digest FROM unfurl.ai_provider_operations WHERE logical_operation_id=$1 AND attempt=1 AND run_step_id IS NULL",[legacyProbeLogical])).rows[0];
+    if(legacyProbe&&legacyProbe.id!==stableExecutionId(legacyProbeLogical,"attempt:1"))throw new Error("Original candidate probe identity changed");
+    return {row,logical,original,endedProbes,legacyProbe};
   });
   const snapshot=ContextSnapshotSchema.parse(saved.row.result_reference);
   const originalRequest=buildAgentDecisionRequest(snapshot,{logicalOperationId:saved.logical,reservationId:saved.original.id,attempt:1,runStepId:binding.stepId,probe:false},Date.now()+executionTiming().stepMs,saved.row.retry_epoch);
@@ -47,6 +51,12 @@ export async function prepareSavedDecisionProbe(binding:SavedDecisionProbeBindin
   const budget={logicalOperationId,reservationId:stableExecutionId(logicalOperationId,"attempt:1"),attempt:1,runStepId:null,probe:true};
   const request=buildAgentDecisionRequest(snapshot,budget,Date.now()+executionTiming().stepMs,saved.row.retry_epoch,32768,
     {modelPolicy:CANDIDATE_MODEL_POLICY,readerCapabilities:currentReaderCapabilities()});
+  if(saved.legacyProbe){
+    const legacyRequest=buildAgentDecisionRequest(snapshot,budget,request.deadlineAt,saved.row.retry_epoch,32768,
+      {modelPolicy:"gemini-flash-google-v1",readerCapabilities:currentReaderCapabilities()});
+    if(providerRequestDigest(legacyRequest,{schema:providerWireSchema(z.toJSONSchema(legacyRequest.schema) as JsonObject),schemaName:`agent_decision_${legacyRequest.schemaVersion}`})!==saved.legacyProbe.request_digest)
+      throw new Error("Original candidate V1 request reconstruction differs; no paid probe allowed");
+  }
   const rate=await new OpenRouterRateCards().current(AbortSignal.timeout(10000),CANDIDATE_MODEL_POLICY);
   const bound=worstCaseMicroUsd({contextTokens:rate.contextTokens,outputTokens:request.maxOutputTokens,inferencePasses:1,searches:0,priceCaps:candidatePolicy.priceCaps});
   if(bound>SAVED_DECISION_PROBE_MAX_MICRO_USD||rate.contextTokens>1048576||request.maxOutputTokens!==32768)throw new Error("Candidate exceeds the single approved probe allocation");
@@ -54,17 +64,18 @@ export async function prepareSavedDecisionProbe(binding:SavedDecisionProbeBindin
     sourceSchemaDigest:saved.row.schema_digest,originalOperationId:saved.original.id,originalRequestDigest:saved.original.request_digest,
     originalFinancialState:saved.original.state,originalRetainedMicroUsd:saved.original.reserved_micro_usd,originalProviderRequestId:saved.original.provider_request_id,
     candidateOperationId:budget.reservationId,candidateRequestDigest:providerRequestDigest(request,{schema:providerWireSchema(z.toJSONSchema(request.schema) as JsonObject),schemaName:`agent_decision_${request.schemaVersion}`}),
-    modelPolicy:CANDIDATE_MODEL_POLICY,maxPaidCalls:1,maxExposureMicroUsd:bound.toString(),endedStandaloneProbes:saved.endedProbes}};
+    modelPolicy:CANDIDATE_MODEL_POLICY,maxPaidCalls:1,maxExposureMicroUsd:bound.toString(),endedStandaloneProbes:saved.endedProbes,
+    previousCandidateProbe:saved.legacyProbe?{operationId:saved.legacyProbe.id,requestDigest:saved.legacyProbe.request_digest,reconstructedExactly:true}:null}};
 }
 
 /** One immutable operation identity, no retry, no selected tool execution, no fabricated recovery. */
-export async function executeSavedDecisionProbe(binding:SavedDecisionProbeBinding,expectedRequestDigest:string){
+export async function executeSavedDecisionProbe(binding:SavedDecisionProbeBinding,expectedRequestDigest:string,onDiagnostic?:(value:HttpFailureDiagnostic)=>Promise<void>){
   const prepared=await prepareSavedDecisionProbe(binding);
   if(prepared.report.candidateRequestDigest!==expectedRequestDigest)throw new Error("Prepared request changed");
   const budget=new PostgresBudget(prepared.budgetId),world=process.env.VERCEL?"vercel":"local";
   const gate=new PersistedCapabilityGate(world,budget);
   const rates=new OpenRouterRateCards();
-  const model=new OpenRouterModel({apiKey:()=>process.env.OPENROUTER_API_KEY,budget,gate,rateCards:{async current(signal,policy){
+  const model=new OpenRouterModel({...(onDiagnostic?{onHttpFailureDiagnostic:onDiagnostic}:{}),apiKey:()=>process.env.OPENROUTER_API_KEY,budget,gate,rateCards:{async current(signal,policy){
     const rate=await rates.current(signal,policy);
     if(rate.contextTokens>1048576)throw new Error("Endpoint bound changed");return rate;
   }}});

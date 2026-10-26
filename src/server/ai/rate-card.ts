@@ -25,18 +25,18 @@ export function approveEndpoint(payload: unknown, observedAt = Date.now(), polic
   if (!result.success) throw new ProviderFailure("unavailable");
   const endpoint = result.data;
   if(endpoint.model_id!==policy.model||endpoint.provider_name!==policy.providerName||endpoint.tag!==policy.provider)throw new ProviderFailure("unavailable");
-  for (const key of (policyId==="gemini-flash-google-v1"?["max_tokens","response_format","reasoning","tools","tool_choice"]:["max_tokens", "tools", "tool_choice"])) {
+  for (const key of (policy.provider==="google-ai-studio"?["max_tokens","response_format","reasoning","tools","tool_choice"]:["max_tokens", "tools", "tool_choice"])) {
     if (!endpoint.supported_parameters.includes(key)) throw new ProviderFailure("unavailable");
   }
   const pricing: Record<string, string> = {};
   try {
     for (const [key, raw] of Object.entries(endpoint.pricing)) {
       // Rates must be decimal strings; allow numeric zero only for non-billable metadata.
-      if (typeof raw !== "string" && raw !== 0 && !(policyId==="gemini-flash-google-v1"&&key==="discount"&&raw===0.5)) throw new Error();
+      if (typeof raw !== "string" && raw !== 0 && !(policy.provider==="google-ai-studio"&&key==="discount"&&raw===0.5)) throw new Error();
       const value = String(raw);
       const ratio = decimalRatio(value);
       if (!["prompt", "completion", "input_cache_read"].includes(key) && ratio.numerator !== 0n) {
-        if(policyId!=="gemini-flash-google-v1"||!["internal_reasoning","image","audio","image_output","input_audio","output_audio","input_audio_cache","input_cache_write","web_search","discount"].includes(key))throw new Error();
+        if(policy.provider!=="google-ai-studio"||!["internal_reasoning","image","audio","image_output","input_audio","output_audio","input_audio_cache","input_cache_write","web_search","discount"].includes(key))throw new Error();
         if(key==="internal_reasoning"&&!decimalAtMost(value,policy.priceCaps.completion))throw new Error();
       }
       pricing[key] = value;

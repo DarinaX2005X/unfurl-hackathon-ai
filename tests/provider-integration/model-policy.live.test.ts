@@ -23,7 +23,9 @@ it.skipIf(process.env.MODEL_POLICY_MAINTENANCE!=="execute-approved-one-probe")("
   const proof=z.object({jobId:z.literal(binding.jobId),stepId:z.literal(binding.stepId),candidateRequestDigest:z.string().regex(/^[a-f0-9]{64}$/),
     maxPaidCalls:z.literal(1),maxExposureMicroUsd:z.literal("909312"),preparedAt:z.iso.datetime(),sourceDigest:z.string().min(64)}).parse(JSON.parse(await readFile(proofPath,"utf8")));
   if(Date.now()-Date.parse(proof.preparedAt)>1800000||proof.sourceDigest!==process.env.MODEL_POLICY_SOURCE_DIGEST)throw new Error("Fresh unchanged preparation required");
-  const result=await executeSavedDecisionProbe(binding,proof.candidateRequestDigest);
+  const result=await executeSavedDecisionProbe(binding,proof.candidateRequestDigest,async diagnostic=>{
+    await writeFile(resolve(".cache/model-policy-probe-upstream-error.json"),JSON.stringify(diagnostic,null,2));
+  });
   await writeFile(resolve(".cache/model-policy-probe-result.json"),JSON.stringify(result,null,2));
   console.log(JSON.stringify({...result,decision:undefined,decisionFile:resolve(".cache/model-policy-probe-result.json")}));
 },1840000);

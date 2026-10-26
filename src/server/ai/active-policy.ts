@@ -14,7 +14,7 @@ export async function readActiveModelPolicy(tx:DbTransaction):Promise<ModelPolic
     JOIN unfurl.ai_provider_responses r ON r.operation_id=o.id
     WHERE proof.capability='model_structured' AND proof.passed AND proof.world=$1
       AND proof.evidence->>'modelPolicy'=$2 AND proof.evidence->>'credentialDigest'=$3
-      AND proof.configuration_digest=$5 AND proof.evidence->>'test'='saved-decision-real-schema-v1' AND proof.expires_at>now()
+      AND proof.configuration_digest=$5 AND proof.evidence->>'test'='saved-decision-native-schema-v2' AND proof.expires_at>now()
       AND o.budget_id=$4 AND o.purpose='capability_probe' AND o.state='settled'
       AND o.model_id='google/gemini-3.8-flash' AND o.provider_tag='google-ai-studio'
       AND r.result->>'model'=o.model_id AND r.result->>'provider'='Google AI Studio'

@@ -13,6 +13,43 @@ const parameterSchema = z.enum(["response_format", "response_format.json_schema"
 const schemaKeyword = z.enum(["$schema","type","properties","required","additionalProperties","items","anyOf","oneOf","allOf","enum","const","$ref","$defs",
   "minItems","maxItems","minLength","maxLength","minimum","maximum","exclusiveMinimum","exclusiveMaximum","multipleOf","pattern","format","uniqueItems"]);
 
+export interface HttpFailureDiagnostic {version:"technical-error-diagnostic-v1";httpStatus:number;category:string;messages:string[]}
+const diagnosticVocabulary=new Set((`a an the is are was be been being to of for in at on and or with without from by this that it has have had
+  request response json schema invalid argument invalid_argument bad_request bad request error failed failure provider upstream input output
+  unable submit because specifies specifies constraint constraints too many states much branching serving complexity complex large deep nested
+  typical common causes include includes array arrays limit limits maximum minimum maxitems minitems maxlength minlength oneof anyof allof enum
+  properties property required optional additionalproperties allowed supported unsupported not unknown name field fields cannot find value values type
+  generation_config generationconfig response_schema responseschema response_json_schema responsejsonschema response_format json_schema strict const
+  response_mime_type application json thinking thinking_level thinkinglevel thinking_budget thinkingbudget reasoning effort low medium high minimal none
+  stream streaming stream_options include_usage max_tokens max_completion_tokens model parameter parameters expected must only object string number integer boolean null
+  redacted one_of any_of additional_properties max_items min_items response_format format pattern size length validation validate malformed exhausted exceeded exceeds tokens token context budget permission denied unauthenticated unavailable
+  400 401 402 403 404 408 413 422 429 500 502 503 504 0 1 2 3 4 5 6 7 8 9 10 32 64 128 256
+  received allowed additional unsupported_parameter status code details fieldviolations description message propertyordering items data
+`).split(/\s+/).filter(Boolean));
+
+/** Private diagnostics are technical vocabulary only: arbitrary prose, identifiers,
+ * quoted user values and credentials are replaced rather than saved. */
+export function sanitizeTechnicalError(message:string,secrets:readonly string[]=[]):string{
+  let safe=message.slice(0,12000);
+  for(const secret of secrets)if(secret)safe=safe.split(secret).join("[REDACTED]");
+  safe=safe.replace(/Bearer\s+[^\s"\\]+/gi,"[REDACTED]").replace(/sk-[A-Za-z0-9_-]+/g,"[REDACTED]");
+  return safe.replace(/[\p{L}\p{N}_$-]+/gu,token=>diagnosticVocabulary.has(token.toLowerCase())||schemaKeyword.options.some(key=>key.toLowerCase()===token.toLowerCase())?token:"[REDACTED]")
+    .replace(/(?:\[REDACTED\][\s,]*){2,}/g,"[REDACTED] ").slice(0,2048);
+}
+function diagnosticMessages(decoded:unknown,secrets:readonly string[]){
+  const messages:string[]=[];
+  function inspect(value:unknown,depth=0){
+    if(depth>6||messages.length>=4||!value||typeof value!=="object"||Array.isArray(value))return;
+    const item=value as Record<string,unknown>;
+    for(const key of ["message","description"])if(typeof item[key]==="string")messages.push(sanitizeTechnicalError(item[key],secrets));
+    for(const key of ["error","metadata"])inspect(item[key],depth+1);
+    if(typeof item.raw==="string"&&item.raw.length<=12000){try{inspect(JSON.parse(item.raw) as unknown,depth+1);}catch{messages.push(sanitizeTechnicalError(item.raw,secrets));}}
+    else inspect(item.raw,depth+1);
+    for(const key of ["details","fieldViolations"])if(Array.isArray(item[key]))for(const child of item[key].slice(0,4))inspect(child,depth+1);
+  }
+  inspect(decoded);return [...new Set(messages)].slice(0,4);
+}
+
 export const httpFailureReceiptSchema = z.object({
   kind: z.literal("http_error"), receivedAt: z.iso.datetime(), httpStatus: z.number().int().min(400).max(599),
   failure: z.enum(["unavailable", "rate_limited"]), retryAfterMs: z.number().int().nonnegative().nullable(),
@@ -39,7 +76,7 @@ function classify(decoded: unknown, status: number, schema?:JsonObject) {
   const rejectedParameters = [...new Set(candidates.flatMap(value => { const match = parameterSchema.safeParse(value); return match.success ? [match.data] : []; }))].slice(0,8);
   const category = status === 401 ? "auth" : status === 402 || /insufficient.{0,30}credit|openrouter_(?:guardrail_budget|workspace_budget|key_limit|in_flight_budget)/.test(message) ? "credit"
     : status === 429 ? "rate" : /privacy|data policy|data collection|zero.data.retention|no endpoints.{0,80}(?:policy|zdr)/.test(message) ? "privacy_route"
-    : /(?:invalid|unsupported|not supported|not permitted).{0,60}(?:schema|additionalproperties|anyof)|(?:schema|additionalproperties|anyof).{0,60}(?:invalid|unsupported|not supported|not permitted)/.test(message) ? "schema"
+    : /(?:invalid|unsupported|not supported|not permitted).{0,60}(?:schema|additionalproperties|anyof)|(?:schema|additionalproperties|anyof).{0,60}(?:invalid|unsupported|not supported|not permitted)|too many states|too much branching|schema.{0,120}(?:complex|constraint)/.test(message) ? "schema"
     : /unsupported.{0,30}param|param.{0,40}(?:not supported|not permitted)|unknown parameter/.test(message) ? "unsupported_parameter" : "unknown";
   const schemaKeywords=category==="schema"?schemaKeyword.options.filter(key=>new RegExp(`(?:^|[^a-z])${key.replace(/[.*+?^${}()|[\]\\]/g,"\\$&")}(?:$|[^a-z])`,"i").test(message)).slice(0,24):[];
   const schemaPaths:string[]=[];
@@ -59,7 +96,7 @@ function classify(decoded: unknown, status: number, schema?:JsonObject) {
 }
 
 /** Only bounded numeric error codes and token-shaped correlation IDs survive. Never persist upstream prose. */
-export async function httpFailureReceipt(response: Response,schema?:JsonObject): Promise<ProviderResponseReceipt> {
+export async function httpFailureReceipt(response: Response,schema?:JsonObject,diagnostic?:{secrets?:readonly string[];onDiagnostic:(value:HttpFailureDiagnostic)=>Promise<void>}): Promise<ProviderResponseReceipt> {
   let raw: string | null = null;
   let decoded: unknown = null;
   try { raw = await boundedResponseText(response, 16 * 1024); decoded = JSON.parse(raw) as unknown; } catch { /* Metadata still identifies this failure. */ }
@@ -72,6 +109,7 @@ export async function httpFailureReceipt(response: Response,schema?:JsonObject):
     upstreamCode: parsed.success ? parsed.data.error?.code ?? null : null,
     correlationId: header && /^[A-Za-z0-9_-]{1,128}$/.test(header) ? header : null,
     bodyDigestAvailable: raw !== null, ...classify(decoded, response.status,schema) });
+  if(diagnostic)try{await diagnostic.onDiagnostic({version:"technical-error-diagnostic-v1",httpStatus:response.status,category:result.category,messages:diagnosticMessages(decoded,diagnostic.secrets??[])});}catch{/* Private diagnostic I/O must never prevent the durable accounting receipt. */}
   return { providerRequestId: parsed.success ? parsed.data.id ?? null : null,
     responseDigest: raw === null ? jsonDigest(result) : digestBytes(raw), reportedCostUsd: null, usage: {}, result };
 }
