@@ -5,6 +5,8 @@ import type {Actor} from "../auth/actor";
 import {ServiceFault} from "../auth/errors";
 import type {DbTransaction} from "../db";
 import type {GenerationRow} from "../curricula/repository";
+import {readActiveModelPolicy} from "../ai/active-policy";
+import {currentReaderCapabilities} from "../research/reader-capabilities";
 import {MODEL_ID} from "../ai/constants";
 import {OpenRouterAccounting} from "../ai/accounting";
 import {PostgresBudget} from "../budget/postgres";
@@ -15,7 +17,7 @@ import {agentOperationId,stableExecutionId} from "./identity";
 import {saveAgentDecisionRetryPolicy} from "./decision-policy";
 import {appendChatEvent} from "./events";
 
-const completeResponse=z.object({model:z.literal(MODEL_ID),provider:z.literal("DigitalOcean"),finishReason:z.literal("stop"),
+const completeResponse=z.object({model:z.enum([MODEL_ID,"google/gemini-3.8-flash"]),provider:z.enum(["DigitalOcean","Google AI Studio"]),finishReason:z.literal("stop"),
   failure:z.null(),content:z.string(),rateCardDigest:z.string().regex(/^[a-f0-9]{64}$/)});
 const terminalResponse=completeResponse.extend({finishReason:z.string().min(1),failure:z.enum(["invalid_output","refused"]).nullable(),content:z.string().nullable()});
 const conflict=()=>new ServiceFault(409,"revision_conflict","generation.changed");
@@ -67,23 +69,41 @@ export async function resumeSavedAgentDecision(tx:DbTransaction,actor:Actor,run:
   const searchStep=unfinished.length===1&&step?.status==="failed"&&/^agent\.v1:\d{6}:tool$/.test(step.step_key);
   const recoveredSearch=searchStep&&await reconcileSavedSearch(tx,run.id,job,step);
   const held=(await tx.query(`SELECT o.id FROM unfurl.ai_provider_operations o JOIN unfurl.run_steps s ON s.id=o.run_step_id
-    WHERE s.job_id=$1 AND o.state IN ('reserved','dispatched','unknown') LIMIT 1`,[job.id])).rows[0];
-  if(held)throw conflict();
+    WHERE s.job_id=$1 AND o.state IN ('reserved','dispatched','unknown') AND NOT EXISTS(
+      SELECT 1 FROM unfurl.ai_provider_attempt_retirements retired JOIN unfurl.execution_job_retry_receipts retry
+        ON retry.job_id=retired.job_id AND retry.from_epoch=retired.from_epoch AND retry.to_epoch=retired.to_epoch AND retry.actor_id=retired.actor_id
+      WHERE retired.operation_id=o.id AND retired.kind='explicit_decision_retry' AND retired.job_id=$1 AND retired.actor_id=$2
+        AND retired.request_digest=o.request_digest AND retired.retained_micro_usd=o.reserved_micro_usd AND retry.to_epoch<=$3)
+    LIMIT 1`,[job.id,actor.id,job.retry_epoch])).rows[0];
+  if(held&&!(unfinished.length===1&&step?.status==="failed"&&/^agent\.v1:\d{6}:decision$/.test(step.step_key)))throw conflict();
   const python=(await tx.query(`SELECT id FROM unfurl.code_execution_runs WHERE job_id=$1
     AND status IN ('reserved','creating','running','collecting','ambiguous','cleanup_pending') LIMIT 1`,[job.id])).rows[0];
   if(python)throw conflict();
   if(recoveredSearch){await requeueSavedStep(tx,actor,run,job.id,step.id);return true;}
-  if(fault.data.messageKey==="generation.unavailable")return false;
+  
   if(unfinished.length!==1||!step||step.status!=="failed"||!/^agent\.v1:\d{6}:decision$/.test(step.step_key))return false;
   const capture=(await tx.query<{result_reference:unknown}>(`SELECT result_reference FROM unfurl.run_steps WHERE job_id=$1
     AND step_key=$2 AND status='succeeded' FOR SHARE`,[job.id,step.step_key.replace(/:decision$/ ,":capture")])).rows[0];
   if(!capture||jsonDigest(capture.result_reference)!==step.input_digest)throw conflict();
   const logical=agentOperationId(step.id,"agent_decision",job.retry_epoch),reservation=stableExecutionId(logical,"attempt:1");
   const operation=(await tx.query<{id:string;logical_operation_id:string;attempt:number;state:string;purpose:string;provider_request_id:string;
-    response_provider_id:string;request_digest:string;rate_card_digest:string;result:unknown}>(`SELECT o.id,o.logical_operation_id,o.attempt,o.state,o.purpose,o.provider_request_id,
-      o.request_digest,o.rate_card_digest,r.provider_request_id AS response_provider_id,r.result FROM unfurl.ai_provider_operations o
-      JOIN unfurl.ai_provider_responses r ON r.operation_id=o.id WHERE o.run_step_id=$1 AND o.logical_operation_id=$2 FOR SHARE OF o`,[step.id,logical])).rows;
+    response_provider_id:string;request_digest:string;rate_card_digest:string;result:unknown;safe_failure_code:string;has_response:boolean}>(`SELECT o.id,o.logical_operation_id,o.attempt,o.state,o.purpose,o.provider_request_id,
+      o.request_digest,o.rate_card_digest,o.safe_failure_code,r.operation_id IS NOT NULL AS has_response,r.provider_request_id AS response_provider_id,r.result FROM unfurl.ai_provider_operations o
+      LEFT JOIN unfurl.ai_provider_responses r ON r.operation_id=o.id WHERE o.run_step_id=$1 AND o.logical_operation_id=$2`,[step.id,logical])).rows;
   const paid=operation[0],response=terminalResponse.safeParse(paid?.result);
+  const ambiguous=operation.length===1&&paid&&paid.state==="unknown"&&!paid.has_response&&
+    paid.purpose==="turn_planning"&&paid.id===reservation&&paid.logical_operation_id===logical&&paid.attempt===1&&
+    ["timeout","unavailable","cancelled"].includes(paid.safe_failure_code)&&/^[a-f0-9]{64}$/.test(paid.request_digest);
+  if(ambiguous){
+    const authorizedPolicy=await readActiveModelPolicy(tx);
+    await tx.query("SELECT unfurl.authorize_ambiguous_decision_retry($1,$2,$3,$4,$5,$6,$7)",[paid.id,actor.id,job.id,step.id,job.retry_epoch,authorizedPolicy,jsonDigest(currentReaderCapabilities())]);
+    const epoch=(await tx.query<{epoch:number}>("SELECT unfurl.advance_execution_job_retry($1,$2,$3,$4,$5::jsonb) AS epoch",
+      [randomUUID(),job.id,actor.id,job.retry_epoch,JSON.stringify({kind:"agent_turn",runId:run.id})])).rows[0]?.epoch;
+    if(epoch!==job.retry_epoch+1)throw conflict();
+    await saveAgentDecisionRetryPolicy(tx,{jobId:job.id,runId:run.id,decisionStepId:step.id,retryEpoch:epoch,inputDigest:step.input_digest,schemaDigest:step.schema_digest},authorizedPolicy);
+    await requeueSavedStep(tx,actor,run,job.id,step.id);return true;
+  }
+  if(held)throw conflict();
   // Unknown/missing responses cannot silently become a new run that discards saved research.
   if(operation.length!==1||!paid||paid.state!=="settled"||paid.purpose!=="turn_planning"||!response.success)throw conflict();
   if(paid.id!==reservation||paid.logical_operation_id!==logical||paid.attempt!==1||!paid.provider_request_id||

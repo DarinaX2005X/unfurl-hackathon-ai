@@ -152,4 +152,28 @@ describe.skipIf(process.env.RUN_LIVE_RECEIPT_RESUME!=="1")("ordinary receipt-onl
     expect((await client.query("SELECT result,response_digest FROM unfurl.ai_provider_responses WHERE operation_id=$1",[request.budget.reservationId])).rows).toEqual(before);
     expect(fetcher).toHaveBeenCalledTimes(1);
   },30000);
+  it("retains an ambiguous epoch0 financial hold while ordinary Retry advances through a settled failed epoch1",async()=>{
+    fetcher.mockRejectedValueOnce(new Error("transport ended without a response"));
+    await expect(model.complete(request,new AbortController().signal)).rejects.toThrow("provider.unavailable");
+    const fault=JSON.stringify({code:"generation_failed",messageKey:"generation.unavailable",requestId:randomUUID(),retryable:true});
+    const failCurrent=async()=>{
+      await client.query("UPDATE unfurl.agent_turn_runs SET status='failed',error=$2 WHERE id=$1",[run,fault]);
+      await client.query("UPDATE unfurl.execution_jobs SET status='failed',safe_error=$2,lease_owner=NULL,lease_expires_at=NULL WHERE id=$1",[job,fault]);
+      await client.query("UPDATE unfurl.run_steps SET status='failed',error=$2,lease_owner=NULL,lease_expires_at=NULL WHERE id=$1",[step,fault]);
+    };
+    await failCurrent();
+    const original=(await client.query("SELECT state,reserved_micro_usd::text,request_digest FROM unfurl.ai_provider_operations WHERE id=$1",[request.budget.reservationId])).rows[0];
+    const entries=(await client.query("SELECT count(*)::int AS n FROM unfurl.ai_budget_entries WHERE operation_id=$1",[request.budget.reservationId])).rows[0];
+    expect((await retryRun(actor,run,"agent_turn",randomUUID())).data.run.id).toBe(run);
+    expect((await client.query("SELECT retry_epoch FROM unfurl.execution_jobs WHERE id=$1",[job])).rows[0].retry_epoch).toBe(1);
+    const logical=agentOperationId(step,"agent_decision",1),second={...request,operationId:logical,budget:{...request.budget,logicalOperationId:logical,reservationId:stableExecutionId(logical,"attempt:1")}};
+    fetcher.mockResolvedValueOnce(Response.json({id:`gen-${randomUUID()}`,model:MODEL_ID,provider:"DigitalOcean",choices:[{finish_reason:"length",message:{content:"{"}}],usage:{prompt_tokens:20,completion_tokens:10,total_tokens:30,cost:0.0000354}}));
+    await expect(model.complete(second,new AbortController().signal)).rejects.toThrow("provider.invalid_output");
+    await failCurrent();
+    expect((await retryRun(actor,run,"agent_turn",randomUUID())).data.run.id).toBe(run);
+    expect((await client.query("SELECT retry_epoch FROM unfurl.execution_jobs WHERE id=$1",[job])).rows[0].retry_epoch).toBe(2);
+    expect((await client.query("SELECT state,reserved_micro_usd::text,request_digest FROM unfurl.ai_provider_operations WHERE id=$1",[request.budget.reservationId])).rows[0]).toEqual(original);
+    expect((await client.query("SELECT count(*)::int AS n FROM unfurl.ai_budget_entries WHERE operation_id=$1",[request.budget.reservationId])).rows[0]).toEqual(entries);
+    expect((await client.query("SELECT count(*)::int AS n FROM unfurl.ai_provider_responses WHERE operation_id=$1",[request.budget.reservationId])).rows[0].n).toBe(0);
+  },30000);
 });

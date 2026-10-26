@@ -1,4 +1,5 @@
 import "server-only";
+import {executionTiming} from "../ai/model-policy";
 import { randomUUID } from "node:crypto";
 import { ZodError } from "zod";
 import type { JsonValue } from "../../domain/common";
@@ -23,7 +24,7 @@ export class DurableRunExecutor {
     const claim = claimed.claim; const handler = this.registry.require(claim.target.kind);
     if(claimed.authorityFailure){await this.fail(claim,handler,claimed.authorityFailure);return{status:"finished"};}
     const abort = new AbortController();
-    const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(270000)]);
+    const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(executionTiming().stepMs)]);
     let commitTx: DbTransaction | null = null; let effects = 0;
     let polling = false;
     const timer = setInterval(() => {
@@ -45,7 +46,7 @@ export class DurableRunExecutor {
         const longform=spec.executionProfile==="longform_curriculum"||spec.executionProfile==="longform_content";
         if((spec.executionProfile!==undefined&&!longform)||(spec.executionProfile==="longform_curriculum"&&claim.target.kind!=="agent_turn")||
           (spec.executionProfile==="longform_content"&&claim.target.kind!=="generation"))throw new ProviderFailure("invalid_output");
-        const duration=longform?270000:100000,deadlineAt=Date.now()+duration;
+        const duration=longform?executionTiming().stepMs:100000,deadlineAt=Date.now()+duration;
         const stepSignal=AbortSignal.any([signal,AbortSignal.timeout(duration)]);
         const inputDigest = jsonDigest(spec.input);
         const begun = await this.transaction(async tx => {
@@ -60,13 +61,13 @@ export class DurableRunExecutor {
           if (row?.status === "cancelled" || row?.status === "failed") throw new ProviderFailure("cancelled");
           const stepId = row?.id ?? stableExecutionId(jobId, spec.key);
           const owner = randomUUID();
-          if(longform)await tx.query("UPDATE unfurl.execution_jobs SET lease_expires_at=now()+interval '295 seconds',updated_at=now() WHERE id=$1",[jobId]);
+          if(longform)await tx.query("UPDATE unfurl.execution_jobs SET lease_expires_at=now()+make_interval(secs=>$2),updated_at=now() WHERE id=$1",[jobId,executionTiming().jobLeaseSeconds]);
           const saved = (await tx.query<{ fencing_token: string }>(`INSERT INTO unfurl.run_steps
             (id,job_id,step_key,input_digest,approval_digest,schema_digest,capability_digest,validation_policy_digest,status,attempt_count,lease_owner,lease_expires_at,fencing_token)
             VALUES($1,$2,$3,$4,$5,$6,$7,$8,'running',1,$9,now()+make_interval(secs=>$10),1)
             ON CONFLICT(id) DO UPDATE SET status='running',attempt_count=run_steps.attempt_count+1,lease_owner=$9,
             lease_expires_at=now()+make_interval(secs=>$10),fencing_token=run_steps.fencing_token+1,updated_at=now() RETURNING fencing_token::text`,
-          [stepId, jobId, spec.key, inputDigest, spec.digests.approval, spec.digests.schema, spec.digests.capability, spec.digests.validationPolicy, owner,longform?285:110])).rows[0]!;
+          [stepId, jobId, spec.key, inputDigest, spec.digests.approval, spec.digests.schema, spec.digests.capability, spec.digests.validationPolicy, owner,longform?executionTiming().stepLeaseSeconds:110])).rows[0]!;
           if(spec.prepare)await spec.prepare(tx,effectContextFor(stepId,owner,saved.fencing_token,stepSignal,deadlineAt),spec.input);
           const prepared=(await tx.query("SELECT id FROM unfurl.run_steps WHERE id=$1 AND status='running' AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>now()",[stepId,owner,saved.fencing_token])).rows[0];
           if(!prepared)throw new ProviderFailure("cancelled");

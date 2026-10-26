@@ -17,6 +17,9 @@ import { createPythonExecutionPort } from "../execution/python";
 import { VercelOidcPythonCapabilityGate } from "../execution/python/capability";
 import { PYTHON_RUNTIME_PROFILE } from "../execution/python/profile";
 import type { MechanicRuntimeCapabilities } from "../mechanics/contracts";
+import {assertModelPolicyAvailable,readActiveModelPolicy} from "../ai/active-policy";
+import {withSystemTransaction} from "../db";
+import type {ModelPolicyId} from "../ai/model-policy";
 import { MODEL_ID } from "../ai/constants";
 import { turnFromRow } from "../curricula/repository";
 import type { ConversationExecution } from "../conversations/execution";
@@ -36,8 +39,15 @@ function createRuntime() {
   const budgetId=z.uuid().safeParse(process.env.AI_BUDGET_ID);if(!budgetId.success)throw unavailable("generation.unavailable");
   const budget=new PostgresBudget(budgetId.data);const gate=new PersistedCapabilityGate(process.env.VERCEL?"vercel":"local",budget);
   const metadata=new OpenRouterRateCards();
-  const rates={async current(signal:AbortSignal){const card=await metadata.current(signal);await gate.assertEndpointCompatible(card.snapshot.endpointName);return card;}};
-  const model=new OpenRouterModel({apiKey:()=>process.env.OPENROUTER_API_KEY,budget,gate,rateCards:rates});
+  const rates={async current(signal:AbortSignal,policyId?:ModelPolicyId){const card=await metadata.current(signal,policyId);if(!policyId||policyId==="kimi-digitalocean-v1")await gate.assertEndpointCompatible(card.snapshot.endpointName);return card;}};
+  const model=new OpenRouterModel({assertPolicy:assertModelPolicyAvailable,apiKey:()=>process.env.OPENROUTER_API_KEY,budget,gate,rateCards:rates,
+    async resolvePolicy(request,options){
+      const existing=await budget.existingModelPolicy(request.budget);if(existing)return existing;
+      if(request.modelPolicy)return request.modelPolicy;
+      // The real-schema planner proof does not certify a different native search engine or rubric behavior.
+      if(options.search||request.purpose==="rubric_grading")return "kimi-digitalocean-v1";
+      return withSystemTransaction("run_execution",readActiveModelPolicy);
+    }});
   const researchForStep=(step:StepEffectContext)=>new OpenRouterResearch(model,{budget:step.budgetOperation("research_search"),deadlineAt:step.deadlineAt});
   const projectId=pythonProjectId();const python=projectId?createPythonExecutionPort({persistence:new PostgresPythonExecutionPersistence(),projectId}):undefined;
   const pythonGate=projectId?new VercelOidcPythonCapabilityGate(projectId):null;
@@ -51,10 +61,10 @@ export async function getRuntimeCapabilityProjection(){
     await runtime.budget.assertAvailable({probe:false});return{generation:true};
   }catch{return{generation:false};}
 }
-export function getRuntimeAdmission(){return {async assertAvailable(kind:ExecutionKind){
+export function getRuntimeAdmission(){return {async assertAvailable(kind:ExecutionKind,options:{deferBudget?:boolean}={}){
   await (await import("./dispatcher")).ensureDispatchReady();
   const runtime=getRuntime();if(!runtime.registry.has(kind))throw unavailable("generation.unavailable");
-  await runtime.gate.assertExecutionAvailable(kind==="agent_turn"?["model_structured","research_search"]:["model_structured","research_search","rubric"]);
+  await runtime.gate.assertExecutionAvailable(kind==="agent_turn"?["model_structured","research_search"]:["model_structured","research_search","rubric"],options);
   await runtime.rates.current(AbortSignal.timeout(10000));
 }};}
 export function getLearningRuntimeAdmission():LearningAdmission{return {async assertAvailable(input){

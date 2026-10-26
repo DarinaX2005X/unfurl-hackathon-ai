@@ -30,7 +30,7 @@ describe.skipIf(!live)("actual migrated budget ledger (rollback fixtures)", () =
     };
   }
   function input(amount = "10000", probe = false): ReserveRequest {
-    const rateCard = { model: "moonshotai/kimi-k2.6", fixture: "rollback-only" };
+    const rateCard = { model: "moonshotai/kimi-k2.6", provider:"digitalocean",policyVersion:"kimi-digitalocean-v1",fixture: "rollback-only" };
     return { reservationId: randomUUID(), logicalOperationId: randomUUID(), attempt: 1, runStepId: null,
       probe, purpose: probe ? "capability_probe" : "curriculum", amountMicroUsd: amount,
       requestDigest: "a".repeat(64), rateCardDigest: jsonDigest(rateCard), rateCard };

@@ -3,13 +3,14 @@ import type { z } from "zod";
 import type { JsonValue } from "../../domain/common";
 import type { BillablePurpose, BudgetOperationContext } from "../budget/ports";
 import type { MODEL_ID, PROVIDER_TAG } from "./constants";
+import type {ModelPolicyId} from "./model-policy";
 
 export type ModelPurpose = Exclude<BillablePurpose, "web_search" | "capability_probe">;
 export type ProviderCapability = "model_structured" | "model_text" | "research_search" | "rubric";
 
 export interface ModelCapabilities {
-  model: typeof MODEL_ID;
-  provider: typeof PROVIDER_TAG;
+  model: typeof MODEL_ID | "google/gemini-3.8-flash";
+  provider: typeof PROVIDER_TAG | "google-ai-studio";
   structured: boolean;
   text: boolean;
   search: boolean;
@@ -29,7 +30,8 @@ export interface ModelRequestBase {
   instructionVersion: string;
   trustedInstructions: string;
   untrustedInput: JsonValue;
-  model: typeof MODEL_ID;
+  model: typeof MODEL_ID | "google/gemini-3.8-flash";
+  modelPolicy?: ModelPolicyId;
   maxOutputTokens: number;
   executionProfile?: "longform_curriculum" | "longform_content";
   deadlineAt: number;
@@ -58,9 +60,9 @@ export interface ModelEvidence {
   operationId: string;
   reservationId: string;
   providerRequestId: string;
-  requestedModel: typeof MODEL_ID;
+  requestedModel: typeof MODEL_ID | "google/gemini-3.8-flash";
   returnedModel: string;
-  provider: typeof PROVIDER_TAG;
+  provider: typeof PROVIDER_TAG | "google-ai-studio";
   finishReason: string;
   usage: NativeUsage;
   rateCardDigest: string;

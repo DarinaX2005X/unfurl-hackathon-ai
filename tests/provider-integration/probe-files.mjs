@@ -13,7 +13,7 @@ export async function probeSourceDigest(root) {
       else if (/\.(ts|mjs)$/.test(entry.name)) files.push(path);
     }
   }
-  for (const directory of ["src/server/ai", "src/server/budget", "src/server/research", "tests/budget", "tests/provider-integration"]) await collect(directory);
+  for (const directory of ["src/server/ai", "src/server/budget", "src/server/research", "src/server/agent-turns", "src/server/agent-tools", "src/server/runs", "tests/budget", "tests/provider-integration"]) await collect(directory);
   const hash = createHash("sha256");
   for (const file of files.sort()) hash.update(file).update("\0").update(await readFile(join(root, file))).update("\0");
   return hash.digest("hex");

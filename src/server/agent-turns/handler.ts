@@ -1,5 +1,7 @@
 import "server-only";
 import type { z } from "zod";
+import {modelPolicy} from "../ai/model-policy";
+import type {BudgetOperationContext} from "../budget/ports";
 import { MODEL_ID, MODEL_POLICY_VERSION } from "../ai/constants";
 import { jsonDigest } from "../ai/json";
 import type { DbTransaction } from "../db";
@@ -7,7 +9,7 @@ import type { ExecutionTarget, RunContext, RunHandler } from "../runs/ports";
 import { AgentDecisionReceiptSchema, agentDecisionSchemaForCapture, type AgentDecision, type AgentDecisionReceipt, type AgentToolAuthority, type ToolObservation } from "../agent-tools/contracts";
 import { agentActionDetails, agentActionLabelKey } from "../agent-tools/action-details";
 import { stableExecutionId } from "../runs/identity";
-import { readAgentDecisionRetryPolicy } from "../runs/decision-policy";
+import { readAgentDecisionRetryPolicy,readAgentDecisionModelRetryPolicy } from "../runs/decision-policy";
 import { READER_CAPABILITY_INSTRUCTIONS } from "../research/reader-capabilities";
 import { executeAgentTool, prepareAgentDecision, type AgentToolDependencies } from "../agent-tools/executor";
 import * as repository from "./repository";
@@ -87,22 +89,16 @@ export function createAgentTurnHandler(dependencies: AgentToolDependencies, opti
           decisionStepId: stableExecutionId(context.claim.jobId, repository.journalKey(position.index, "decision")),
           inputDigest: jsonDigest(repository.jsonValue(snapshot)), schemaDigest, retryEpoch: context.claim.retryEpoch,
         }));
+        const modelRetry=options.journal?null:await context.read(tx=>readAgentDecisionModelRetryPolicy(tx,{
+          jobId:context.claim.jobId,runId:target.runId,decisionStepId:stableExecutionId(context.claim.jobId,repository.journalKey(position.index,"decision")),
+          inputDigest:jsonDigest(repository.jsonValue(snapshot)),schemaDigest,retryEpoch:context.claim.retryEpoch}));
         await context.step({ key: repository.journalKey(position.index, "decision"), input: repository.jsonValue(snapshot),
           executionProfile: "longform_curriculum",
           digests: { ...commonDigests, schema: schemaDigest },
           outputSchema: repository.jsonSchema(decisionSchema), resultSchema: repository.jsonSchema(AgentDecisionReceiptSchema),
           effect: async (step) => {
             const budget = step.budgetOperation("agent_decision");
-            const baseInstructions = policy.schemaVersion === 3 ? `${instructions}\n${searchMemoryInstructions}\n${conversationalInstructions}`
-              : policy.schemaVersion === 2 ? `${instructions}\n${searchMemoryInstructions}` : instructions;
-            // A new optional capture policy must never change an already paid request.
-            const readerVersion = snapshot.readerCapabilities?.version;
-            const result = await dependencies.model.generateStructured({ operationId: budget.logicalOperationId, purpose: "turn_planning",
-              instructionVersion: readerVersion ? `${policy.instructionVersion}:${readerVersion}` : policy.instructionVersion,
-              trustedInstructions: readerVersion ? `${baseInstructions}\n${READER_CAPABILITY_INSTRUCTIONS}` : baseInstructions, untrustedInput: repository.jsonValue(snapshot),
-              model: MODEL_ID, maxOutputTokens: plannerOutputTokens(snapshot, step.stepFence.retryEpoch, retryPolicy),
-              executionProfile: "longform_curriculum", deadlineAt: step.deadlineAt, budget,
-              schema: decisionSchema, schemaId: "agent_decision", schemaVersion: policy.schemaVersion }, step.signal);
+            const result=await dependencies.model.generateStructured(buildAgentDecisionRequest(snapshot,budget,step.deadlineAt,step.stepFence.retryEpoch,retryPolicy,modelRetry),step.signal);
             return repository.jsonValue(result.data);
           },
           commit: async (tx, output) => {
@@ -136,4 +132,20 @@ export function createAgentTurnHandler(dependencies: AgentToolDependencies, opti
       return { status: "continue" };
     },
   };
+}
+
+/** Shared by production and the bounded real-context probe; this never executes the selected tool. */
+export function buildAgentDecisionRequest(snapshot:ContextSnapshot,budget:BudgetOperationContext,deadlineAt:number,retryEpoch=0,retryPolicy:32768|null=null,
+  override:Pick<ContextSnapshot,"modelPolicy"|"readerCapabilities">|null=null){
+  const selected=override?{...snapshot,...override}:snapshot;
+  const policy=agentDecisionSchemaForCapture(snapshot);
+  const baseInstructions=policy.schemaVersion===3?`${instructions}\n${searchMemoryInstructions}\n${conversationalInstructions}`:
+    policy.schemaVersion===2?`${instructions}\n${searchMemoryInstructions}`:instructions;
+  const readerVersion=selected.readerCapabilities?.version;
+  return {operationId:budget.logicalOperationId,purpose:"turn_planning" as const,
+    instructionVersion:readerVersion?`${policy.instructionVersion}:${readerVersion}`:policy.instructionVersion,
+    trustedInstructions:readerVersion?`${baseInstructions}\n${READER_CAPABILITY_INSTRUCTIONS}`:baseInstructions,
+    untrustedInput:repository.jsonValue(selected),model:modelPolicy(selected.modelPolicy).model,
+    ...(selected.modelPolicy?{modelPolicy:selected.modelPolicy}:{}),maxOutputTokens:plannerOutputTokens(selected,retryEpoch,retryPolicy),
+    executionProfile:"longform_curriculum" as const,deadlineAt,budget,schema:policy.schema,schemaId:"agent_decision",schemaVersion:policy.schemaVersion};
 }

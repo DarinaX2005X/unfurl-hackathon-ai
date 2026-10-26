@@ -23,6 +23,13 @@ function harness(options: { search?: boolean; total?: number; engine?: string } 
   return { budget, fetcher, accounting: new OpenRouterAccounting(budget, () => "test-key", fetcher) };
 }
 describe("authenticated generation accounting", () => {
+  it("settles an interrupted stream from its early generation ID without manufacturing completion content",async()=>{
+    const h=harness(),target=(await h.budget.reconciliationTarget("op"))!;
+    vi.mocked(h.budget.reconciliationTarget).mockResolvedValue({...target,receipt:null,providerRequestId:"gen-test"});
+    expect(await h.accounting.reconcile("op",new AbortController().signal)).toMatchObject({settled:true,searchFeeVerified:false});
+    expect(h.budget.reconcile).toHaveBeenCalledWith(target.reservation,expect.objectContaining({providerRequestId:"gen-test",finalCostMicroUsd:"81"}));
+    expect((await h.budget.reconciliationTarget("op"))!.receipt).toBeNull();
+  });
   it("native-only recovery never fetches metadata or settles an absent native receipt",async()=>{
     const h=harness();
     expect(await h.accounting.reconcile("op",new AbortController().signal,{nativeOnly:true})).toEqual({settled:false,searchFeeVerified:false,evidence:null});

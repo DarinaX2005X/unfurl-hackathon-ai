@@ -12,7 +12,7 @@ import {verifyNativeSearchAccounting} from "./search-accounting";
 
 const count = z.number().int().nonnegative().max(10_000_000);
 const metadataSchema = z.object({ data: z.object({
-  id: z.string().regex(/^gen-[0-9A-Za-z-]+$/), model: z.string().max(200), provider_name: z.literal("DigitalOcean"),
+  id: z.string().regex(/^gen-[0-9A-Za-z_-]{1,200}$/), model: z.string().max(200), provider_name: z.enum(["DigitalOcean","Google AI Studio"]),
   total_cost: z.string(), finish_reason: z.string().min(1), cancelled: z.boolean(),
   native_tokens_prompt: count, native_tokens_completion: count, native_tokens_cached: count.nullable().optional(),
   num_search_results: count.nullable().optional(), web_search_engine: z.string().nullable().optional(),
@@ -29,11 +29,11 @@ export class OpenRouterAccounting {
     private readonly apiKey: () => string | undefined, private readonly fetcher: typeof fetch = fetch) {}
   async reconcile(operationId: string, signal: AbortSignal, options: { nativeOnly?: boolean } = {}): Promise<{ settled: boolean; searchFeeVerified: boolean; evidence: JsonObject | null }> {
     const target = await this.budget.reconciliationTarget(operationId);
-    const id = target?.receipt?.providerRequestId;
-    if (!target || !target.receipt || !id || !/^gen-[0-9A-Za-z-]{1,124}$/.test(id)) return { settled: false, searchFeeVerified: false, evidence: null };
-    const savedResult=z.object({nativeUsage:NativeUsageSchema.optional(),finishReason:z.string(),failure:z.unknown(),annotations:z.array(z.unknown())}).safeParse(target.receipt.result);
-    const native=NativeUsageSchema.safeParse(target.receipt.nativeUsage??(savedResult.success?savedResult.data.nativeUsage:undefined));
-    if(native.success&&(native.data.server_tool_use_details?.web_search_requests??0)>0){
+    const id = target?.receipt?.providerRequestId??target?.providerRequestId;
+    if (!target || !id || !/^gen-[0-9A-Za-z_-]{1,200}$/.test(id)) return { settled: false, searchFeeVerified: false, evidence: null };
+    const savedResult=z.object({nativeUsage:NativeUsageSchema.optional(),finishReason:z.string(),failure:z.unknown(),annotations:z.array(z.unknown())}).safeParse(target.receipt?.result);
+    const native=NativeUsageSchema.safeParse(target.receipt?.nativeUsage??(savedResult.success?savedResult.data.nativeUsage:undefined));
+    if(target.receipt&&native.success&&(native.data.server_tool_use_details?.web_search_requests??0)>0){
       const proof=savedResult.success?verifyNativeSearchAccounting(native.data,target.rateCard,{reportedCostUsd:target.receipt.reportedCostUsd,
         finishReason:savedResult.data.finishReason,failure:savedResult.data.failure,annotationCount:savedResult.data.annotations.length}):null;
       if(!proof)return{settled:false,searchFeeVerified:false,evidence:null};
@@ -58,13 +58,17 @@ export class OpenRouterAccounting {
     if (data.id !== id) throw new ProviderFailure("unavailable");
     const endpoint=z.object({endpointName:z.string()}).safeParse(target.rateCard);
     const nativeModel=endpoint.success?/^DigitalOcean \| (moonshotai\/kimi-k2\.6-\d{8})$/.exec(endpoint.data.endpointName)?.[1]:undefined;
-    if(data.model!==MODEL_ID&&data.model!==nativeModel)throw new ProviderFailure("unavailable");
+    const identity=z.object({model:z.string(),provider:z.string()}).safeParse(target.rateCard);
+    const expectedModel=identity.success?identity.data.model:MODEL_ID;
+    const expectedProvider=identity.success&&identity.data.provider==="google-ai-studio"?"Google AI Studio":"DigitalOcean";
+    if((data.model!==expectedModel&&data.model!==nativeModel)||data.provider_name!==expectedProvider)throw new ProviderFailure("unavailable");
     let actual: bigint;
     try { actual = usdToMicroUsdCeil(data.total_cost); } catch { return { settled: false, searchFeeVerified: false, evidence: null }; }
     const rate = z.object({ contextTokens: count, pricing: z.object({ prompt: z.string(), completion: z.string(), input_cache_read: z.string().optional() }) }).safeParse(target.rateCard);
     if (!rate.success) return { settled: false, searchFeeVerified: false, evidence: null };
-    const searches = target.receipt.usage.searchRequests;
-    const search = typeof searches === "number" && searches > 0;
+    const searches = target.receipt?.usage.searchRequests;
+    const search = target.purpose==="web_search"||(typeof searches === "number" && searches > 0);
+    if(search&&!target.receipt)return {settled:false,searchFeeVerified:false,evidence:null};
     const passes = search ? 2 : 1;
     if (data.native_tokens_prompt > rate.data.contextTokens * passes || (search && searches !== 1)) {
       await this.budget.halt("usage_bound_exceeded");
@@ -93,7 +97,7 @@ export class OpenRouterAccounting {
       cachedTokens: data.native_tokens_cached ?? 0, searchResults: data.num_search_results ?? 0,
       searchEngine: data.web_search_engine ?? null, searchFeeVerified, finishReason: data.finish_reason, cancelled: data.cancelled,
     };
-    if (target.receipt.reportedCostUsd !== null) {
+    if (target.receipt && target.receipt.reportedCostUsd !== null) {
       try {
         if (!equalDecimal(target.receipt.reportedCostUsd, data.total_cost)) await this.budget.halt("accounting_mismatch");
       } catch { await this.budget.halt("accounting_mismatch"); }

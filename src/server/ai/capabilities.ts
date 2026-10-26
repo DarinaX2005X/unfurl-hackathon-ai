@@ -6,6 +6,7 @@ import type { DbTransaction } from "../db";
 import { withSystemTransaction } from "../db";
 import type { BudgetPort } from "../budget/ports";
 import { MODEL_ID, MODEL_POLICY_VERSION, OPENROUTER_BASE_URL, PROVIDER_PRICE_CAP, PROVIDER_TAG, SEARCH_POLICY } from "./constants";
+import {modelPolicy,type ModelPolicyId} from "./model-policy";
 import { ProviderFailure } from "./failure";
 import { canonicalJson, jsonDigest } from "./json";
 import type { ModelCapabilities, ProviderCapability, ProviderCapabilityGate } from "./ports";
@@ -14,7 +15,8 @@ import { WIRE_SCHEMA_VERSION } from "./wire-schema";
 export type ExecutionCapability = ProviderCapability | "budget_accounting" | "run_recovery" | "dispatcher";
 export type RuntimeWorld = "local" | "vercel";
 export const CAPABILITY_TEST_VERSION = "runtime-capabilities-v1";
-export function runtimeConfigurationDigest(world: RuntimeWorld): string {
+export function runtimeConfigurationDigest(world: RuntimeWorld,policyId?:ModelPolicyId): string {
+  if(policyId&&policyId!==MODEL_POLICY_VERSION)return jsonDigest({world,policy:modelPolicy(policyId),search:{...SEARCH_POLICY,maxToolCalls:1},validationPolicy:CAPABILITY_TEST_VERSION,receiptSchema:"provider-receipt-v2"});
   return jsonDigest({ world, model: MODEL_ID, provider: PROVIDER_TAG, modelPolicy: MODEL_POLICY_VERSION,
     priceCaps: { ...PROVIDER_PRICE_CAP }, search: { ...SEARCH_POLICY, maxToolCalls: 1 }, runtime: "fenced-workflow-v1",
     sourceExtractor: "html-text-v1", receiptSchema: "provider-receipt-v2", wireSchema: WIRE_SCHEMA_VERSION, validationPolicy: CAPABILITY_TEST_VERSION });
@@ -35,12 +37,12 @@ export class PersistedCapabilityGate implements ProviderCapabilityGate {
   private expiresAt = 0;
   readonly configurationDigest: string;
   constructor(readonly world: RuntimeWorld, private readonly budget: BudgetPort,
-    private readonly transaction: CapabilityTransaction = (work) => withSystemTransaction("run_execution", work)) {
-    this.configurationDigest = runtimeConfigurationDigest(world);
+    private readonly transaction: CapabilityTransaction = (work) => withSystemTransaction("run_execution", work),readonly modelPolicyId?:ModelPolicyId) {
+    this.configurationDigest = runtimeConfigurationDigest(world,modelPolicyId);
   }
   snapshot(): ModelCapabilities {
     const has = (capability: ExecutionCapability) => Date.now() < this.expiresAt && this.available.has(capability);
-    return { model: MODEL_ID, provider: PROVIDER_TAG, structured: has("model_structured"), text: has("model_text"),
+    return { model: modelPolicy(this.modelPolicyId).model, provider: modelPolicy(this.modelPolicyId).provider, structured: has("model_structured"), text: has("model_text"),
       search: has("research_search"), rubric: has("rubric"), limitations: has("budget_accounting") ? [] : ["capability_evidence_unavailable"] };
   }
   async refresh(): Promise<Set<ExecutionCapability>> {
@@ -54,7 +56,7 @@ export class PersistedCapabilityGate implements ProviderCapabilityGate {
     return this.transaction(async (tx) => (await tx.query<CapabilityRow>(`SELECT id,observed_at,capability,passed,expires_at>now() AS fresh,evidence,
       EXISTS(SELECT 1 FROM unfurl.ai_provider_operations o JOIN unfurl.ai_provider_responses r ON r.operation_id=o.id
         WHERE o.budget_id=(SELECT budget_id FROM unfurl.ai_provider_operations WHERE id=NULLIF(latest.evidence->>'operationId','')::uuid)
-        AND r.received_at>COALESCE((latest.evidence->'compatibility'->>'proofObservedAt')::timestamptz,latest.observed_at)
+        AND o.model_id='moonshotai/kimi-k2.6' AND r.received_at>COALESCE((latest.evidence->'compatibility'->>'proofObservedAt')::timestamptz,latest.observed_at)
         AND (r.result->>'category' IN ('auth','schema','unsupported_parameter','privacy_route')
           OR (r.result ? 'model' AND (r.result->>'model'<>'moonshotai/kimi-k2.6' OR r.result->>'provider'<>'DigitalOcean')))) AS invalidated FROM (
       SELECT DISTINCT ON (capability) id,observed_at,capability,passed,expires_at,evidence FROM unfurl.execution_capability_receipts
@@ -91,10 +93,10 @@ export class PersistedCapabilityGate implements ProviderCapabilityGate {
       (!options.probe && capability === "rubric" && !available.has("model_structured"))) throw new ProviderFailure("unavailable");
     await this.budget.assertAvailable(options);
   }
-  async assertExecutionAvailable(required: readonly ExecutionCapability[]): Promise<void> {
+  async assertExecutionAvailable(required: readonly ExecutionCapability[],options:{deferBudget?:boolean}={}): Promise<void> {
     const available = await this.refresh();
     if (!["budget_accounting", "dispatcher", "run_recovery", ...required].every((item) => available.has(item as ExecutionCapability))) throw new ProviderFailure("unavailable");
-    await this.budget.assertAvailable({ probe: false });
+    if(!options.deferBudget)await this.budget.assertAvailable({ probe: false });
   }
   /** Trusted probe/dispatcher writers only. Successful paid proofs must reference a saved settled operation. */
   async observe(observation: CapabilityObservation): Promise<void> {

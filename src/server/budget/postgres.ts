@@ -2,7 +2,7 @@ import "server-only";
 import { randomUUID } from "node:crypto";
 import type { DbTransaction } from "../db";
 import { withSystemTransaction } from "../db";
-import { MODEL_ID, PROVIDER_TAG } from "../ai/constants";
+import {modelPolicy,ModelPolicySchema} from "../ai/model-policy";
 import { canonicalJson, jsonDigest } from "../ai/json";
 import { ProviderFailure, type ProviderFailureCode } from "../ai/failure";
 import { canReserve, type BudgetState } from "./calculations";
@@ -42,7 +42,10 @@ export class PostgresBudget implements BudgetPort {
   private async state(tx: DbTransaction, row: CampaignRow): Promise<BudgetState> {
     const sums = (await tx.query<{ outstanding: string; probe_settled: string; probe_reserved: string }>(`SELECT
       count(*) FILTER (WHERE state IN ('reserved','dispatched','unknown') AND NOT EXISTS
-        (SELECT 1 FROM unfurl.ai_provider_terminal_http_400_receipts terminal WHERE terminal.operation_id=ai_provider_operations.id))::text AS outstanding,
+        (SELECT 1 FROM unfurl.ai_provider_terminal_http_400_receipts terminal WHERE terminal.operation_id=ai_provider_operations.id)
+        AND NOT EXISTS(SELECT 1 FROM unfurl.ai_provider_attempt_retirements retired WHERE retired.operation_id=ai_provider_operations.id
+          AND (retired.kind='ended_probe' OR EXISTS(SELECT 1 FROM unfurl.execution_job_retry_receipts retry
+            WHERE retry.job_id=retired.job_id AND retry.from_epoch=retired.from_epoch AND retry.actor_id=retired.actor_id))))::text AS outstanding,
       coalesce(sum(actual_micro_usd) FILTER (WHERE purpose='capability_probe' AND state='settled'),0)::text AS probe_settled,
       coalesce(sum(reserved_micro_usd) FILTER (WHERE purpose='capability_probe' AND state IN ('reserved','dispatched','unknown')),0)::text AS probe_reserved
       FROM unfurl.ai_provider_operations WHERE budget_id=$1`, [this.budgetId])).rows[0];
@@ -81,6 +84,17 @@ export class PostgresBudget implements BudgetPort {
       if (!canReserve(state, 1n, options.probe).allowed) throw new ProviderFailure("budget_exhausted");
     });
   }
+  /** Resolve an already allocated operation before rebuilding its exact request bytes. */
+  async existingModelPolicy(context:BudgetOperationContext){
+    return this.transaction(async tx=>{
+      const row=(await tx.query<{id:string;budget_id:string;run_step_id:string|null;rate_card:{policyVersion?:unknown}}>(
+        "SELECT id,budget_id,run_step_id,rate_card FROM unfurl.ai_provider_operations WHERE logical_operation_id=$1 AND attempt=$2",
+        [context.logicalOperationId,context.attempt])).rows[0];
+      if(!row)return null;
+      if(row.id!==context.reservationId||row.budget_id!==this.budgetId||row.run_step_id!==context.runStepId)throw unavailable();
+      return ModelPolicySchema.parse(row.rate_card.policyVersion);
+    });
+  }
   async recover(context: BudgetOperationContext, requestDigest: string): Promise<{ reservation: BudgetReservation; receipt: ProviderResponseReceipt } | null> {
     return this.transaction(async (tx) => {
       await this.lock(tx);
@@ -96,6 +110,8 @@ export class PostgresBudget implements BudgetPort {
   }
   async reserve(request: ReserveRequest): Promise<BudgetReservation> {
     const amount = readMicroUsd(request.amountMicroUsd);
+    const policy=modelPolicy(ModelPolicySchema.parse(request.rateCard.policyVersion));
+    if(request.rateCard.model!==policy.model||request.rateCard.provider!==policy.provider)throw unavailable();
     if (amount === 0n || request.probe !== (request.purpose === "capability_probe") ||
       jsonDigest(request.rateCard, 64 * 1024) !== request.rateCardDigest) throw unavailable();
     return this.transaction(async (tx) => {
@@ -114,7 +130,7 @@ export class PostgresBudget implements BudgetPort {
         (id,budget_id,logical_operation_id,attempt,run_step_id,request_digest,purpose,state,reserved_micro_usd,model_id,provider_tag,rate_card_digest,rate_card)
         VALUES ($1,$2,$3,$4,$5,$6,$7,'reserved',$8,$9,$10,$11,$12) RETURNING *`,
       [request.reservationId, this.budgetId, request.logicalOperationId, request.attempt, request.runStepId, request.requestDigest,
-        request.purpose, request.amountMicroUsd, MODEL_ID, PROVIDER_TAG, request.rateCardDigest, JSON.stringify(request.rateCard)])).rows[0];
+        request.purpose, request.amountMicroUsd, policy.model, policy.provider, request.rateCardDigest, JSON.stringify(request.rateCard)])).rows[0];
       if (!row) throw unavailable();
       await this.entry(tx, row.id, "reserve", amount, 0n, request.requestDigest);
       return reservation(row);
@@ -129,6 +145,16 @@ export class PostgresBudget implements BudgetPort {
       if (row.state !== "reserved" || campaign.halted) throw unavailable();
       await tx.query("UPDATE unfurl.ai_provider_operations SET state='dispatched',dispatched_at=now(),updated_at=now() WHERE id=$1", [row.id]);
       return { kind: "dispatch" };
+    });
+  }
+  async recordProviderIdentity(value:BudgetReservation,id:string):Promise<void>{
+    if(!/^gen-[0-9A-Za-z_-]{1,200}$/.test(id))throw unavailable();
+    await this.transaction(async tx=>{
+      await this.lock(tx);const row=await this.operation(tx,value);
+      if(!["dispatched","unknown"].includes(row.state))throw unavailable();
+      const saved=(await tx.query<{provider_request_id:string|null}>("SELECT provider_request_id FROM unfurl.ai_provider_operations WHERE id=$1",[row.id])).rows[0];
+      if(saved?.provider_request_id&&saved.provider_request_id!==id)throw unavailable();
+      await tx.query("UPDATE unfurl.ai_provider_operations SET provider_request_id=$2,updated_at=now() WHERE id=$1",[row.id,id]);
     });
   }
   async recordResponse(value: BudgetReservation, response: ProviderResponseReceipt, cost: string | null): Promise<void> {
@@ -146,10 +172,18 @@ export class PostgresBudget implements BudgetPort {
         if (row.state === "settled" && actual !== null && row.actual_micro_usd !== actual.toString()) throw unavailable();
         return;
       }
+      const identity=(await tx.query<{provider_request_id:string|null}>("SELECT provider_request_id FROM unfurl.ai_provider_operations WHERE id=$1",[row.id])).rows[0];
+      if(identity?.provider_request_id&&identity.provider_request_id!==response.providerRequestId)throw unavailable();
       await tx.query(`INSERT INTO unfurl.ai_provider_responses
         (operation_id,provider_request_id,response_digest,reported_cost_usd,usage,result) VALUES ($1,$2,$3,$4,$5,$6)`,
       [row.id, response.providerRequestId, response.responseDigest, response.reportedCostUsd, JSON.stringify(response.usage), JSON.stringify(response.result)]);
       await tx.query("UPDATE unfurl.ai_provider_operations SET provider_request_id=$2,updated_at=now() WHERE id=$1", [row.id, response.providerRequestId]);
+      // Authenticated metadata may have settled an interrupted stream before its late final receipt.
+      // Appending that receipt must never release the same hold a second time.
+      if(row.state==="settled"){
+        if(actual!==null&&row.actual_micro_usd!==actual.toString())await tx.query("UPDATE unfurl.ai_budgets SET halted=true,revision=revision+1,updated_at=now() WHERE id=$1",[this.budgetId]);
+        return;
+      }
       if (actual === null) {
         await tx.query("UPDATE unfurl.ai_provider_operations SET state='unknown',updated_at=now() WHERE id=$1", [row.id]);
         const result=response.result;
@@ -192,13 +226,14 @@ export class PostgresBudget implements BudgetPort {
     });
   }
   async reconciliationTarget(operationId: string): Promise<{
-    reservation: BudgetReservation; rateCard: unknown; purpose: string; receipt: ProviderResponseReceipt | null;
+    reservation: BudgetReservation; rateCard: unknown; purpose: string; receipt: ProviderResponseReceipt | null; providerRequestId?:string|null;
   } | null> {
     return this.transaction(async (tx) => {
       const row = (await tx.query<OperationRow>("SELECT * FROM unfurl.ai_provider_operations WHERE id=$1 AND budget_id=$2", [operationId, this.budgetId])).rows[0];
       if (!row) return null;
       const saved = (await tx.query<ReceiptRow>("SELECT * FROM unfurl.ai_provider_responses WHERE operation_id=$1", [row.id])).rows[0];
-      return { reservation: reservation(row), rateCard: row.rate_card, purpose: row.purpose, receipt: saved ? await this.derivedReceipt(tx,row.id,saved) : null };
+      const identity=(await tx.query<{provider_request_id:string|null}>("SELECT provider_request_id FROM unfurl.ai_provider_operations WHERE id=$1",[row.id])).rows[0];
+      return { reservation: reservation(row), rateCard: row.rate_card, purpose: row.purpose,providerRequestId:identity?.provider_request_id??null, receipt: saved ? await this.derivedReceipt(tx,row.id,saved) : null };
     });
   }
   /** Evidence must come from authenticated generation accounting, never a timer or estimate. */

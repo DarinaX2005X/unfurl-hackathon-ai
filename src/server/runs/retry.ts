@@ -8,6 +8,7 @@ import type { Actor } from "../auth/actor";
 import { ServiceFault } from "../auth/errors";
 import { withSystemTransaction, type DbTransaction } from "../db";
 import { executeIdempotentInTransaction } from "../idempotency";
+import {PostgresBudget} from "../budget/postgres";
 import { getRuntimeAdmission } from "./composition";
 import { enqueueAcceptedRun } from "./enqueue";
 import { readRunSnapshot, requireObservedRun, type ObservedRunKind } from "./observer";
@@ -67,14 +68,16 @@ export async function retryRunInTransaction(tx:DbTransaction,actor:Actor,id:stri
 }
 export async function retryRun(actor:Actor,id:string,kind:ObservedRunKind,key:string){
   if(kind==="agent_turn")await withSystemTransaction("run_execution",tx=>reconcileSavedSearchBeforeRetry(tx,actor,id));
-  await getRuntimeAdmission().assertAvailable(kind);
+  await getRuntimeAdmission().assertAvailable(kind,{deferBudget:kind==="agent_turn"});
   return withSystemTransaction("run_execution",async tx=>{
     // Ownership is checked even on idempotent replay, including after deletion.
     const owned=(await tx.query(`SELECT r.id FROM unfurl.${kind==="generation"?"generation_runs":"agent_turn_runs"} r
       JOIN unfurl.conversations c ON c.id=r.conversation_id AND c.owner_id=r.owner_id AND c.deleted_at IS NULL WHERE r.id=$1 AND r.owner_id=$2`,[id,actor.id])).rowCount;
     if(owned!==1)throw new ServiceFault(404,"not_found","generation.notFound");
     // Persist only identity; the returned snapshot is always current.
-    const result=await executeIdempotentInTransaction(tx,actor,{operation:`run.${kind}.retry`,key,body:{runId:id},parseResult:z.object({runId:IdSchema}).strict()},async()=>({status:202,data:await retryRunInTransaction(tx,actor,id,kind)}));
+    const result=await executeIdempotentInTransaction(tx,actor,{operation:`run.${kind}.retry`,key,body:{runId:id},parseResult:z.object({runId:IdSchema}).strict()},async()=>{const data=await retryRunInTransaction(tx,actor,id,kind);
+      if(kind==="agent_turn")await new PostgresBudget(z.uuid().parse(process.env.AI_BUDGET_ID),work=>work(tx)).assertAvailable({probe:false});
+      return{status:202,data};});
     const snapshot=await readRunSnapshot(tx,actor,result.data.runId,kind);
     return {status:result.status,data:kind==="generation"?GenerationSnapshotSchema.parse(snapshot):RunSnapshotSchema.parse(snapshot)};
   });

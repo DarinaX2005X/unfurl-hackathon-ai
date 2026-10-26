@@ -1,7 +1,7 @@
 import {randomUUID} from "node:crypto";
 import {describe,expect,it,vi} from "vitest";
 vi.mock("server-only",()=>({}));
-import {readAgentDecisionRetryPolicy,saveAgentDecisionRetryPolicy,type AgentDecisionRetryBinding} from "../../src/server/runs/decision-policy";
+import {readAgentDecisionModelRetryPolicy,readAgentDecisionRetryPolicy,saveAgentDecisionRetryPolicy,type AgentDecisionRetryBinding} from "../../src/server/runs/decision-policy";
 import {jsonDigest} from "../../src/server/ai/json";
 
 const binding=():AgentDecisionRetryBinding=>({jobId:randomUUID(),runId:randomUUID(),decisionStepId:randomUUID(),retryEpoch:2,
@@ -9,17 +9,20 @@ const binding=():AgentDecisionRetryBinding=>({jobId:randomUUID(),runId:randomUUI
 async function harness(){
   const input=binding();
   let row:Record<string,unknown>={};
+  let modelRow:Record<string,unknown>={};
   const query=vi.fn(async(sql:string,values:unknown[]=[])=>{
     if(sql.startsWith("INSERT")){
-      row={id:values[0],input_digest:values[3],schema_digest:values[4],capability_digest:values[4],validation_policy_digest:values[4],
+      const inserted={id:values[0],input_digest:values[3],schema_digest:values[4],capability_digest:values[4],validation_policy_digest:values[4],
         status:"succeeded",result_reference:JSON.parse(String(values[5])),semantic_target:{kind:"agent_turn",runId:input.runId}};
+      if(String(values[2]).startsWith("agent-retry-policy.v1"))row=inserted;else modelRow=inserted;
       return{rows:[],rowCount:1};
     }
+    if(String(values[1]).startsWith("agent-retry-model.v2"))return{rows:[modelRow]};
     expect(values).toEqual([input.jobId,`agent-retry-policy.v1:${input.decisionStepId}:${input.retryEpoch}`,input.retryEpoch]);
     return{rows:[row]};
   });
-  const tx={query} as never;await saveAgentDecisionRetryPolicy(tx,input);
-  return{input,tx,query,row};
+  const tx={query} as never;await saveAgentDecisionRetryPolicy(tx,input,"kimi-digitalocean-v1");
+  return{input,tx,query,row,modelRow};
 }
 describe("durable decision retry allocation",()=>{
   it("reuses the bound 32k policy after restart without changing the original capture",async()=>{
@@ -27,7 +30,16 @@ describe("durable decision retry allocation",()=>{
     expect(await readAgentDecisionRetryPolicy(h.tx,h.input)).toBe(32768);
     expect(await readAgentDecisionRetryPolicy(h.tx,h.input)).toBe(32768);
     expect(jsonDigest(h.input)).toBe(before);
-    expect(h.query.mock.calls.filter(([sql])=>sql.startsWith("INSERT"))).toHaveLength(1);
+    expect(h.query.mock.calls.filter(([sql])=>sql.startsWith("INSERT"))).toHaveLength(2);
+  });
+  it("records a Kimi retry override and reader policy even if the original capture selected Gemini",async()=>{
+    const h=await harness();
+    expect(await readAgentDecisionModelRetryPolicy(h.tx,h.input)).toMatchObject({modelPolicy:"kimi-digitalocean-v1",readerCapabilities:{version:"text-sources-v1"}});
+  });
+  it("rejects a journal policy that differs from its immutable ambiguous-attempt authorization",async()=>{
+    const h=await harness();h.modelRow.authorized_model_policy="gemini-flash-google-v1";
+    h.modelRow.reader_policy_digest=jsonDigest((h.modelRow.result_reference as Record<string,unknown>).readerCapabilities);
+    await expect(readAgentDecisionModelRetryPolicy(h.tx,h.input)).rejects.toThrow();
   });
   it("leaves old epochs without a policy on their historical request bytes",async()=>{
     const query=vi.fn(async()=>({rows:[]})),tx={query} as never,input=binding();

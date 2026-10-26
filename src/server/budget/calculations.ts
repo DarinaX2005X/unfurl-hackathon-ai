@@ -1,6 +1,6 @@
 import "server-only";
 import { PROVIDER_PRICE_CAP, SEARCH_PRICE_USD } from "../ai/constants";
-import { MAX_CONCURRENT_OPERATIONS, PROBE_LIMIT_MICRO_USD, SPENDABLE_LIMIT_MICRO_USD, tokenCostMicroUsdCeil, usdToMicroUsdCeil } from "./money";
+import { FINAL_VERIFICATION_RESERVE_MICRO_USD, MAX_CONCURRENT_OPERATIONS, PROBE_LIMIT_MICRO_USD, SPENDABLE_LIMIT_MICRO_USD, tokenCostMicroUsdCeil, usdToMicroUsdCeil } from "./money";
 
 export interface ReservationBounds {
   contextTokens: number;
@@ -8,6 +8,7 @@ export interface ReservationBounds {
   /** The bounded server search has an initial and a final model inference. */
   inferencePasses: 1 | 2;
   searches: 0 | 1;
+  priceCaps?: {prompt:string;completion:string};
 }
 
 export function worstCaseMicroUsd(bounds: ReservationBounds): bigint {
@@ -17,8 +18,8 @@ export function worstCaseMicroUsd(bounds: ReservationBounds): bigint {
   // Reserve the full endpoint context for EACH inference, including its generated tool input.
   // This is intentionally conservative until native token counting is verified.
   const model = BigInt(bounds.inferencePasses) * (
-    tokenCostMicroUsdCeil(bounds.contextTokens, PROVIDER_PRICE_CAP.prompt) +
-    tokenCostMicroUsdCeil(bounds.outputTokens, PROVIDER_PRICE_CAP.completion)
+    tokenCostMicroUsdCeil(bounds.contextTokens, (bounds.priceCaps??PROVIDER_PRICE_CAP).prompt) +
+    tokenCostMicroUsdCeil(bounds.outputTokens, (bounds.priceCaps??PROVIDER_PRICE_CAP).completion)
   );
   const tool = BigInt(bounds.searches) * usdToMicroUsdCeil(SEARCH_PRICE_USD);
   return model + tool;
@@ -37,7 +38,7 @@ export function canReserve(state: BudgetState, amount: bigint, isProbe: boolean)
       !Number.isSafeInteger(state.outstandingOperations) || state.outstandingOperations < 0) throw new RangeError("Invalid budget state");
   if (state.halted) return { allowed: false, reason: "halted" };
   if (state.outstandingOperations >= MAX_CONCURRENT_OPERATIONS) return { allowed: false, reason: "concurrency" };
-  if (state.settled + state.reserved + amount > SPENDABLE_LIMIT_MICRO_USD) return { allowed: false, reason: "campaign_limit" };
+  if (state.settled + state.reserved + amount > SPENDABLE_LIMIT_MICRO_USD-(isProbe?FINAL_VERIFICATION_RESERVE_MICRO_USD:0n)) return { allowed: false, reason: "campaign_limit" };
   if (isProbe && state.probeSettled + state.probeReserved + amount > PROBE_LIMIT_MICRO_USD) return { allowed: false, reason: "probe_limit" };
   return { allowed: true };
 }

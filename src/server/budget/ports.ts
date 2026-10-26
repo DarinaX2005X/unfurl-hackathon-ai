@@ -50,6 +50,8 @@ export interface BudgetPort {
   recover(context: BudgetOperationContext, requestDigest: string): Promise<{ reservation: BudgetReservation; receipt: ProviderResponseReceipt } | null>;
   reserve(request: ReserveRequest): Promise<BudgetReservation>;
   claimDispatch(reservation: BudgetReservation): Promise<DispatchDecision>;
+  /** Early transport identity is accounting evidence, never a completed semantic receipt. */
+  recordProviderIdentity?(reservation: BudgetReservation, providerRequestId: string): Promise<void>;
   /** Receipt and settlement/unknown state commit atomically before success leaves the adapter. */
   recordResponse(reservation: BudgetReservation, receipt: ProviderResponseReceipt, confirmedCostMicroUsd: string | null): Promise<void>;
   markUnknown(reservation: BudgetReservation, failure: ProviderFailureCode): Promise<void>;
