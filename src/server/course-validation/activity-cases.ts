@@ -11,7 +11,7 @@ import { ServiceFault } from "@/server/auth/errors";
 import { createRubricJudge } from "@/server/ai/rubric-judge";
 import type { RunContext, StepEffectContext } from "@/server/runs/ports";
 import { stableExecutionId } from "@/server/runs/identity";
-import { GenerationEvidenceRepository, loadGenerationStep, verifyStoredModelData, type StoredGenerationStep } from "@/server/course-generation/repository";
+import { GenerationEvidenceRepository, loadGenerationStep, verifyStoredModelData, verifyStoredModelItem, type StoredGenerationStep } from "@/server/course-generation/repository";
 import { ProposedTaskCasesSchema, TaskCasesCheckpointSchema, prepareTaskCasesCheckpoint } from "@/server/course-generation/checkpoints";
 import { generationDigests, type StageIndex } from "@/server/course-generation/stages";
 import { ActivityContextSessionSchema, RubricJudgementSchema, RubricRequestSchema, validateRubricJudgement,
@@ -73,8 +73,9 @@ async function loadAuthority(tx: DbTransaction, binding: ApprovedBuildBinding, i
   const planned = await loadGenerationStep(tx, current, ids.casePlanStepId, TaskCasesCheckpointSchema);
   if (planned.result.candidateStepId !== ids.candidateStepId || planned.result.candidateDigest !== loaded.candidate.candidateDigest) invalid();
   const proposal = ProposedTaskCasesSchema.parse({ cases: planned.result.cases.map(({ caseId, ...entry }) => { void caseId; return entry; }), alternativeSpaceProof: planned.result.alternativeSpaceProof });
-  await verifyStoredModelData(tx, planned, planned.result.operationId, ProposedTaskCasesSchema, proposal);
-  equal(prepareTaskCasesCheckpoint({ candidateStepId: ids.candidateStepId, candidateDigest: loaded.candidate.candidateDigest, operationId: planned.result.operationId, proposal }), planned.result);
+  await verifyStoredModelItem(tx, current, planned, planned.result.operationId, ProposedTaskCasesSchema, proposal, planned.result.modelProof, "cases");
+  const reconstructed = prepareTaskCasesCheckpoint({ candidateStepId: ids.candidateStepId, candidateDigest: loaded.candidate.candidateDigest, operationId: planned.result.operationId, proposal });
+  equal(planned.result.modelProof ? { ...reconstructed, modelProof: planned.result.modelProof } : reconstructed, planned.result);
   const test = planned.result.cases.find((entry) => entry.caseId === ids.caseId) ?? invalid();
   const plan = ProposedActivityPlanSchema.parse(test.activityPlan);
   canonicalJson(plan);

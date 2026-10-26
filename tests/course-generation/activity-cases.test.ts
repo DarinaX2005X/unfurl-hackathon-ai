@@ -8,7 +8,9 @@ const store = vi.hoisted(() => ({
 }));
 vi.mock("@/server/course-generation/repository", async () => {
   const { taskDigest } = await import("@/server/mechanics/digest");
+  const actual = await vi.importActual<typeof import("@/server/course-generation/repository")>("@/server/course-generation/repository");
   return {
+    verifyStoredModelItem: actual.verifyStoredModelItem,
     GenerationEvidenceRepository: class {
       async loadBinding(_tx: unknown, input: { runId: string; ownerId: string }) {
         const binding = store.binding as ApprovedBuildBinding;
@@ -39,7 +41,10 @@ import { ActivitySessionPublicSchema } from "@/domain/activity";
 import { RubricRequestSchema } from "@/server/evaluation/contracts";
 import { advanceActivityCase, replayStoredActivityCase, ActivityActionCheckpointSchema, ActivityDraftCheckpointSchema } from "@/server/course-validation/activity-cases";
 import { type ResponseCase, type CaseEvaluationResult } from "@/server/course-validation/case-evaluation";
-import { prepareTaskCasesCheckpoint } from "@/server/course-generation/checkpoints";
+import { prepareTaskCasesCheckpoint, COURSE_GENERATION_SCHEMA_DIGEST, COURSE_VALIDATION_POLICY_DIGEST,
+  COURSE_GENERATION_V2_SCHEMA_DIGEST, COURSE_VALIDATION_V2_POLICY_DIGEST, TaskCasesCheckpointSchema } from "@/server/course-generation/checkpoints";
+import { createBatchItemProof } from "@/server/course-generation/batch-provenance";
+import { getCapabilityCatalogDigest } from "@/server/mechanics/catalog";
 import { stableExecutionId } from "@/server/runs/identity";
 import { jsonDigest } from "@/server/ai/json";
 import { MODEL_ID, PROVIDER_TAG } from "@/server/ai/constants";
@@ -56,11 +61,13 @@ function raw(value: JsonValue): JsonValue {
   }
   return result;
 }
-async function setup(mechanicId = "outcome_prediction") {
+async function setup(mechanicId = "outcome_prediction", batched = false) {
   const fixture = registryFixtures.find((entry) => entry.id === mechanicId)!;
   const sample = await fixture.make();
   const candidate = prepareTaskCandidate(authored(sample, fixture.dimensions), { approvalDigest });
-  const binding = { run: { id: id(701) }, course: { id: id(702), ownerId: id(703) }, version: { id: id(704) }, approval: { contentDigest: approvalDigest } } as ApprovedBuildBinding;
+  const moduleId = id(750), batchStepId = id(751);
+  const binding = { run: { id: id(701) }, course: { id: id(702), ownerId: id(703) }, version: { id: id(704) },
+    approval: { id: id(752), draftRevision: 1, contentDigest: approvalDigest }, draft: { modules: [{ id: moduleId }] } } as ApprovedBuildBinding;
   const candidateStepId = id(705), casePlanStepId = id(706), planOperation = id(707);
   const actions = sample.activity?.session.events.map((event, index) => ({ key: `action_${index}`, action: event.action,
     response: raw(sample.activity!.receiptInputs[index]!.response) })) ?? [{ key: "run", action: { kind: "run" as const }, response: raw(sample.response) }];
@@ -73,9 +80,40 @@ async function setup(mechanicId = "outcome_prediction") {
   store.binding = binding; store.candidate = candidate; store.candidateStepId = candidateStepId;
   store.records.set(casePlanStepId, { id: casePlanStepId, inputDigest: "b".repeat(64), result: checkpoint });
   store.paid.set(planOperation, { stepId: casePlanStepId, data: proposal });
+  if (batched) {
+    const itemId = candidate.task.id, itemMaterial = { candidate }, items = [{ itemId, value: proposal }];
+    const material = { batchKind: "cases", moduleId, approvalDigest, requestedIds: [itemId],
+      items: [{ itemId, material: itemMaterial, candidateStepId, candidateDigest: candidate.candidateDigest }] };
+    Object.assign(checkpoint, { modelProof: createBatchItemProof(batchStepId, items, itemId) });
+    store.records.set(casePlanStepId, { id: casePlanStepId, inputDigest: jsonDigest(itemMaterial), result: checkpoint });
+    store.records.set(batchStepId, { id: batchStepId, inputDigest: jsonDigest(material), result: {
+      kind: "course.model.batch.v2", batchKind: "cases", operationId: planOperation, material, items } });
+    store.records.set(candidateStepId, { id: candidateStepId, inputDigest: "b".repeat(64), result: {
+      kind: "course.task.candidate", moduleId, knowledgeStepId: id(753), candidate, authoringOperationId: id(754),
+      authored: { ...authored(sample, fixture.dimensions), design: { taskId: itemId, learnerAction: "Synthetic activity action.",
+        mechanicRationale: "Contract wiring fixture.", affordances: ["activity"], purpose: "practice", transfer: null } } } });
+    store.paid.set(planOperation, { stepId: batchStepId, data: { items } });
+  }
   const index = new Map<string, string>(), calls: Array<{ schemaId: string; stepId: string; operationId: string }> = [];
   const signal = new AbortController().signal;
-  const tx = {} as Parameters<Parameters<RunContext["read"]>[0]>[0];
+  const rate_card = { policyVersion: "kimi-digitalocean-v1", model: MODEL_ID, provider: PROVIDER_TAG };
+  const tx = { async query(sql: string, parameters: unknown[]) {
+    const key = String(parameters[0]);
+    if (sql.includes("FROM unfurl.ai_provider_operations")) {
+      const paid = store.paid.get(key), step = paid && store.records.get(paid.stepId);
+      if (!paid || !step || paid.stepId !== parameters[1]) return { rows: [] };
+      return { rows: [{ operation_id: key, run_step_id: paid.stepId, input_digest: step.inputDigest, request_digest: "a".repeat(64), response_digest: "b".repeat(64),
+        provider_request_id: "synthetic-activity-contract", state: "settled", usage: {}, rate_card_digest: jsonDigest(rate_card), rate_card,
+        model_id: MODEL_ID, provider_tag: PROVIDER_TAG, result: { model: MODEL_ID, provider: "DigitalOcean", failure: null, finishReason: "stop", content: JSON.stringify(paid.data) } }] };
+    }
+    const record = store.records.get(key);
+    return { rows: record ? [{ id: record.id, input_digest: record.inputDigest, result_reference: record.result,
+      schema_digest: batched ? COURSE_GENERATION_V2_SCHEMA_DIGEST : COURSE_GENERATION_SCHEMA_DIGEST,
+      validation_policy_digest: batched ? COURSE_VALIDATION_V2_POLICY_DIGEST : COURSE_VALIDATION_POLICY_DIGEST,
+      capability_digest: getCapabilityCatalogDigest(), approval_digest: approvalDigest,
+      generation_policy: { result: { kind: "course.generation.policy", version: "course-generation-batch-v2", batchSize: 5, maxOutputTokens: 16384, approvalDigest },
+        schema: COURSE_GENERATION_SCHEMA_DIGEST, validationPolicy: COURSE_VALIDATION_POLICY_DIGEST, capability: getCapabilityCatalogDigest(), approval: approvalDigest } }] : [] };
+  } } as unknown as Parameters<Parameters<RunContext["read"]>[0]>[0];
   const context: RunContext = {
     claim: { jobId: id(708), leaseOwner: "fixture", fencingToken: "1", retryEpoch: 0, target: { kind: "generation", runId: binding.run.id,
       ownerId: binding.course.ownerId, conversationId: id(709), branchId: id(710), inputMessageId: id(711), courseId: binding.course.id,
@@ -145,10 +183,29 @@ async function setup(mechanicId = "outcome_prediction") {
     const { caseId: _caseId, ...proposed } = input.test; void _caseId;
     proposal.cases[0] = proposed as typeof proposal.cases[0];
   };
-  return { input, drain, replay, mutateTest, calls, model, checkpoint };
+  return { input, drain, replay, mutateTest, calls, model, checkpoint, batchStepId };
 }
 
 describe("stored authoring activity cases", () => {
+  it("executes and replays a batched activity case through the actual paid-parent verifier", async () => {
+    const harness = await setup("outcome_prediction", true), result = await harness.drain();
+    expect(result.result.decision?.outcome).toBe("correct");
+    await expect(harness.replay(result)).resolves.toBeUndefined();
+    expect(harness.calls).toEqual([]);
+    expect(store.paid.get(harness.checkpoint.operationId)!.stepId).toBe(harness.batchStepId);
+  });
+  it.each(["parent", "item", "digest", "candidate", "case_identity"])("rejects a batched activity plan with mismatched %s before execution", async (change) => {
+    const harness = await setup("outcome_prediction", true);
+    const record = store.records.get(harness.input.casePlanStepId)!, planned = TaskCasesCheckpointSchema.parse(record.result);
+    if (change === "parent") planned.modelProof!.batchStepId = id(999);
+    if (change === "item") planned.modelProof!.itemId = id(999);
+    if (change === "digest") planned.modelProof!.itemDigest = "f".repeat(64);
+    if (change === "candidate") planned.candidateDigest = "f".repeat(64);
+    if (change === "case_identity") planned.cases[0]!.caseId = id(999);
+    record.result = planned;
+    await expect(advanceActivityCase(harness.input)).rejects.toThrow();
+    expect(harness.input.index.size).toBe(0); expect(harness.calls).toEqual([]);
+  });
   it.each(["outcome_prediction", "constrained_optimization", "artifact_construction", "causal_intervention"])("executes %s through actual deterministic actions and replays without provider calls", async (mechanic) => {
     const harness = await setup(mechanic), result = await harness.drain();
     expect(result.result.decision?.outcome).toBe("correct"); expect(result.result.activityEvidenceRef).not.toBeNull();

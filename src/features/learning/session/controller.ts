@@ -183,6 +183,18 @@ export class LearningSessionController {
     if (this.disposed) return;
     const samePosition = positionKey(this.state.session) === positionKey(session);
     if (this.state.session && session.route.revision < this.state.session.route.revision) return;
+    const previousActivity = this.state.session?.activity;
+    if (samePosition && previousActivity && (!session.activity || session.activity.id === previousActivity.id)) {
+      // A session read may finish after a save/action has already committed here.
+      // Merge their independent revisions without discarding newer route/progress data.
+      const incomingActivity = session.activity;
+      const newerInput = incomingActivity !== null && incomingActivity.inputRevision >= previousActivity.inputRevision;
+      const activity = incomingActivity && incomingActivity.revision >= previousActivity.revision ? incomingActivity : previousActivity;
+      session = { ...session,
+        activity: { ...activity, inputRevision: Math.max(previousActivity.inputRevision, incomingActivity?.inputRevision ?? 0) },
+        savedInput: newerInput ? session.savedInput : this.state.session!.savedInput,
+      };
+    }
     if (!samePosition) {
       this.epoch += 1;
       this.recordKey = recoveryKey(this.actorId, this.enrollmentId, session.lesson?.id ?? "end", session.task?.id ?? null);
@@ -625,7 +637,15 @@ export class LearningSessionController {
           { idempotencyKey: request.key, signal: this.abort.signal }));
         if (!this.current(epoch)) return;
         this.update({ busy: null });
-        if (!result.ok) { this.fail("advance", result.error); return; }
+        if (!result.ok) {
+          if (result.error.error.code === "revision_conflict") {
+            // A rejected CAS did not advance. Refresh, then let the next explicit
+            // Continue create a new intent; ambiguous failures still replay below.
+            record.advance = null; this.persist();
+            await this.load();
+          } else this.fail("advance", result.error);
+          return;
+        }
         record.advance = null; this.persist();
         await this.acceptSession(result.data);
       });
@@ -633,7 +653,8 @@ export class LearningSessionController {
   }
 
   async poll(): Promise<void> {
-    if (this.polling || this.disposed || !this.state.online || this.state.busy || this.state.saving) return;
+    if (this.polling || this.disposed || !this.state.online) return;
+    if (this.state.busy || this.state.saving) { this.schedulePoll(); return; }
     this.polling = true;
     const session = this.state.session, epoch = this.epoch;
     try {

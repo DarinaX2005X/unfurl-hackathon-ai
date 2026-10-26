@@ -277,6 +277,29 @@ describe("production learning continuity", () => {
     expect(retry[1]).toEqual(first[1]); expect(retry[2].idempotencyKey).toBe(first[2].idempotencyKey);
     expect(h.data.activity?.inputRevision).toBe(1); expect(resumed.getSnapshot().dirty).toBe(false);
   });
+  it("merges a late same-route read with a newer saved answer while still detecting later competing saves", async () => {
+    const h = harness(), controller = track(h.make()); await controller.load(); await controller.start();
+    controller.setResponse(response("first saved answer")); await controller.save();
+    const earlier = copy(h.data), reply = deferred<ServiceResult<LearningSession>>();
+    // The read also contains an account-progress update from another completed task.
+    earlier.progress = { ...earlier.progress, xpTotal: 25, xpToNextLevel: 225 };
+    vi.mocked(h.port.loadSession).mockReturnValueOnce(reply.promise);
+    const loading = controller.load();
+    controller.setResponse(response("newer saved answer")); await controller.save();
+    expect(controller.getSnapshot().session?.savedInput?.inputRevision).toBe(2);
+    reply.resolve({ ok: true, data: earlier }); await loading;
+    expect(controller.getSnapshot().session?.activity?.inputRevision).toBe(2);
+    expect(controller.getSnapshot().session?.savedInput).toEqual(h.data.savedInput);
+    expect(controller.getSnapshot().response).toEqual(response("newer saved answer"));
+    expect(controller.getSnapshot()).toMatchObject({ dirty: false, conflict: false, failure: null });
+    expect(controller.getSnapshot().session?.progress.xpTotal).toBe(25);
+    // A genuinely newer saved answer from another tab must still require a choice.
+    await h.port.saveInput(id(10), { expectedInputRevision: 2, response: response("another tab's answer") }, { idempotencyKey: id(88) });
+    await controller.load();
+    expect(controller.getSnapshot().session?.savedInput?.inputRevision).toBe(3);
+    expect(controller.getSnapshot().conflict).toBe(true);
+    expect(controller.getSnapshot().response).toEqual(response("newer saved answer"));
+  });
   it("does not attach a late run result to a newer editor response", async () => {
     const h = harness(), controller = track(h.make()); await controller.load(); await controller.start();
     const original = h.port.dispatchAction, gate = deferred<void>();
@@ -321,6 +344,90 @@ describe("production learning continuity", () => {
     controller.setResponse(response("assessed")); await controller.submit(); expect(controller.hasCurrentEvaluation()).toBe(true);
     controller.setResponse(response("changed")); await controller.save();
     expect(controller.hasCurrentEvaluation()).toBe(false); await controller.advance(); expect(h.port.advance).not.toHaveBeenCalled();
+  });
+  it("refreshes a rejected advance and creates a new intent after late coverage changes", async () => {
+    const h = harness(), controller = track(h.make()); await controller.load(); await controller.start();
+    controller.setResponse(response("assessed")); await controller.submit();
+    h.data.route.revision = 2; h.data.enrollment.routeRevision = 2;
+    vi.mocked(h.port.advance).mockImplementation(async (_id, body) => body.expectedRouteRevision === h.data.route.revision ?
+      { ok: true, data: copy(h.data) } : { ok: false, error: { error: {
+        code: "revision_conflict", messageKey: "learning.routeChanged", retryable: false, requestId: id(90),
+      } } });
+    await controller.advance();
+    expect(h.port.advance).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot().session?.route.revision).toBe(2);
+    expect(controller.getSnapshot().response).toEqual(response("assessed"));
+    const rejected = vi.mocked(h.port.advance).mock.calls[0]!;
+    controller.dispose();
+    const resumed = track(h.make()); await resumed.load(); await resumed.advance();
+    const fresh = vi.mocked(h.port.advance).mock.calls[1]!;
+    expect(fresh[1]).toEqual({ expectedRouteRevision: 2 });
+    expect(fresh[2].idempotencyKey).not.toBe(rejected[2].idempotencyKey);
+    expect(resumed.getSnapshot().failure).toBeNull();
+  });
+  it("loads another tab's advanced position without advancing that new task again", async () => {
+    const h = harness(), controller = track(h.make()); await controller.load(); await controller.start();
+    controller.setResponse(response("assessed")); await controller.submit();
+    h.data.route = { ...h.data.route, revision: 2, next: [{ lessonId: id(55), taskId: id(56), reasonCode: "course_sequence", basisEvidenceIds: [] }] };
+    h.data.enrollment = { ...h.data.enrollment, routeRevision: 2, currentLessonId: id(55), currentTaskId: id(56) };
+    h.data.lesson = { ...h.data.lesson!, id: id(55), taskIds: [id(56)], blocks: [{ id: id(57), kind: "task", taskId: id(56) }] };
+    h.data.task = { ...h.data.task!, id: id(56) }; h.data.activity = null; h.data.savedInput = null; h.data.evaluation = null;
+    vi.mocked(h.port.advance).mockResolvedValue({ ok: false, error: { error: {
+      code: "revision_conflict", messageKey: "learning.routeChanged", retryable: false, requestId: id(90),
+    } } });
+    await controller.advance();
+    expect(h.port.advance).toHaveBeenCalledTimes(1);
+    expect(controller.getSnapshot().session?.task?.id).toBe(id(56));
+    expect(controller.getSnapshot().session?.route.revision).toBe(2);
+    expect(controller.getSnapshot().response).toEqual(response(""));
+  });
+  it("retains an ambiguous advance identity across reload even if the route revision changes", async () => {
+    const h = harness(), controller = track(h.make()); await controller.load(); await controller.start();
+    controller.setResponse(response("assessed")); await controller.submit();
+    vi.mocked(h.port.advance).mockResolvedValueOnce(fail());
+    await controller.advance();
+    const original = vi.mocked(h.port.advance).mock.calls[0]!;
+    expect(controller.getSnapshot().failure?.scope).toBe("advance");
+    controller.dispose();
+    h.data.route.revision = 2; h.data.enrollment.routeRevision = 2;
+    const resumed = track(h.make()); await resumed.load(); await resumed.advance();
+    const replay = vi.mocked(h.port.advance).mock.calls[1]!;
+    expect(replay[1]).toEqual(original[1]);
+    expect(replay[2].idempotencyKey).toBe(original[2].idempotencyKey);
+    expect(h.port.acknowledgeFeedback).toHaveBeenCalledTimes(1);
+  });
+  it("resumes pending assessment polling after a slow autosave without overlapping reads or losing edits", async () => {
+    vi.useFakeTimers();
+    const h = harness(), controller = track(h.make()); await controller.load(); await controller.start();
+    controller.setResponse(response("submitted")); await controller.submit();
+    const completed = copy(h.data.evaluation!);
+    h.data.evaluation = { ...completed, evaluation: { ...completed.evaluation, status: "pending", outcome: null, awardedXp: 0,
+      feedback: { explanation: "Assessment in progress.", nextAction: "wait" } } };
+    await controller.load();
+    const originalSave = vi.mocked(h.port.saveInput).getMockImplementation()!, savedReply = deferred<void>();
+    vi.mocked(h.port.saveInput).mockImplementation(async (...args) => {
+      const result = await originalSave(...args); await savedReply.promise; return result;
+    });
+    const assessmentReply = deferred<ServiceResult<EvaluationReceipt>>();
+    vi.mocked(h.port.getEvaluation).mockReturnValue(assessmentReply.promise);
+    controller.setResponse(response("edited while assessment runs"));
+    await vi.advanceTimersByTimeAsync(1800);
+    expect(controller.getSnapshot().saving).toBe(true);
+    expect(h.port.getEvaluation).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(3600);
+    expect(h.port.getEvaluation).not.toHaveBeenCalled();
+    savedReply.resolve(); await controller.save();
+    expect(controller.getSnapshot().saving).toBe(false);
+    await vi.advanceTimersByTimeAsync(1800);
+    expect(h.port.getEvaluation).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(3600); await controller.poll();
+    expect(h.port.getEvaluation).toHaveBeenCalledTimes(1);
+    h.data.evaluation = completed; assessmentReply.resolve({ ok: true, data: completed });
+    await vi.waitFor(() => expect(controller.getSnapshot().session?.evaluation?.evaluation.status).toBe("evaluated"));
+    expect(controller.getSnapshot().response).toEqual(response("edited while assessment runs"));
+    expect(controller.hasCurrentEvaluation()).toBe(false);
+    await vi.advanceTimersByTimeAsync(3600);
+    expect(h.port.getEvaluation).toHaveBeenCalledTimes(1);
   });
   it("never reveals another actor's session or recovered response", async () => {
     const h = harness(), owner = track(h.make()); await owner.load(); await owner.start(); owner.setResponse(response("private draft"));

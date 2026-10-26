@@ -16,6 +16,7 @@ import { stableExecutionId } from "../runs/identity";
 import type { RunContext, StepEffectContext } from "../runs/ports";
 import { preparedCurriculumOutput, PreparedCurriculumOutputSchema, type SelectedSource } from "../curriculum-research/composer";
 import { composeDurableCurriculum } from "../curriculum-research/durable-composer";
+import { CurriculumValidationFailure, CurriculumValidationFeedbackSchema } from "../curriculum-research/validation-feedback";
 import { commitResearchedRevision } from "../curriculum-research/persistence";
 import { createResearchedCourse, curriculumConflict, readArtifact, requireCourseDraft, requireDraft } from "../curricula/repository";
 import { editMetadataInTransaction, readAuthoringSnapshot } from "../curricula/service";
@@ -38,7 +39,7 @@ const ToolOutputSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("curriculum"), prepared: PreparedCurriculumOutputSchema }).strict(),
   z.object({ kind: z.literal("metadata") }).strict(),
   z.object({ kind: z.literal("response") }).strict(),
-  z.object({ kind: z.literal("failure"), code: z.string(), summary: z.string() }).strict(),
+  z.object({ kind: z.literal("failure"), code: z.string(), summary: z.string(), validationFeedback: CurriculumValidationFeedbackSchema.optional() }).strict(),
 ]);
 type ToolOutput = z.infer<typeof ToolOutputSchema>;
 export interface AgentToolDependencies { model: ModelPort; researchForStep(context: StepEffectContext): ResearchPort }
@@ -125,7 +126,8 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
       }
     } catch (error) {
       if (error instanceof ProviderFailure && error.code === "invalid_output") compositionFailure = { kind: "failure", code: error.code,
-        summary: "A saved curriculum part did not pass its reference, source or coverage checks. Review the source selection or requested scope before trying again; no partial programme was published." };
+        summary: "A saved curriculum part did not pass its reference, source or coverage checks. Review the source selection or requested scope before trying again; no partial programme was published.",
+        ...(error instanceof CurriculumValidationFailure ? { validationFeedback: error.feedback } : {}) };
       else if (error instanceof ServiceFault) compositionFailure = { kind: "failure", code: error.code,
         summary: "The selected curriculum changed or became unavailable before this programme could be saved." };
       else throw error;
@@ -198,7 +200,8 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
       let result: ToolObservation;
       let details: ActionDetails | undefined = agentActionDetails(decision, snapshot);
       switch (output.kind) {
-        case "failure": result = observation(decision.tool, false, output.summary, { code: output.code }); break;
+        case "failure": result = observation(decision.tool, false, output.summary, { code: output.code,
+          ...(output.validationFeedback ? { validationFeedback: output.validationFeedback } : {}) }); break;
         case "search": {
           await new PostgresResearchRepository().saveSearch(tx, output.result);
           result = observation(decision.tool, true, `Found ${output.result.hits.length} source candidates. These search results still need to be read.`, output.result); break;

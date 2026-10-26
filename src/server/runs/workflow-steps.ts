@@ -1,9 +1,36 @@
 import { getStepMetadata,getWorkflowMetadata,RetryableError } from "workflow";
 
+const interruptionCodes:Readonly<Record<string,string>>=Object.freeze({
+  "57014":"database_statement_timeout","55P03":"database_lock_timeout","53300":"database_connection_limit",
+  "08000":"database_connection","08001":"database_connection","08003":"database_connection","08004":"database_connection","08006":"database_connection","08007":"database_connection","08P01":"database_connection",
+  "40001":"database_transaction_conflict","40P01":"database_transaction_conflict",
+  "42P01":"database_contract","42703":"database_contract","42883":"database_contract","42601":"database_contract","22P02":"database_contract","23503":"database_contract","23505":"database_contract","23514":"database_contract",
+  ECONNRESET:"network_connection",ECONNREFUSED:"network_connection",ETIMEDOUT:"network_timeout",EPIPE:"network_connection",ENOTFOUND:"network_dns",EAI_AGAIN:"network_dns",
+  CERT_HAS_EXPIRED:"network_tls",DEPTH_ZERO_SELF_SIGNED_CERT:"network_tls",SELF_SIGNED_CERT_IN_CHAIN:"network_tls",UNABLE_TO_VERIFY_LEAF_SIGNATURE:"network_tls",
+});
+/** Only fixed categories/codes cross the retry boundary; never preserve raw messages, SQL, URLs or parameters. */
+export function safeExecutionInterruption(error:unknown):{category:string;code:string}{
+  let value=error,fallback={category:"unknown_infrastructure",code:"unclassified"};const seen=new Set<object>();
+  for(let depth=0;depth<4&&value!==null&&typeof value==="object"&&!seen.has(value);depth++){
+    seen.add(value);
+    const read=(key:string)=>{try{return Reflect.get(value as object,key) as unknown;}catch{return undefined;}};
+    const code=read("code"),name=read("name"),message=read("message");
+    if(typeof code==="string"&&Object.hasOwn(interruptionCodes,code))return{category:interruptionCodes[code]!,code};
+    if(message==="timeout exceeded when trying to connect"||message==="Connection terminated due to connection timeout")fallback={category:"database_pool_timeout",code:"pool_connect_timeout"};
+    else if(typeof name==="string"&&["TypeError","ReferenceError","RangeError","SyntaxError","ZodError"].includes(name)&&fallback.code==="unclassified")fallback={category:"runtime_contract",code:name};
+    value=read("cause");
+  }
+  return fallback;
+}
 export async function advanceExecutionStep(jobId:string){
   "use step";
   const {getRuntime}=await import("./composition");
-  try{return await getRuntime().executor.advance(jobId);}catch{throw new RetryableError("Execution storage interruption; preserve lease and recover",{retryAfter:"300s"});}
+  try{return await getRuntime().executor.advance(jobId);}catch(error){
+    const cause=safeExecutionInterruption(error);
+    // RetryableError serialization preserves its message, but does not preserve arbitrary cause fields.
+    const retry=new RetryableError(`Execution interruption [${cause.category}:${cause.code}]; preserve lease and recover`,{retryAfter:"300s"});
+    retry.cause=cause;throw retry;
+  }
 }
 export async function recoveryReceiptStep(probeId:string){
   "use step";

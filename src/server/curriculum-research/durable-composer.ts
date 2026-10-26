@@ -12,6 +12,7 @@ import { CurriculumResearchEvidenceSchema } from "./contracts";
 import { materializeClaimArtifacts, preparedAnswers, sourceInput, type PreparedCurriculum, type SelectedSource } from "./composer";
 import { briefEvidenceDigest, moduleEvidenceDigest, outcomeEvidenceDigest, validateCurriculumEvidence } from "./validation";
 import { persistPartFacts, readCurriculumParts, runCurriculumPart } from "./part-runtime";
+import { CurriculumValidationFailure } from "./validation-feedback";
 import { ContentPageSchema, CourseHeaderSchema, QuestionBatchSchema, QuestionPartSchema, ResearchBatchSchema, ResearchPartSchema,
   RoadmapPageSchema, TranslatedAssumptionsSchema, TranslatedHeaderSchema, TranslatedModulesSchema, TranslatedOutcomesSchema,
   TranslatedQuestionsSchema, type QuestionPart, type ResearchPart, type RoadmapSection } from "./part-contracts";
@@ -214,7 +215,8 @@ export async function composeDurableCurriculum(context: RunContext, model: Model
       const outcomes = outcomeBatches[batchIndex] ?? [], modules = moduleBatches[batchIndex] ?? [];
       const outcomeIds = new Set(outcomes.map((outcome) => outcome.id));
       const moduleOutcomeIds = new Set(modules.flatMap((module) => module.outcomeIds));
-      const part = await runCurriculumPart(context, model, { invocationId: input.invocationId, phase: "research", index: researchIndex++,
+      const partIndex = researchIndex++;
+      const part = await runCurriculumPart(context, model, { invocationId: input.invocationId, phase: "research", index: partIndex,
         saved,
         request: { goal: draft.goal, audience: draft.audience, contentLanguage: draft.contentLanguage, scope: scope.title,
           outcomes, modules, moduleOutcomeTitles: draft.outcomes.filter((outcome) => moduleOutcomeIds.has(outcome.id)).map(({ id, title }) => ({ id, title })),
@@ -226,11 +228,16 @@ export async function composeDurableCurriculum(context: RunContext, model: Model
           requireExactIds(output.moduleEstimates.map((entry) => entry.moduleId), modules.map((entry) => entry.id));
           if (output.claims.some((claim) => claim.outcomeIds.some((id) => !outcomeIds.has(id)))) invalid();
           const materialized = materializeClaimArtifacts(claimContext(scope.sources, step), output.claims);
-          const evidence = output.outcomeEvidence.map((entry) => {
+          const evidence = output.outcomeEvidence.map((entry, evidenceIndex) => {
             const outcome = outcomes.find((outcome) => outcome.id === entry.outcomeId)!;
-            const claimIds = entry.claimRefs.map((ref) => {
+            const claimIds = entry.claimRefs.map((ref, refIndex) => {
               const id = materialized.localClaimIds.get(ref);
-              if (!id || !materialized.claims.find((claim) => claim.id === id)?.outcomeIds.includes(outcome.id)) return invalid(); return id;
+              const claim = id && materialized.claims.find((claim) => claim.id === id);
+              if (!claim) return invalid();
+              if (!claim.outcomeIds.includes(outcome.id)) throw new CurriculumValidationFailure({ code: "claim_outcome_mismatch",
+                path: ["outcomeEvidence", evidenceIndex, "claimRefs", refIndex], claimRef: ref, expectedOutcomeId: outcome.id,
+                declaredOutcomeIds: claim.outcomeIds, researchPart: { phase: "research", index: partIndex } });
+              return claim.id;
             });
             if (!unique(claimIds)) invalid();
             return { outcomeId: outcome.id, outcomeDigest: outcomeEvidenceDigest(outcome), claimIds, rationale: entry.rationale };

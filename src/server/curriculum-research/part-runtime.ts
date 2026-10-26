@@ -16,6 +16,7 @@ import type { Passage } from "../research/ports";
 import { PostgresCurriculumResearchRepository } from "./repository";
 import type { SourceClaim } from "./contracts";
 import { researchInstructions } from "./composer";
+import { CurriculumValidationFailure, CurriculumValidationFeedbackSchema } from "./validation-feedback";
 
 export const curriculumPartKey = (invocationId: string, phase: string, index: number) =>
   `curriculum.v2:${invocationId}:${phase}:${String(index).padStart(8, "0")}`;
@@ -23,7 +24,13 @@ export interface SavedCurriculumPart {
   step_key: string; input_digest: string; schema_digest: string; capability_digest: string; validation_policy_digest: string;
   approval_digest: string | null; result_reference: unknown;
 }
-const RejectedPartSchema = z.object({ partRejected: z.literal(true) }).strict();
+const RejectedPartSchema = z.object({ partRejected: z.literal(true), validationFeedback: CurriculumValidationFeedbackSchema.optional() }).strict();
+const rejectedPart = (error: unknown) => ({ partRejected: true as const,
+  ...(error instanceof CurriculumValidationFailure ? { validationFeedback: error.feedback } : {}) });
+function throwRejectedPart(value: z.infer<typeof RejectedPartSchema>): never {
+  if (value.validationFeedback) throw new CurriculumValidationFailure(value.validationFeedback);
+  throw new ProviderFailure("invalid_output");
+}
 const rejectable = (error: unknown) => error instanceof z.ZodError
   || (error instanceof ProviderFailure && error.code === "invalid_output")
   || (error instanceof ServiceFault && [400, 409].includes(error.status));
@@ -47,7 +54,7 @@ export async function runCurriculumPart<T, R>(context: RunContext, model: ModelP
   const key = curriculumPartKey(input.invocationId, input.phase, input.index);
   const actionId = stableExecutionId(input.invocationId, key);
   const EnvelopeSchema = z.union([z.object({ stepId: IdSchema, value: input.outputSchema }).strict(),
-    z.object({ stepId: IdSchema, partRejected: z.literal(true) }).strict()]);
+    RejectedPartSchema.extend({ stepId: IdSchema })]);
   const ResultSchema = z.union([input.resultSchema, RejectedPartSchema]);
   const stepInput = jsonValue({ invocationId: input.invocationId, request: input.request, instructionsDigest: jsonDigest(input.instructions) });
   const digests = { schema: jsonDigest(z.toJSONSchema(input.outputSchema), 65536),
@@ -57,7 +64,8 @@ export async function runCurriculumPart<T, R>(context: RunContext, model: ModelP
   if (saved) {
     if (saved.input_digest !== jsonDigest(stepInput) || saved.schema_digest !== digests.schema || saved.capability_digest !== digests.capability
       || saved.validation_policy_digest !== digests.validationPolicy || saved.approval_digest !== null) throw new ProviderFailure("invalid_output");
-    if (RejectedPartSchema.safeParse(saved.result_reference).success) throw new ProviderFailure("invalid_output");
+    const rejected = RejectedPartSchema.safeParse(saved.result_reference);
+    if (rejected.success) throwRejectedPart(rejected.data);
     return input.resultSchema.parse(saved.result_reference);
   }
   const result = await context.step({ key, executionProfile: "longform_curriculum",
@@ -80,13 +88,13 @@ export async function runCurriculumPart<T, R>(context: RunContext, model: ModelP
         return jsonValue({ stepId: step.stepId, value: response.data });
       } catch (error) {
         if (!rejectable(error)) throw error;
-        return jsonValue({ stepId: step.stepId, partRejected: true });
+        return jsonValue({ stepId: step.stepId, ...rejectedPart(error) });
       }
     },
     commit: async (tx, raw) => {
       const output = EnvelopeSchema.parse(raw);
       try {
-        if ("partRejected" in output) throw new ProviderFailure("invalid_output");
+        if ("partRejected" in output) throwRejectedPart(output);
         const saved = input.resultSchema.parse(await input.commit(tx, output.value, { stepId: output.stepId }));
         await context.emitChat(tx, { type: "action.completed", invocationId: actionId,
           resultSummary: input.completedSummary, sourceIds: [] });
@@ -95,11 +103,12 @@ export async function runCurriculumPart<T, R>(context: RunContext, model: ModelP
         if (!rejectable(error)) throw error;
         await context.emitChat(tx, { type: "action.failed", invocationId: actionId,
           error: { code: "generation_failed", messageKey: "generation.invalidResponse", retryable: false, requestId: actionId } });
-        return jsonValue({ partRejected: true });
+        return jsonValue(rejectedPart(error));
       }
     },
   });
-  if (RejectedPartSchema.safeParse(result).success) throw new ProviderFailure("invalid_output");
+  const rejected = RejectedPartSchema.safeParse(result);
+  if (rejected.success) throwRejectedPart(rejected.data);
   return input.resultSchema.parse(result);
 }
 
