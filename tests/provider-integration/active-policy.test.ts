@@ -74,6 +74,22 @@ describe("durable chosen model policy",()=>{
     await expect(assertModelPolicyAvailable(CANDIDATE_MODEL_POLICY,true)).resolves.toBeUndefined();
     expect(state.query).not.toHaveBeenCalled();
   });
+  it("preserves campaign Gemini selection after hosting changes but requires target authorization",async()=>{
+    vi.stubEnv("VERCEL","1");
+    state.query.mockImplementation(async(_sql:string,args:unknown[])=>({rows:args[3]===true?[]:[proof()]}));
+    expect(await readActiveModelPolicy(tx)).toBe(CANDIDATE_MODEL_POLICY);
+    await expect(assertModelPolicyAvailable(CANDIDATE_MODEL_POLICY,false)).rejects.toThrow("provider.unavailable");
+    expect(await readActiveModelPolicy(tx)).toBe(CANDIDATE_MODEL_POLICY);
+    const queries=state.query.mock.calls;
+    expect(queries[0]![1][3]).toBe(false);expect(queries[1]![1][3]).toBe(true);
+    expect(queries[0]![0]).toContain("ELSE NOT(proof.evidence ? 'portability')");
+  });
+  it("anchors candidate rejection to original proof time rather than import time",async()=>{
+    state.query.mockResolvedValue({rows:[]});await readActiveModelPolicy(tx);
+    const sql=state.query.mock.calls[0]![0] as string;
+    expect(sql).toContain("proof.evidence->'portability'->>'sourceObservedAt'");
+    expect(sql).toContain("failed.result->>'provider'<>'Google AI Studio'");
+  });
   it("replays a paid receipt before current compatibility, price, budget or network checks",async()=>{
     state.query.mockResolvedValue({rows:[proof({rejected:true})]});
     const h=replayHarness(true),result=await h.model.complete(h.request,new AbortController().signal);

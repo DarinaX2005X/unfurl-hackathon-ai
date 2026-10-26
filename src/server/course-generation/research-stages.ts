@@ -14,6 +14,7 @@ import { ModuleResearchPlanSchema, SourceSelectionSchema } from "./planning";
 import { ModuleKnowledgeCheckpointSchema, SourceClaimsCheckpointSchema, SourceClaimsProposalSchema, SourceReadCheckpointSchema } from "./checkpoints";
 import { GenerationEvidenceRepository, verifyStoredModelData } from "./repository";
 import { generationDigests, loadStage, mappedModelStage, modelStage, ModelStageSchema, type StageIndex } from "./stages";
+import { advanceApprovedModuleResearch } from "./approved-research";
 
 const ReadOutputSchema = z.discriminatedUnion("status", [
   z.object({ status: z.literal("success"), document: SourceDocumentSchema }).strict(),
@@ -27,8 +28,14 @@ export async function advanceModuleResearch(input: {
   context: RunContext; binding: ApprovedBuildBinding; index: StageIndex; moduleId: string;
   model: ModelPort; research: (effect: StepEffectContext) => ResearchPort;
   priorKnowledge: readonly ModuleKnowledge[];
+  batchingV2?: boolean;
 }) {
   const { context, binding, index, moduleId, model } = input;
+  if (input.batchingV2) {
+    const approved = await advanceApprovedModuleResearch(input);
+    if (!approved) return null;
+    if (approved.status === "sufficient") return approved.loaded;
+  }
   const prefix = `course/${moduleId}/research`, sources = new PostgresResearchRepository(), claims = new PostgresCurriculumResearchRepository();
   const section = binding.draft.modules.find((entry) => entry.id === moduleId)!;
   const outcomes = binding.draft.outcomes.filter((entry) => section.outcomeIds.includes(entry.id));

@@ -7,6 +7,8 @@ import { InvestigationSourceSchema } from "@/domain/mechanic-families/v2/investi
 import { EdgeSchema, FiniteValuesSchema, LocalIdSchema, QuantitySchema } from "@/domain/mechanic-families/v2/shared";
 
 export const REQUIRED_MECHANIC_MODEL = "moonshotai/kimi-k2.6" as const;
+/** Actual content-review identity is attested against its immutable provider operation. */
+export const ContentReviewModelSchema = z.enum([REQUIRED_MECHANIC_MODEL, "google/gemini-3.8-flash"]);
 const actionKind = z.enum(["run", "prediction.commit", "experiment.query", "intervention.apply", "dialogue.turn"]);
 export const MechanicRuntimeCapabilitiesSchema = z.object({
   model: z.object({ modelId: z.literal(REQUIRED_MECHANIC_MODEL), available: z.boolean() }).strict().nullable(),
@@ -58,7 +60,7 @@ export const TaskValidationEvidenceSchema = z.discriminatedUnion("kind", [
   AlternativeSpaceEvidenceSchema,
   z.object({ kind: z.literal("pure"), validatorVersion: z.literal("mechanic-readiness-v1") }).strict(),
   z.object({
-    kind: z.literal("model_review"), callId: IdSchema, modelId: z.literal(REQUIRED_MECHANIC_MODEL),
+    kind: z.literal("model_review"), callId: IdSchema, modelId: ContentReviewModelSchema,
     validator: z.enum(["content_review", "validateCounterexampleClaim", "dialogue_compatibility"]),
     candidateDigest: DigestSchema, decision: GradeDecisionSchema,
   }).strict(),

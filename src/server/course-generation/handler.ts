@@ -22,8 +22,8 @@ import { CONTENT_REVIEW_INSTRUCTIONS, ContentReviewSchema, createContentReviewIn
 import { CaseEvaluationResultSchema, evaluateResponseCase } from "@/server/course-validation/case-evaluation";
 import { createModuleReviewInput } from "@/server/course-validation/module-review";
 import { SPECIALIZED_REVIEW_INSTRUCTIONS, SpecializedReviewCheckpointSchema, SpecializedReviewSchema } from "@/server/course-validation/specialized-review";
-import { GenerationEvidenceRepository } from "./repository";
-import { AuthoredTaskSchema, ContentReviewCheckpointSchema, TaskCandidateCheckpointSchema, TaskCasesCheckpointSchema, ProposedTaskCasesSchema, prepareTaskCasesCheckpoint } from "./checkpoints";
+import { GenerationEvidenceRepository, resolveGenerationPolicy } from "./repository";
+import { COURSE_GENERATION_POLICY_KEY, CourseGenerationPolicyCheckpointSchema, COURSE_GENERATION_V2_SCHEMA_DIGEST, COURSE_VALIDATION_V2_POLICY_DIGEST, AuthoredTaskSchema, ContentReviewCheckpointSchema, TaskCasesCheckpointSchema, ProposedTaskCasesSchema, prepareTaskCasesCheckpoint } from "./checkpoints";
 import type { AuthoredModule } from "./contracts";
 import { LessonReadingSchema, validateModulePlan } from "./planning";
 import { advanceModuleResearch } from "./research-stages";
@@ -34,8 +34,7 @@ import { checkpointJson, jsonCheckpointSchema, generationDigests, loadStage, loa
 import { materializeCourse, loadVerifiedModule, findReusableCompletedModule } from "@/server/course-materialization/course";
 import { CompletedModuleCheckpointSchema, type CompletedModuleCheckpoint } from "./completion";
 
-const RejectedTaskSchema = z.object({ kind: z.literal("course.task.rejected"), authored: AuthoredTaskSchema, authoringOperationId: IdSchema, reason: z.string() }).strict();
-const CandidateResultSchema = z.union([TaskCandidateCheckpointSchema, RejectedTaskSchema]);
+import { CandidateResultSchema, advanceTaskBatch, advanceCandidateBatch, advanceCasesBatch, advanceReviewBatch, plannedTaskBatches, loadLaterBatchCandidates } from "./newbatch-stages";
 const ValidationStageSchema = z.object({ kind: z.literal("course.task.validation"), references: TaskValidationReferencesSchema,
   verdict: z.enum(["passed", "failed", "uncertain"]), checks: JsonValueSchema }).strict();
 const RepairSchema = z.object({ kind: z.literal("course.module.repair"), issues: JsonValueSchema }).strict();
@@ -60,6 +59,17 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
       if (target.kind !== "generation") throw new ProviderFailure("invalid_output");
       const binding = await context.read((tx) => evidence.loadBinding(tx, { runId: target.runId, ownerId: target.ownerId }));
       const index = await context.read((tx) => loadStageIndex(tx, context.claim.jobId));
+      const batchingV2 = await context.read(async (tx) => (await resolveGenerationPolicy(tx, binding)) === "batch-v2");
+      if (batchingV2 && !index.has(COURSE_GENERATION_POLICY_KEY)) {
+        await pureStage({ context, binding, key: COURSE_GENERATION_POLICY_KEY, material: { approvalDigest: binding.approval.contentDigest }, schema: CourseGenerationPolicyCheckpointSchema,
+          async commit() { return { kind: "course.generation.policy" as const, version: "course-generation-batch-v2" as const, batchSize: 5 as const, maxOutputTokens: 16384 as const, approvalDigest: binding.approval.contentDigest }; } });
+        return { status: "continue" };
+      }
+      if (batchingV2) {
+        const original = context;
+        context = { ...original, step: (spec) => original.step({ ...spec, digests: { ...spec.digests,
+          schema: COURSE_GENERATION_V2_SCHEMA_DIGEST, validationPolicy: COURSE_VALIDATION_V2_POLICY_DIGEST } }) };
+      }
       const runtime = await dependencies.runtime(), completed: CompletedModuleCheckpoint[] = [];
       for (const outline of binding.draft.modules) {
         const modulePrefix = `course/${outline.id}`, complete = await loadStage(context, binding, index, `${modulePrefix}/complete`, CompletedModuleCheckpointSchema);
@@ -85,7 +95,7 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
         const prefix = `${modulePrefix}/round/${round}`;
         const requestRepair = async (issues: unknown) => pureStage({ context, binding, key: `${modulePrefix}/repair/${round}`, material: { round }, schema: RepairSchema,
           async commit() { return { kind: "course.module.repair" as const, issues: checkpointJson(issues) }; } });
-        const researched = await advanceModuleResearch({ context, binding, index, moduleId: outline.id, model: dependencies.model, research: dependencies.research, priorKnowledge: completed.map((entry) => entry.module.knowledge) });
+        const researched = await advanceModuleResearch({ context, binding, index, moduleId: outline.id, model: dependencies.model, research: dependencies.research, priorKnowledge: completed.map((entry) => entry.module.knowledge), batchingV2 });
         if (!researched) return { status: "continue" };
         const planStep = await advanceModulePlan({ context, binding, index, key: `${prefix}/plan`, knowledge: researched.knowledge, runtime, correction: moduleCorrection,
           priorModules: completed.map((entry) => ({ moduleId: entry.module.moduleId, outcomes: entry.module.knowledge.outcomes.map(({ outcomeId, learnerAction, criteria }) => ({ outcomeId, learnerAction, criteria })) })), model: dependencies.model });
@@ -101,15 +111,29 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
           readings.push(reading.reading); readingStepIds.push(reading.stepId);
         }
         const authoredTasks: AuthoredModule["tasks"] = [], taskReferences: z.infer<typeof TaskValidationReferencesSchema>[] = [];
+        const taskBatches = plannedTaskBatches(plan.tasks);
         for (const slot of plan.tasks) {
-          const previousTasks = [...completed.flatMap((entry) => entry.module.tasks.map(({ candidate }) => candidate)), ...authoredTasks]
-            .filter((entry) => entry.task.outcomeIds.some((outcomeId) => slot.outcomeIds.includes(outcomeId)));
+          const currentBatch = taskBatches.find((batch) => batch[0]!.id === slot.id);
+          if (batchingV2 && currentBatch && !await advanceTaskBatch({ context, binding, index, model: dependencies.model, moduleId: outline.id, prefix,
+            batchKey: `${prefix}/batch/v2/${slot.id}/0`, slots: currentBatch,
+            previousTasks: [...completed.flatMap((entry) => entry.module.tasks.map(({ candidate }) => candidate)), ...authoredTasks],
+            knowledge: researched.knowledge, knowledgeStepId: researched.step.id, facts: researched.facts })) return { status: "continue" };
+          const allPreviousTasks = [...completed.flatMap((entry) => entry.module.tasks.map(({ candidate }) => candidate)), ...authoredTasks];
+          const previousTasks = allPreviousTasks.filter((entry) => entry.task.outcomeIds.some((outcomeId) => slot.outcomeIds.includes(outcomeId)));
           let accepted = false;
           let correction: unknown = null;
           for (let attempt = 0; attempt < 3; attempt++) {
             const taskPrefix = `${prefix}/task/${slot.id}/${attempt}`, candidateKey = `${taskPrefix}/candidate`;
             const candidateStep = await loadStage(context, binding, index, candidateKey, CandidateResultSchema);
             if (!candidateStep) {
+              if (batchingV2) {
+                await advanceCandidateBatch({ context, binding, index, model: dependencies.model, moduleId: outline.id, prefix,
+                  batchKey: `${prefix}/batch/v2/repair/${slot.id}/${attempt}`, slots: [slot], attempt,
+                  previousTasks: [...allPreviousTasks, ...await loadLaterBatchCandidates({ context, binding, index, prefix, taskId: slot.id,
+                    slots: taskBatches.find((batch) => batch.some((entry) => entry.id === slot.id))! })],
+                  knowledge: researched.knowledge, knowledgeStepId: researched.step.id, facts: researched.facts, correction });
+                return { status: "continue" };
+              }
               await mappedModelStage({ context, binding, model: dependencies.model, key: candidateKey, purpose: "task_authoring", schema: AuthoredTaskSchema, resultSchema: CandidateResultSchema,
                 material: { slot, contentLanguage: binding.draft.contentLanguage, approvalDigest: binding.approval.contentDigest, knowledge: researched.knowledge,
                   contract: getMechanicAuthoringContract(slot.mechanicId, slot.mechanicVersion), claims: researched.facts.claims, passages: researched.facts.passages,
@@ -134,6 +158,11 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
             const candidate = loaded.candidate;
             const casesKey = `${taskPrefix}/cases`, casesStep = await loadStage(context, binding, index, casesKey, TaskCasesCheckpointSchema);
             if (!casesStep) {
+              if (batchingV2) {
+                await advanceCasesBatch({ context, binding, index, model: dependencies.model, moduleId: outline.id, prefix,
+                  batchKey: `${prefix}/batch/v2/repair/${slot.id}/${attempt}`, attempt, candidates: [loaded.step] });
+                return { status: "continue" };
+              }
               await mappedModelStage({ context, binding, model: dependencies.model, key: casesKey, purpose: "content_review", schema: ProposedTaskCasesSchema, resultSchema: TaskCasesCheckpointSchema,
                 material: { candidate, responseSchema: getMechanicAuthoringContract(candidate.task.mechanicId, candidate.task.mechanicVersion).responseSchema },
                 instructions: "Independently design adversarial evaluator cases: a substantively valid response, a distinct valid alternative, and a meaningful field-valid but behaviorally wrong response. Include boundary/trap cases where helpful. Malformed-only negatives are insufficient. For a truly unique deterministic response, supply a replayable alternativeSpaceProof instead of an invented alternative. For activity tasks include action plans with real action types; receipt fields start null or empty and are bound by the server. Never invent activity observations or execution receipts.",
@@ -163,6 +192,11 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
             }
             const reviewKey = `${taskPrefix}/review`, review = await loadStage(context, binding, index, reviewKey, ContentReviewCheckpointSchema);
             if (!review) {
+              if (batchingV2) {
+                await advanceReviewBatch({ context, binding, index, model: dependencies.model, moduleId: outline.id, prefix,
+                  batchKey: `${prefix}/batch/v2/repair/${slot.id}/${attempt}`, attempt, candidates: [loaded.step], knowledge: researched.knowledge, facts: researched.facts });
+                return { status: "continue" };
+              }
               const outcomes = researched.knowledge.outcomes.filter((o) => candidate.task.outcomeIds.includes(o.outcomeId));
               const material = createContentReviewInput({ candidate, criteria: outcomes.flatMap((o) => o.criteria), learnerAction: outcomes.map((o) => o.learnerAction).join("\n"), claims: researched.facts.claims, passages: researched.facts.passages });
               await mappedModelStage({ context, binding, model: dependencies.model, key: reviewKey, purpose: "content_review", schema: ContentReviewSchema, resultSchema: ContentReviewCheckpointSchema,

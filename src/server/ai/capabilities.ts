@@ -11,6 +11,7 @@ import { ProviderFailure } from "./failure";
 import { canonicalJson, jsonDigest } from "./json";
 import type { ModelCapabilities, ProviderCapability, ProviderCapabilityGate } from "./ports";
 import { WIRE_SCHEMA_VERSION } from "./wire-schema";
+import {portableReceiptBindingSql,ProviderPortabilitySchema,usableProviderPortability} from "./provider-proof-portability";
 
 export type ExecutionCapability = ProviderCapability | "budget_accounting" | "run_recovery" | "dispatcher";
 export type RuntimeWorld = "local" | "vercel";
@@ -22,7 +23,7 @@ export function runtimeConfigurationDigest(world: RuntimeWorld,policyId?:ModelPo
     sourceExtractor: "html-text-v1", receiptSchema: "provider-receipt-v2", wireSchema: WIRE_SCHEMA_VERSION, validationPolicy: CAPABILITY_TEST_VERSION });
 }
 export type CapabilityTransaction = <T>(work: (tx: DbTransaction) => Promise<T>) => Promise<T>;
-interface CapabilityRow { id:string; observed_at:Date|string; capability: ExecutionCapability; passed: boolean; fresh: boolean; evidence: JsonObject; invalidated?:boolean }
+interface CapabilityRow { id:string; observed_at:Date|string; capability: ExecutionCapability; passed: boolean; fresh: boolean; evidence: JsonObject; invalidated?:boolean;portability_valid?:boolean }
 const certificateSchema=z.object({version:z.literal("historical-compatibility-v1"),proofReceiptId:z.uuid(),proofObservedAt:z.iso.datetime(),
   checkedAt:z.iso.datetime(),credentialDigest:z.string().nullable(),endpointName:z.string().nullable(),baseUrl:z.literal(OPENROUTER_BASE_URL)}).strict();
 const paidCapability=(value:ExecutionCapability)=>["model_structured","model_text","research_search","rubric"].includes(value);
@@ -54,16 +55,18 @@ export class PersistedCapabilityGate implements ProviderCapabilityGate {
   }
   private async latest(){
     return this.transaction(async (tx) => (await tx.query<CapabilityRow>(`SELECT id,observed_at,capability,passed,expires_at>now() AS fresh,evidence,
+      CASE WHEN latest.evidence ? 'portability' THEN ${portableReceiptBindingSql("latest")} ELSE false END AS portability_valid,
       EXISTS(SELECT 1 FROM unfurl.ai_provider_operations o JOIN unfurl.ai_provider_responses r ON r.operation_id=o.id
         WHERE o.budget_id=(SELECT budget_id FROM unfurl.ai_provider_operations WHERE id=NULLIF(latest.evidence->>'operationId','')::uuid)
-        AND o.model_id='moonshotai/kimi-k2.6' AND r.received_at>COALESCE((latest.evidence->'compatibility'->>'proofObservedAt')::timestamptz,latest.observed_at)
+        AND o.model_id=$3 AND r.received_at>COALESCE((latest.evidence->'portability'->>'sourceObservedAt')::timestamptz,(latest.evidence->'compatibility'->>'proofObservedAt')::timestamptz,latest.observed_at)
         AND (r.result->>'category' IN ('auth','schema','unsupported_parameter','privacy_route')
-          OR (r.result ? 'model' AND (r.result->>'model'<>'moonshotai/kimi-k2.6' OR r.result->>'provider'<>'DigitalOcean')))) AS invalidated FROM (
-      SELECT DISTINCT ON (capability) id,observed_at,capability,passed,expires_at,evidence FROM unfurl.execution_capability_receipts
+          OR (r.result ? 'model' AND (r.result->>'model'<>$3 OR r.result->>'provider'<>$4)))) AS invalidated FROM (
+      SELECT DISTINCT ON (capability) id,observed_at,capability,passed,expires_at,evidence,world,configuration_digest FROM unfurl.execution_capability_receipts
       WHERE world=$1 AND configuration_digest=$2 ORDER BY capability,observed_at DESC,id DESC
-    ) latest`, [this.world, this.configurationDigest])).rows);
+    ) latest`, [this.world, this.configurationDigest,modelPolicy(this.modelPolicyId).model,modelPolicy(this.modelPolicyId).providerName])).rows);
   }
   private usable(row:CapabilityRow){
+    if(row.evidence.portability!==undefined)return row.portability_valid===true&&usableProviderPortability(row.evidence,this.world,this.configurationDigest,row.capability);
     if(row.evidence.compatibility===undefined)return row.fresh;
     const parsed=certificateSchema.safeParse(row.evidence.compatibility);
     return row.capability!=="dispatcher"&&parsed.success&&(!paidCapability(row.capability)||
@@ -71,6 +74,7 @@ export class PersistedCapabilityGate implements ProviderCapabilityGate {
   }
   async assertEndpointCompatible(endpointName:unknown){
     const rows=await this.latest();
+    if(rows.some(row=>row.passed&&row.evidence.portability!==undefined&&(!this.usable(row)||ProviderPortabilitySchema.parse(row.evidence.portability).endpointName!==endpointName)))throw new ProviderFailure("unavailable");
     if(rows.some(row=>row.passed&&paidCapability(row.capability)&&row.evidence.compatibility!==undefined&&
       (!this.usable(row)||certificateSchema.parse(row.evidence.compatibility).endpointName!==endpointName)))throw new ProviderFailure("unavailable");
   }
@@ -78,7 +82,7 @@ export class PersistedCapabilityGate implements ProviderCapabilityGate {
   async certifyHistoricalProofs(verify:(capability:ExecutionCapability,evidence:JsonObject)=>Promise<{endpointName:string|null}>){
     const rows=await this.latest();
     for(const row of rows){
-      if(!row.passed||row.invalidated||row.capability==="dispatcher"||row.evidence.compatibility!==undefined)continue;
+      if(!row.passed||row.invalidated||row.capability==="dispatcher"||row.evidence.compatibility!==undefined||row.evidence.portability!==undefined)continue;
       const verified=await verify(row.capability,row.evidence);
       const compatibility={version:"historical-compatibility-v1",proofReceiptId:row.id,proofObservedAt:new Date(row.observed_at).toISOString(),
         checkedAt:new Date().toISOString(),credentialDigest:paidCapability(row.capability)?credentialDigest():null,endpointName:verified.endpointName,baseUrl:OPENROUTER_BASE_URL};
@@ -100,6 +104,8 @@ export class PersistedCapabilityGate implements ProviderCapabilityGate {
   }
   /** Trusted probe/dispatcher writers only. Successful paid proofs must reference a saved settled operation. */
   async observe(observation: CapabilityObservation): Promise<void> {
+    // Cross-world authorization has a separate verifier/writer; generic observations cannot assert it.
+    if(observation.evidence.portability!==undefined)throw new ProviderFailure("unavailable");
     if (!Number.isSafeInteger(observation.ttlSeconds) || observation.ttlSeconds < 1 || observation.ttlSeconds > 86400 ||
       (observation.capability === "dispatcher" && observation.ttlSeconds > 120) ||
       !/^[\w:.-]{1,128}$/.test(observation.instanceId) || !observation.testVersion || observation.testVersion.length > 80) throw new ProviderFailure("unavailable");

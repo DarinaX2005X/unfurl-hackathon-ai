@@ -17,13 +17,16 @@ import { adaptiveFixture, fixture, id, digest } from "./fixtures";
 // Synthetic rows exercise actual checkpoint/provider verification; they are not product or paid-call evidence.
 function evidenceStore() {
   const steps = new Map<string, unknown>(), providers = new Map<string, { stepId: string; data: unknown }>(), inputDigests = new Map<string, string>();
+  const rate_card = { policyVersion: "kimi-digitalocean-v1", model: "moonshotai/kimi-k2.6", provider: "digitalocean" };
   const binding = { run: { id: id(800) }, course: { id: id(801), ownerId: id(802) }, approval: { id: id(803), draftRevision: 1, contentDigest: digest }, draft: { contentLanguage: "en" } } as ApprovedBuildBinding;
   const query = vi.fn(async (sql: string, params: unknown[]) => {
     let row: unknown;
     if (sql.includes("FROM unfurl.ai_provider_operations")) {
       const provider = providers.get(String(params[0]));
       if (provider && provider.stepId === params[1]) row = { operation_id: params[0], run_step_id: provider.stepId, input_digest: inputDigests.get(provider.stepId) ?? digest, request_digest: digest, response_digest: digest,
-        provider_request_id: "synthetic-paging-contract", rate_card_digest: digest, state: "settled", usage: {}, result: { model: "moonshotai/kimi-k2.6", failure: null, finishReason: "stop", content: JSON.stringify(provider.data) } };
+        provider_request_id: "synthetic-paging-contract", rate_card_digest: jsonDigest(rate_card), rate_card,
+        model_id: rate_card.model, provider_tag: rate_card.provider, state: "settled", usage: {},
+        result: { model: "moonshotai/kimi-k2.6", provider: "DigitalOcean", failure: null, finishReason: "stop", content: JSON.stringify(provider.data) } };
     } else if (steps.has(String(params[0]))) row = { id: params[0], input_digest: inputDigests.get(String(params[0])) ?? digest, result_reference: steps.get(String(params[0])),
       schema_digest: COURSE_GENERATION_SCHEMA_DIGEST, capability_digest: getCapabilityCatalogDigest(), validation_policy_digest: COURSE_VALIDATION_POLICY_DIGEST, approval_digest: digest };
     return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };

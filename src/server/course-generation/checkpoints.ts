@@ -12,6 +12,23 @@ import { ContentReviewSchema } from "@/server/course-validation/content-review";
 
 export const COURSE_GENERATION_SCHEMA_DIGEST = jsonDigest({ courseGeneration: 3, knowledge: 1, candidate: 1, validation: 1, readingPieces: 1, moduleReviewPages: 1, plannedAssessmentRoles: 1, planPages: 1 });
 export const COURSE_VALIDATION_POLICY_DIGEST = jsonDigest({ courseValidation: 2, independentContentReview: 1, requiredOutcomeCoverage: 1, immutableEvidence: 1, adaptiveMaterial: 1 });
+/** Additive protocol: old checkpoint digests and paid request schemas remain immutable. */
+export const COURSE_GENERATION_V2_SCHEMA_DIGEST = jsonDigest({ legacy: COURSE_GENERATION_SCHEMA_DIGEST, batchItems: 2, approvedKnowledge: 1 });
+export const COURSE_VALIDATION_V2_POLICY_DIGEST = jsonDigest({ legacy: COURSE_VALIDATION_POLICY_DIGEST, batchProvenance: 2, operationModelIdentity: 1 });
+export const COURSE_GENERATION_POLICY_KEY = "course/generation-policy";
+export const CourseGenerationPolicyCheckpointSchema = z.object({ kind: z.literal("course.generation.policy"),
+  version: z.literal("course-generation-batch-v2"), batchSize: z.literal(5), maxOutputTokens: z.literal(16384), approvalDigest: DigestSchema }).strict();
+export const BatchKindSchema = z.enum(["candidate", "cases", "review"]);
+export type BatchKind = z.infer<typeof BatchKindSchema>;
+export const BatchItemProofSchema = z.object({ kind: z.literal("batch-item-v2"), batchStepId: IdSchema,
+  itemId: IdSchema, itemIndex: z.number().int().nonnegative(), itemDigest: DigestSchema }).strict();
+export type BatchItemProof = z.infer<typeof BatchItemProofSchema>;
+export function batchResponseSchema<T>(itemSchema: z.ZodType<T>) {
+  return z.object({ items: z.array(z.object({ itemId: IdSchema, value: itemSchema }).strict()).min(1).max(5)
+    .refine((items) => new Set(items.map((item) => item.itemId)).size === items.length, "Batch item IDs must be unique") }).strict();
+}
+export const ModelBatchCheckpointSchema = z.object({ kind: z.literal("course.model.batch.v2"), batchKind: BatchKindSchema,
+  operationId: IdSchema, material: JsonValueSchema, items: batchResponseSchema(JsonValueSchema).shape.items }).strict();
 export const AuthoredTaskSchema = AuthoredModuleSchema.shape.tasks.element;
 export type AuthoredTask = z.infer<typeof AuthoredTaskSchema>;
 
@@ -20,9 +37,16 @@ export const ModuleKnowledgeCheckpointSchema = z.object({
   kind: z.literal("course.module.knowledge"), knowledge: ModuleKnowledgeSchema,
   operationId: IdSchema, sourceReadStepIds: z.array(IdSchema).min(1),
 }).strict();
+export const ApprovedKnowledgeSufficientProposalSchema = z.object({ status: z.literal("sufficient"), knowledge: ModuleKnowledgeSchema }).strict();
+export const ApprovedKnowledgeProposalSchema = z.discriminatedUnion("status", [ApprovedKnowledgeSufficientProposalSchema,
+  z.object({ status: z.literal("needs_research"), gaps: z.array(z.string().trim().min(1)).min(1) }).strict()]);
+export const ApprovedModuleKnowledgeCheckpointSchema = z.object({ kind: z.literal("course.module.approved_knowledge"),
+  knowledge: ModuleKnowledgeSchema, proposal: ApprovedKnowledgeSufficientProposalSchema, operationId: IdSchema,
+  sourceReadStepIds: z.array(IdSchema).max(0), approvedFactsDigest: DigestSchema }).strict();
+export const AnyModuleKnowledgeCheckpointSchema = z.union([ModuleKnowledgeCheckpointSchema, ApprovedModuleKnowledgeCheckpointSchema]);
 export const TaskCandidateCheckpointSchema = z.object({
   kind: z.literal("course.task.candidate"), moduleId: IdSchema, knowledgeStepId: IdSchema,
-  candidate: PreparedTaskCandidateSchema, authored: AuthoredTaskSchema, authoringOperationId: IdSchema,
+  candidate: PreparedTaskCandidateSchema, authored: AuthoredTaskSchema, authoringOperationId: IdSchema, modelProof: BatchItemProofSchema.optional(),
 }).strict();
 export type TaskCandidateCheckpoint = z.infer<typeof TaskCandidateCheckpointSchema>;
 export const ProposedTaskCasesSchema = z.object({
@@ -36,12 +60,12 @@ export const ProposedTaskCasesSchema = z.object({
 });
 export const TaskCasesCheckpointSchema = z.object({
   kind: z.literal("course.task.cases"), candidateStepId: IdSchema, candidateDigest: DigestSchema,
-  operationId: IdSchema, cases: z.array(ResponseCaseSchema).min(2), alternativeSpaceProof: AlternativeSpaceProofSchema.nullable(),
+  operationId: IdSchema, cases: z.array(ResponseCaseSchema).min(2), alternativeSpaceProof: AlternativeSpaceProofSchema.nullable(), modelProof: BatchItemProofSchema.optional(),
 }).strict();
 export type TaskCasesCheckpoint = z.infer<typeof TaskCasesCheckpointSchema>;
 export const ContentReviewCheckpointSchema = z.object({
   kind: z.literal("course.task.review"), candidateStepId: IdSchema, operationId: IdSchema,
-  material: JsonValueSchema, review: ContentReviewSchema,
+  material: JsonValueSchema, review: ContentReviewSchema, modelProof: BatchItemProofSchema.optional(),
 }).strict();
 export function prepareTaskCasesCheckpoint(input: { candidateStepId: string; candidateDigest: string; operationId: string; proposal: unknown }): TaskCasesCheckpoint {
   const proposal = ProposedTaskCasesSchema.parse(input.proposal);
