@@ -5,7 +5,7 @@ import {authorizeProviderProofPortability,providerMetadataOnlyFetch,usableProvid
 import {runtimeConfigurationDigest,CAPABILITY_TEST_VERSION,PersistedCapabilityGate,type CapabilityTransaction} from "../../src/server/ai/capabilities";
 import {approveEndpoint} from "../../src/server/ai/rate-card";
 import {MODEL_POLICY_VERSION,OPENROUTER_BASE_URL} from "../../src/server/ai/constants";
-import {CANDIDATE_MODEL_POLICY,modelPolicy,type ModelPolicyId} from "../../src/server/ai/model-policy";
+import {GEMINI_SCHEMA_V2_POLICY as CANDIDATE_MODEL_POLICY,modelPolicy,type ModelPolicyId} from "../../src/server/ai/model-policy";
 import {jsonDigest} from "../../src/server/ai/json";
 import {verifyNativeSearchAccounting} from "../../src/server/ai/search-accounting";
 import {normalizeNativeUsage} from "../../src/server/ai/native-usage";

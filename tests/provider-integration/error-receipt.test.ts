@@ -9,6 +9,20 @@ import { sanitizeProbeError } from "./diagnostic-fetch";
 import type { JsonObject } from "../../src/domain/common";
 
 describe("bounded private error diagnostics", () => {
+  it("persists only vocabulary tokens without a hook and redacts symbolic values and correlation secrets",async()=>{
+    const secret="private-correlation-secret",message='Invalid schema; value 🔑🔒 ../../ <>() {} @@@ {"confidential":"🍇"}';
+    const receipt=await httpFailureReceipt(new Response(JSON.stringify({id:`gen-${secret}`,error:{code:400,metadata:{raw:JSON.stringify({error:{message}})}}}),
+      {status:400,headers:{"x-request-id":`trace-${secret}`}}),undefined,{secrets:[secret]});
+    expect(receipt.result).toMatchObject({correlationId:null,diagnostic:{messages:expect.arrayContaining([expect.stringContaining("invalid schema")])}});
+    expect(receipt.providerRequestId).toBeNull();
+    expect(JSON.stringify(receipt)).not.toMatch(/🔑|🔒|🍇|confidential|private-correlation-secret/);
+    const messages=(receipt.result as {diagnostic:{messages:string[]}}).diagnostic.messages.join(" ");
+    expect(messages).not.toMatch(/\.\.|<|>|@|\{|\}/);
+  });
+  it.each(["", "not-json", "x".repeat(17000)])("retains a bounded accounting receipt when a body is not decodable",async body=>{
+    const receipt=await httpFailureReceipt(new Response(body,{status:400}));
+    expect(receipt.result).toMatchObject({kind:"http_error",httpStatus:400});expect(JSON.stringify(receipt).length).toBeLessThan(2000);
+  });
   it("retains a useful bounded technical diagnostic without persisting credentials or arbitrary user prose",async()=>{
     const onDiagnostic=vi.fn(async()=>{}),secret="credential-for-test";
     const message=`Unable to submit request because the schema has too many states for serving. maxItems 256. private raspberries user@example.com Bearer ${secret}`;
@@ -16,7 +30,8 @@ describe("bounded private error diagnostics", () => {
     expect(receipt.result).toMatchObject({category:"schema"});
     expect(onDiagnostic).toHaveBeenCalledWith(expect.objectContaining({messages:expect.arrayContaining([expect.stringContaining("too many states for serving")])}));
     expect(JSON.stringify(onDiagnostic.mock.calls)).not.toMatch(/credential-for-test|raspberries|user@example/);
-    expect(JSON.stringify(receipt)).not.toContain("too many states");
+    expect(receipt.result).toMatchObject({diagnostic:{version:"technical-error-diagnostic-v1",messages:expect.arrayContaining([expect.stringContaining("too many states for serving")])}});
+    expect(JSON.stringify(receipt)).not.toMatch(/credential-for-test|raspberries|user@example/);
     expect(sanitizeTechnicalError("x".repeat(20000))).toHaveLength(10);
   });
   it("does not lose the accounting receipt if private diagnostic storage fails",async()=>{
@@ -33,7 +48,7 @@ describe("bounded private error diagnostics", () => {
   ])("classifies status %s without persisting prose", async (status,error,category) => {
     const receipt = await httpFailureReceipt(new Response(JSON.stringify({error}),{status:Number(status)}));
     expect(receipt.result).toMatchObject({category});
-    expect(JSON.stringify(receipt)).not.toMatch(/secret API|private account|private rate|Provider error/);
+    expect(JSON.stringify(receipt)).not.toMatch(/secret API|private account|private rate/);
   });
   it("rejects arbitrary field paths and stores only fixed approved parameters", async () => {
     const receipt = await httpFailureReceipt(new Response(JSON.stringify({error:{message:"Invalid schema secret-data",param:"messages.0.content.secret-data",metadata:{param:"response_format.json_schema.schema"}}}),{status:400}));

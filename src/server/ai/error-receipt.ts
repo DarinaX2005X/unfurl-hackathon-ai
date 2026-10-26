@@ -4,13 +4,13 @@ import type { ProviderResponseReceipt } from "../budget/ports";
 import { boundedResponseText } from "./http";
 import { digestBytes, jsonDigest } from "./json";
 import { retryAfterMilliseconds } from "./failure";
-import type { JsonObject } from "../../domain/common";
+import { JsonValueSchema,type JsonObject } from "../../domain/common";
 
 const categorySchema = z.enum(["schema", "unsupported_parameter", "privacy_route", "credit", "auth", "rate", "unknown"]);
 const parameterSchema = z.enum(["response_format", "response_format.json_schema", "response_format.json_schema.schema",
   "response_format.json_schema.strict", "response_format.json_schema.name", "max_tokens", "max_completion_tokens",
   "tools", "tool_choice", "provider", "provider.only", "provider.max_price", "provider.data_collection", "provider.zdr", "messages"]);
-const schemaKeyword = z.enum(["$schema","type","properties","required","additionalProperties","items","anyOf","oneOf","allOf","enum","const","$ref","$defs",
+const schemaKeyword = z.enum(["$schema","type","properties","propertyNames","required","additionalProperties","items","anyOf","oneOf","allOf","enum","const","$ref","$defs",
   "minItems","maxItems","minLength","maxLength","minimum","maximum","exclusiveMinimum","exclusiveMaximum","multipleOf","pattern","format","uniqueItems"]);
 
 export interface HttpFailureDiagnostic {version:"technical-error-diagnostic-v1";httpStatus:number;category:string;messages:string[]}
@@ -25,16 +25,21 @@ const diagnosticVocabulary=new Set((`a an the is are was be been being to of for
   redacted one_of any_of additional_properties max_items min_items response_format format pattern size length validation validate malformed exhausted exceeded exceeds tokens token context budget permission denied unauthenticated unavailable
   400 401 402 403 404 408 413 422 429 500 502 503 504 0 1 2 3 4 5 6 7 8 9 10 32 64 128 256
   received allowed additional unsupported_parameter status code details fieldviolations description message propertyordering items data
+  recursive recursion reference references resolve unresolved cycle cyclic union propertynames definitions defs ref
 `).split(/\s+/).filter(Boolean));
 
 /** Private diagnostics are technical vocabulary only: arbitrary prose, identifiers,
  * quoted user values and credentials are replaced rather than saved. */
 export function sanitizeTechnicalError(message:string,secrets:readonly string[]=[]):string{
   let safe=message.slice(0,12000);
-  for(const secret of secrets)if(secret)safe=safe.split(secret).join("[REDACTED]");
-  safe=safe.replace(/Bearer\s+[^\s"\\]+/gi,"[REDACTED]").replace(/sk-[A-Za-z0-9_-]+/g,"[REDACTED]");
-  return safe.replace(/[\p{L}\p{N}_$-]+/gu,token=>diagnosticVocabulary.has(token.toLowerCase())||schemaKeyword.options.some(key=>key.toLowerCase()===token.toLowerCase())?token:"[REDACTED]")
-    .replace(/(?:\[REDACTED\][\s,]*){2,}/g,"[REDACTED] ").slice(0,2048);
+  for(const secret of secrets)if(secret)safe=safe.split(secret).join(" redacted ");
+  safe=safe.replace(/Bearer\s+[^\s"\\]+/gi," redacted ").replace(/sk-[A-Za-z0-9_-]+/g," redacted ");
+  // Reconstruct from the vocabulary. Mutating the original prose would retain
+  // arbitrary punctuation, emoji and symbolic user values between word tokens.
+  return (safe.match(/[\p{L}\p{N}_$-]+|[^\s\p{L}\p{N}_$-]+/gu)??[]).map(token=>{
+    const word=token.toLowerCase();
+    return word!=="redacted"&&(diagnosticVocabulary.has(word)||schemaKeyword.options.some(key=>key.toLowerCase()===word))?word:"[REDACTED]";
+  }).join(" ").replace(/(?:\[REDACTED\]\s*){2,}/g,"[REDACTED] ").trim().slice(0,2048);
 }
 function diagnosticMessages(decoded:unknown,secrets:readonly string[]){
   const messages:string[]=[];
@@ -57,6 +62,7 @@ export const httpFailureReceiptSchema = z.object({
   bodyDigestAvailable: z.boolean(),
   category: categorySchema.default("unknown"), rejectedParameters: z.array(parameterSchema).max(8).default([]),
   schemaKeywords:z.array(schemaKeyword).max(24).default([]),schemaPaths:z.array(z.string().max(512)).max(16).default([]),
+  diagnostic:z.object({version:z.literal("technical-error-diagnostic-v1"),messages:z.array(z.string().max(2048)).max(4)}).strict().optional(),
 });
 
 /** Free-form provider prose is inspected only in memory; persisted values come from fixed enums. */
@@ -95,21 +101,24 @@ function classify(decoded: unknown, status: number, schema?:JsonObject) {
   return { category: categorySchema.parse(category), rejectedParameters,schemaKeywords,schemaPaths:[...new Set(schemaPaths)].sort((a,b)=>b.length-a.length).slice(0,16) };
 }
 
-/** Only bounded numeric error codes and token-shaped correlation IDs survive. Never persist upstream prose. */
-export async function httpFailureReceipt(response: Response,schema?:JsonObject,diagnostic?:{secrets?:readonly string[];onDiagnostic:(value:HttpFailureDiagnostic)=>Promise<void>}): Promise<ProviderResponseReceipt> {
+/** Private receipts retain only bounded technical vocabulary, never raw upstream prose. */
+export async function httpFailureReceipt(response: Response,schema?:JsonObject,diagnostic?:{secrets?:readonly string[];onDiagnostic?:(value:HttpFailureDiagnostic)=>Promise<void>}): Promise<ProviderResponseReceipt> {
   let raw: string | null = null;
   let decoded: unknown = null;
   try { raw = await boundedResponseText(response, 16 * 1024); decoded = JSON.parse(raw) as unknown; } catch { /* Metadata still identifies this failure. */ }
   const parsed = z.object({ id: z.string().regex(/^gen-[A-Za-z0-9_-]{1,200}$/).optional(),
     error: z.object({ code: z.number().int().min(400).max(599).optional() }).optional() }).safeParse(decoded);
   const header = response.headers.get("x-request-id") ?? response.headers.get("cf-ray");
+  const messages=diagnosticMessages(decoded,diagnostic?.secrets??[]);
   const result = httpFailureReceiptSchema.parse({ kind: "http_error", receivedAt: new Date().toISOString(),
     httpStatus: response.status, failure: response.status === 429 ? "rate_limited" : "unavailable",
     retryAfterMs: retryAfterMilliseconds(response.headers.get("retry-after")),
     upstreamCode: parsed.success ? parsed.data.error?.code ?? null : null,
-    correlationId: header && /^[A-Za-z0-9_-]{1,128}$/.test(header) ? header : null,
-    bodyDigestAvailable: raw !== null, ...classify(decoded, response.status,schema) });
-  if(diagnostic)try{await diagnostic.onDiagnostic({version:"technical-error-diagnostic-v1",httpStatus:response.status,category:result.category,messages:diagnosticMessages(decoded,diagnostic.secrets??[])});}catch{/* Private diagnostic I/O must never prevent the durable accounting receipt. */}
-  return { providerRequestId: parsed.success ? parsed.data.id ?? null : null,
-    responseDigest: raw === null ? jsonDigest(result) : digestBytes(raw), reportedCostUsd: null, usage: {}, result };
+    correlationId: header && /^[A-Za-z0-9_-]{1,128}$/.test(header)&&!(diagnostic?.secrets??[]).some(secret=>Boolean(secret)&&header.includes(secret)) ? header : null,
+    bodyDigestAvailable: raw !== null, ...classify(decoded, response.status,schema),
+    ...(messages.length?{diagnostic:{version:"technical-error-diagnostic-v1",messages}}:{}) });
+  if(diagnostic?.onDiagnostic)try{await diagnostic.onDiagnostic({version:"technical-error-diagnostic-v1",httpStatus:response.status,category:result.category,messages});}catch{/* Private diagnostic I/O must never prevent the durable accounting receipt. */}
+  const providerRequestId=parsed.success?parsed.data.id??null:null;
+  return { providerRequestId:providerRequestId&&!(diagnostic?.secrets??[]).some(secret=>Boolean(secret)&&providerRequestId.includes(secret))?providerRequestId:null,
+    responseDigest: raw === null ? jsonDigest(result) : digestBytes(raw), reportedCostUsd: null, usage: {}, result:JsonValueSchema.parse(result) };
 }

@@ -10,6 +10,7 @@ import { SourceClaimSchema } from "@/server/curriculum-research/contracts";
 import { PassageSchema } from "@/server/research/ports";
 import { ContentReviewSchema } from "@/server/course-validation/content-review";
 import { KnowledgeCoverageReviewSchema } from "@/server/course-validation/knowledge";
+import { ModelPolicySchema,SearchPolicySchema } from "@/server/ai/model-policy";
 
 export const COURSE_GENERATION_SCHEMA_DIGEST = jsonDigest({ courseGeneration: 3, knowledge: 1, candidate: 1, validation: 1, readingPieces: 1, moduleReviewPages: 1, plannedAssessmentRoles: 1, planPages: 1 });
 export const COURSE_VALIDATION_POLICY_DIGEST = jsonDigest({ courseValidation: 2, independentContentReview: 1, requiredOutcomeCoverage: 1, immutableEvidence: 1, adaptiveMaterial: 1 });
@@ -21,6 +22,8 @@ export const CourseGenerationPolicyCheckpointSchema = z.object({ kind: z.literal
   version: z.literal("course-generation-batch-v2"), batchSize: z.literal(5), maxOutputTokens: z.literal(16384), approvalDigest: DigestSchema,
   planPagePolicy: z.literal("bounded-plan-pages-v1").optional(),
   knowledgeCoveragePolicy: z.literal("approved-scope-v1").optional(),
+  modelPolicy: ModelPolicySchema.optional(),
+  searchPolicy: SearchPolicySchema.optional(),
 }).strict();
 export const BatchKindSchema = z.enum(["candidate", "cases", "review"]);
 export type BatchKind = z.infer<typeof BatchKindSchema>;

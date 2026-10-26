@@ -19,7 +19,7 @@ import { PYTHON_RUNTIME_PROFILE } from "../execution/python/profile";
 import type { MechanicRuntimeCapabilities } from "../mechanics/contracts";
 import {assertModelPolicyAvailable,readActiveModelPolicy} from "../ai/active-policy";
 import {withSystemTransaction} from "../db";
-import type {ModelPolicyId} from "../ai/model-policy";
+import type {ModelPolicyId,SearchPolicyId} from "../ai/model-policy";
 import { MODEL_ID } from "../ai/constants";
 import { turnFromRow } from "../curricula/repository";
 import type { ConversationExecution } from "../conversations/execution";
@@ -46,9 +46,11 @@ function createRuntime() {
       if(request.modelPolicy)return request.modelPolicy;
       // The real-schema planner proof does not certify a different native search engine or rubric behavior.
       if(options.search||request.purpose==="rubric_grading")return "kimi-digitalocean-v1";
-      return withSystemTransaction("run_execution",readActiveModelPolicy);
+      // V3 requires an explicit new capture. Historical unmarked requests keep
+      // their previous selection rules, even after a newer proof is installed.
+      return withSystemTransaction("run_execution",tx=>readActiveModelPolicy(tx,{allowSchemaV3:false}));
     }});
-  const researchForStep=(step:StepEffectContext)=>new OpenRouterResearch(model,{budget:step.budgetOperation("research_search"),deadlineAt:step.deadlineAt});
+  const researchForStep=(step:StepEffectContext,searchPolicy?:SearchPolicyId)=>new OpenRouterResearch(model,{budget:step.budgetOperation("research_search"),deadlineAt:step.deadlineAt,...(searchPolicy?{searchPolicy}:{})});
   const projectId=pythonProjectId();const python=projectId?createPythonExecutionPort({persistence:new PostgresPythonExecutionPersistence(),projectId}):undefined;
   const pythonGate=projectId?new VercelOidcPythonCapabilityGate(projectId):null;
   const registry=new RunHandlerRegistry([createAgentTurnHandler({model,researchForStep}),createCourseGenerationHandler({model,research:researchForStep,runtime:getMechanicRuntimeCapabilities,...(python?{python}:{})}),...createLearningRunHandlers({model,...(python?{python}:{})})]);

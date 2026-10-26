@@ -4,7 +4,7 @@ vi.mock("server-only",()=>({}));
 const state=vi.hoisted(()=>({query:vi.fn()}));
 vi.mock("../../src/server/db",()=>({withSystemTransaction:async(_purpose:unknown,work:(tx:unknown)=>Promise<unknown>)=>work({query:state.query})}));
 import {assertModelPolicyAvailable,readActiveModelPolicy} from "../../src/server/ai/active-policy";
-import {CANDIDATE_MODEL_POLICY,candidatePolicy} from "../../src/server/ai/model-policy";
+import {CANDIDATE_MODEL_POLICY,GEMINI_SCHEMA_V2_POLICY,candidatePolicy} from "../../src/server/ai/model-policy";
 import {runtimeConfigurationDigest} from "../../src/server/ai/capabilities";
 import {jsonDigest} from "../../src/server/ai/json";
 import {OpenRouterModel,providerRequestDigest} from "../../src/server/ai/openrouter";
@@ -43,6 +43,16 @@ beforeEach(()=>{
 afterEach(()=>{vi.unstubAllEnvs();vi.useRealTimers();});
 
 describe("durable chosen model policy",()=>{
+  it("requires a distinct v3 proof while historical uncaptured requests retain v2 selection",async()=>{
+    state.query.mockImplementation(async(_sql:string,args:unknown[])=>({rows:args[1]===GEMINI_SCHEMA_V2_POLICY?[proof({configuration_digest:runtimeConfigurationDigest("local",GEMINI_SCHEMA_V2_POLICY)})]:[]}));
+    expect(await readActiveModelPolicy(tx)).toBe(GEMINI_SCHEMA_V2_POLICY);
+    await expect(assertModelPolicyAvailable(CANDIDATE_MODEL_POLICY,false)).rejects.toThrow("provider.unavailable");
+    await expect(assertModelPolicyAvailable(GEMINI_SCHEMA_V2_POLICY,false)).resolves.toBeUndefined();
+    state.query.mockResolvedValue({rows:[proof()]});
+    expect(await readActiveModelPolicy(tx)).toBe(CANDIDATE_MODEL_POLICY);
+    expect(await readActiveModelPolicy(tx,{allowSchemaV3:false})).toBe(GEMINI_SCHEMA_V2_POLICY);
+    const sql=state.query.mock.calls[0]![0] as string;expect(sql).toContain("o.rate_card->>'policyVersion'=$2");expect(sql).toContain("evidenceValidated");
+  });
   it("uses the historical bootstrap only when there is no settled successful candidate selection",async()=>{
     state.query.mockResolvedValue({rows:[]});expect(await readActiveModelPolicy(tx)).toBe("kimi-digitalocean-v1");
     await expect(assertModelPolicyAvailable(CANDIDATE_MODEL_POLICY,false)).rejects.toThrow("provider.unavailable");

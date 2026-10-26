@@ -2,6 +2,7 @@ import "server-only";
 import type { JsonValue } from "@/domain/common";
 import { ProviderFailure } from "@/server/ai/failure";
 import type { ModelPort } from "@/server/ai/ports";
+import type { SearchPolicyId } from "@/server/ai/model-policy";
 import type { ApprovedBuildBinding } from "@/server/curricula/build-binding";
 import type { ResearchPort } from "@/server/research/ports";
 import type { RunContext, StepEffectContext } from "@/server/runs/ports";
@@ -23,7 +24,7 @@ export function checkedKnowledgeMaterial(input: { sourceKnowledgeStepId: string;
 /** One durable effect per advance; each changed knowledge revision must pass a fresh independent review. */
 export async function advanceKnowledgeCoverage(input: { context: RunContext; binding: ApprovedBuildBinding; index: StageIndex;
   source: LoadedModuleKnowledge; round: number; correction: unknown; model: ModelPort;
-  research: (effect: StepEffectContext) => ResearchPort; priorKnowledge: readonly ModuleKnowledge[] }): Promise<LoadedModuleKnowledge | null> {
+  research: (effect: StepEffectContext,searchPolicy?:SearchPolicyId) => ResearchPort; searchPolicy?:SearchPolicyId; priorKnowledge: readonly ModuleKnowledge[] }): Promise<LoadedModuleKnowledge | null> {
   const { context, binding, index } = input, repository = new GenerationEvidenceRepository();
   const moduleId = input.source.knowledge.moduleId, prefix = `course/${moduleId}/research/coverage-v1/round/${input.round}`;
   const checkedKey = `${prefix}/checked`, correction = checkpointJson(input.correction);
@@ -80,7 +81,7 @@ export async function advanceKnowledgeCoverage(input: { context: RunContext; bin
     }
     if (revision === 2) throw new ProviderFailure("invalid_output");
     const revised = await advanceModuleResearch({ context, binding, index, moduleId, model: input.model,
-      research: input.research, priorKnowledge: input.priorKnowledge,
+      research: input.research, priorKnowledge: input.priorKnowledge,...(input.searchPolicy?{searchPolicy:input.searchPolicy}:{}),
       revision: { prefix: `${prefix}/revision/${revision + 1}`, previous: source,
         reviews: reviews.map(review => ({ stepId: review.step.id, review: review.review })), correction } });
     if (!revised) return null;

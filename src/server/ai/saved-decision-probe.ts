@@ -8,7 +8,7 @@ import {currentReaderCapabilities} from "../research/reader-capabilities";
 import {PostgresBudget} from "../budget/postgres";
 import {worstCaseMicroUsd} from "../budget/calculations";
 import {CAPABILITY_TEST_VERSION,PersistedCapabilityGate} from "./capabilities";
-import {CANDIDATE_MODEL_POLICY,executionTiming,candidatePolicy} from "./model-policy";
+import {GEMINI_SCHEMA_V2_POLICY as CANDIDATE_MODEL_POLICY,executionTiming,schemaV2Policy as candidatePolicy} from "./model-policy";
 import {OpenRouterModel,providerRequestDigest} from "./openrouter";
 import {OpenRouterRateCards} from "./rate-card";
 import {OpenRouterAccounting} from "./accounting";

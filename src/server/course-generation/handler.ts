@@ -4,6 +4,9 @@ import { IdSchema, JsonValueSchema } from "@/domain/common";
 import { LessonSchema } from "@/domain/learning";
 import type { ModelPort } from "@/server/ai/ports";
 import { ProviderFailure } from "@/server/ai/failure";
+import { readActiveModelPolicy } from "@/server/ai/active-policy";
+import { withCapturedModelPolicy } from "@/server/ai/captured-policy";
+import { SEARCH_HEADROOM_POLICY,type SearchPolicyId } from "@/server/ai/model-policy";
 import type { ResearchPort } from "@/server/research/ports";
 import type { RunHandler, StepEffectContext } from "@/server/runs/ports";
 import type { MechanicRuntimeCapabilities } from "@/server/mechanics/contracts";
@@ -41,7 +44,7 @@ const ValidationStageSchema = z.object({ kind: z.literal("course.task.validation
 const RepairSchema = z.object({ kind: z.literal("course.module.repair"), issues: JsonValueSchema }).strict();
 
 export interface CourseGenerationDependencies {
-  model: ModelPort; research: (effect: StepEffectContext) => ResearchPort;
+  model: ModelPort; research: (effect: StepEffectContext,searchPolicy?:SearchPolicyId) => ResearchPort;
   runtime: () => Promise<MechanicRuntimeCapabilities>;
   python?: PythonExecutionPort;
 }
@@ -63,11 +66,12 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
       const batchingV2 = await context.read(async (tx) => (await resolveGenerationPolicy(tx, binding)) === "batch-v2");
       if (batchingV2 && !index.has(COURSE_GENERATION_POLICY_KEY)) {
         await pureStage({ context, binding, key: COURSE_GENERATION_POLICY_KEY, material: { approvalDigest: binding.approval.contentDigest }, schema: jsonCheckpointSchema(CourseGenerationPolicyCheckpointSchema),
-          async commit() { return { kind: "course.generation.policy" as const, version: "course-generation-batch-v2" as const, batchSize: 5 as const, maxOutputTokens: 16384 as const, approvalDigest: binding.approval.contentDigest,
-            planPagePolicy: "bounded-plan-pages-v1" as const, knowledgeCoveragePolicy: "approved-scope-v1" as const }; } });
+          async commit(tx) { return { kind: "course.generation.policy" as const, version: "course-generation-batch-v2" as const, batchSize: 5 as const, maxOutputTokens: 16384 as const, approvalDigest: binding.approval.contentDigest, modelPolicy: await readActiveModelPolicy(tx),
+            planPagePolicy: "bounded-plan-pages-v1" as const, knowledgeCoveragePolicy: "approved-scope-v1" as const,searchPolicy:SEARCH_HEADROOM_POLICY }; } });
         return { status: "continue" };
       }
       const policy = batchingV2 ? (await loadStage(context, binding, index, COURSE_GENERATION_POLICY_KEY, CourseGenerationPolicyCheckpointSchema))?.result : undefined;
+      const model=withCapturedModelPolicy(dependencies.model,policy?.modelPolicy);
       if (batchingV2) {
         const original = context;
         context = { ...original, step: (spec) => original.step({ ...spec, digests: { ...spec.digests,
@@ -98,16 +102,16 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
         const prefix = `${modulePrefix}/round/${round}`;
         const requestRepair = async (issues: unknown) => pureStage({ context, binding, key: `${modulePrefix}/repair/${round}`, material: { round }, schema: RepairSchema,
           async commit() { return { kind: "course.module.repair" as const, issues: checkpointJson(issues) }; } });
-        let researched = await advanceModuleResearch({ context, binding, index, moduleId: outline.id, model: dependencies.model, research: dependencies.research, priorKnowledge: completed.map((entry) => entry.module.knowledge), batchingV2,
-          ...(policy?.knowledgeCoveragePolicy ? { knowledgeCoveragePolicy: policy.knowledgeCoveragePolicy } : {}) });
+        let researched = await advanceModuleResearch({ context, binding, index, moduleId: outline.id, model, research: dependencies.research, priorKnowledge: completed.map((entry) => entry.module.knowledge), batchingV2,
+          ...(policy?.knowledgeCoveragePolicy ? { knowledgeCoveragePolicy: policy.knowledgeCoveragePolicy } : {}),...(policy?.searchPolicy?{searchPolicy:policy.searchPolicy}:{}) });
         if (!researched) return { status: "continue" };
         if (policy?.knowledgeCoveragePolicy === "approved-scope-v1") {
           researched = await advanceKnowledgeCoverage({ context, binding, index, source: researched, round, correction: moduleCorrection,
-            model: dependencies.model, research: dependencies.research, priorKnowledge: completed.map(entry => entry.module.knowledge) });
+            model, research: dependencies.research, priorKnowledge: completed.map(entry => entry.module.knowledge),...(policy.searchPolicy?{searchPolicy:policy.searchPolicy}:{}) });
           if (!researched) return { status: "continue" };
         }
         const planStep = await advanceModulePlan({ context, binding, index, key: `${prefix}/plan`, knowledge: researched.knowledge, runtime, correction: moduleCorrection,
-          priorModules: completed.map((entry) => ({ moduleId: entry.module.moduleId, outcomes: entry.module.knowledge.outcomes.map(({ outcomeId, learnerAction, criteria }) => ({ outcomeId, learnerAction, criteria })) })), model: dependencies.model,
+          priorModules: completed.map((entry) => ({ moduleId: entry.module.moduleId, outcomes: entry.module.knowledge.outcomes.map(({ outcomeId, learnerAction, criteria }) => ({ outcomeId, learnerAction, criteria })) })), model,
           ...(policy?.planPagePolicy ? { planPagePolicy: policy.planPagePolicy } : {}) });
         if (!planStep) return { status: "continue" };
         const plan = planStep.plan;
@@ -116,7 +120,7 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
         const readings: z.infer<typeof LessonReadingSchema>[] = [], readingStepIds: string[] = [];
         for (const lesson of plan.lessons) {
           const reading = await advanceLessonReading({ context, binding, index, key: `${prefix}/reading/${lesson.id}`, planStepId: planStep.stepId,
-            lesson, knowledge: researched.knowledge, facts: researched.facts, model: dependencies.model });
+            lesson, knowledge: researched.knowledge, facts: researched.facts, model });
           if (!reading) return { status: "continue" };
           readings.push(reading.reading); readingStepIds.push(reading.stepId);
         }
@@ -124,7 +128,7 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
         const taskBatches = plannedTaskBatches(plan.tasks);
         for (const slot of plan.tasks) {
           const currentBatch = taskBatches.find((batch) => batch[0]!.id === slot.id);
-          if (batchingV2 && currentBatch && !await advanceTaskBatch({ context, binding, index, model: dependencies.model, moduleId: outline.id, prefix,
+          if (batchingV2 && currentBatch && !await advanceTaskBatch({ context, binding, index, model, moduleId: outline.id, prefix,
             batchKey: `${prefix}/batch/v2/${slot.id}/0`, slots: currentBatch,
             previousTasks: [...completed.flatMap((entry) => entry.module.tasks.map(({ candidate }) => candidate)), ...authoredTasks],
             knowledge: researched.knowledge, knowledgeStepId: researched.step.id, facts: researched.facts })) return { status: "continue" };
@@ -137,14 +141,14 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
             const candidateStep = await loadStage(context, binding, index, candidateKey, CandidateResultSchema);
             if (!candidateStep) {
               if (batchingV2) {
-                await advanceCandidateBatch({ context, binding, index, model: dependencies.model, moduleId: outline.id, prefix,
+                await advanceCandidateBatch({ context, binding, index, model, moduleId: outline.id, prefix,
                   batchKey: `${prefix}/batch/v2/repair/${slot.id}/${attempt}`, slots: [slot], attempt,
                   previousTasks: [...allPreviousTasks, ...await loadLaterBatchCandidates({ context, binding, index, prefix, taskId: slot.id,
                     slots: taskBatches.find((batch) => batch.some((entry) => entry.id === slot.id))! })],
                   knowledge: researched.knowledge, knowledgeStepId: researched.step.id, facts: researched.facts, correction });
                 return { status: "continue" };
               }
-              await mappedModelStage({ context, binding, model: dependencies.model, key: candidateKey, purpose: "task_authoring", schema: AuthoredTaskSchema, resultSchema: CandidateResultSchema,
+              await mappedModelStage({ context, binding, model, key: candidateKey, purpose: "task_authoring", schema: AuthoredTaskSchema, resultSchema: CandidateResultSchema,
                 material: { slot, contentLanguage: binding.draft.contentLanguage, approvalDigest: binding.approval.contentDigest, knowledge: researched.knowledge,
                   contract: getMechanicAuthoringContract(slot.mechanicId, slot.mechanicVersion), claims: researched.facts.claims, passages: researched.facts.passages,
                   canonicalSourceEvidence: projectCanonicalResearchSources(researched.facts), existingTaskContexts: previousTasks.map((entry) => ({ task: entry.task, assessment: entry.privateTask.assessment })), correction },
@@ -169,11 +173,11 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
             const casesKey = `${taskPrefix}/cases`, casesStep = await loadStage(context, binding, index, casesKey, TaskCasesCheckpointSchema);
             if (!casesStep) {
               if (batchingV2) {
-                await advanceCasesBatch({ context, binding, index, model: dependencies.model, moduleId: outline.id, prefix,
+                await advanceCasesBatch({ context, binding, index, model, moduleId: outline.id, prefix,
                   batchKey: `${prefix}/batch/v2/repair/${slot.id}/${attempt}`, attempt, candidates: [loaded.step] });
                 return { status: "continue" };
               }
-              await mappedModelStage({ context, binding, model: dependencies.model, key: casesKey, purpose: "content_review", schema: ProposedTaskCasesSchema, resultSchema: TaskCasesCheckpointSchema,
+              await mappedModelStage({ context, binding, model, key: casesKey, purpose: "content_review", schema: ProposedTaskCasesSchema, resultSchema: TaskCasesCheckpointSchema,
                 material: { candidate, responseSchema: getMechanicAuthoringContract(candidate.task.mechanicId, candidate.task.mechanicVersion).responseSchema },
                 instructions: "Independently design adversarial evaluator cases: a substantively valid response, a distinct valid alternative, and a meaningful field-valid but behaviorally wrong response. Include boundary/trap cases where helpful. Malformed-only negatives are insufficient. For a truly unique deterministic response, supply a replayable alternativeSpaceProof instead of an invented alternative. For activity tasks include action plans with real action types; receipt fields start null or empty and are bound by the server. Never invent activity observations or execution receipts.",
                 async commit(_tx, proposal, operationId) { return prepareTaskCasesCheckpoint({ candidateStepId: candidateStep.id, candidateDigest: candidate.candidateDigest, operationId, proposal }); } });
@@ -184,18 +188,18 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
               const key = `${taskPrefix}/case/${test.key}`, evaluated = await loadStage(context, binding, index, key, CaseEvaluationResultSchema);
               if (candidate.task.mechanicVersion === 3) {
                 if (!dependencies.python) throw new ProviderFailure("unavailable");
-                const result = await advancePythonCase({ context, binding, index, key, candidateStepId: candidateStep.id, casePlanStepId: casesStep.id, candidate, test, model: dependencies.model, python: dependencies.python });
+                const result = await advancePythonCase({ context, binding, index, key, candidateStepId: candidateStep.id, casePlanStepId: casesStep.id, candidate, test, model, python: dependencies.python });
                 if (!result) return { status: "continue" };
                 caseStepIds.push(result.stepId); continue;
               }
               if (getServerMechanic(candidate.task.mechanicId, candidate.task.mechanicVersion)!.descriptor.requirements.includes("activity")) {
-                const result = await advanceActivityCase({ context, binding, index, candidateStepId: candidateStep.id, casePlanStepId: casesStep.id, candidate, test, model: dependencies.model });
+                const result = await advanceActivityCase({ context, binding, index, candidateStepId: candidateStep.id, casePlanStepId: casesStep.id, candidate, test, model });
                 if (!result) return { status: "continue" };
                 caseStepIds.push(result.stepId); continue;
               }
               if (!evaluated) {
                 await context.step({ key, input: checkpointJson({ candidate, test }), digests: generationDigests(binding), outputSchema: jsonCheckpointSchema(CaseEvaluationResultSchema), resultSchema: jsonCheckpointSchema(CaseEvaluationResultSchema),
-                  async effect(effect) { return checkpointJson(await evaluateResponseCase({ candidate, test, context: effect, model: dependencies.model, deadlineAt: effect.deadlineAt })); }, async commit(_tx, output) { return output; } });
+                  async effect(effect) { return checkpointJson(await evaluateResponseCase({ candidate, test, context: effect, model, deadlineAt: effect.deadlineAt })); }, async commit(_tx, output) { return output; } });
                 return { status: "continue" };
               }
               caseStepIds.push(evaluated.id);
@@ -203,13 +207,13 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
             const reviewKey = `${taskPrefix}/review`, review = await loadStage(context, binding, index, reviewKey, ContentReviewCheckpointSchema);
             if (!review) {
               if (batchingV2) {
-                await advanceReviewBatch({ context, binding, index, model: dependencies.model, moduleId: outline.id, prefix,
+                await advanceReviewBatch({ context, binding, index, model, moduleId: outline.id, prefix,
                   batchKey: `${prefix}/batch/v2/repair/${slot.id}/${attempt}`, attempt, candidates: [loaded.step], knowledge: researched.knowledge, facts: researched.facts });
                 return { status: "continue" };
               }
               const outcomes = researched.knowledge.outcomes.filter((o) => candidate.task.outcomeIds.includes(o.outcomeId));
               const material = createContentReviewInput({ candidate, criteria: outcomes.flatMap((o) => o.criteria), learnerAction: outcomes.map((o) => o.learnerAction).join("\n"), claims: researched.facts.claims, passages: researched.facts.passages });
-              await mappedModelStage({ context, binding, model: dependencies.model, key: reviewKey, purpose: "content_review", schema: ContentReviewSchema, resultSchema: ContentReviewCheckpointSchema,
+              await mappedModelStage({ context, binding, model, key: reviewKey, purpose: "content_review", schema: ContentReviewSchema, resultSchema: ContentReviewCheckpointSchema,
                 material, instructions: CONTENT_REVIEW_INSTRUCTIONS,
                 async commit(_tx, review, operationId) { return { kind: "course.task.review" as const, candidateStepId: candidateStep.id, operationId, material, review }; } });
               return { status: "continue" };
@@ -219,7 +223,7 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
               const validator = check.id === "counterexample_claim" ? "validateCounterexampleClaim" as const : "dialogue_compatibility" as const;
               const key = `${taskPrefix}/specialized/${check.id}`, specialized = await loadStage(context, binding, index, key, SpecializedReviewCheckpointSchema);
               if (!specialized) {
-                await mappedModelStage({ context, binding, model: dependencies.model, key, purpose: "content_review", schema: SpecializedReviewSchema, resultSchema: SpecializedReviewCheckpointSchema,
+                await mappedModelStage({ context, binding, model, key, purpose: "content_review", schema: SpecializedReviewSchema, resultSchema: SpecializedReviewCheckpointSchema,
                   material: review.result.material, instructions: `${SPECIALIZED_REVIEW_INSTRUCTIONS} Required validator: ${validator}.`,
                   async commit(_tx, reviewResult, operationId) {
                     if (reviewResult.validator !== validator) throw new ProviderFailure("invalid_output");
@@ -249,7 +253,7 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
         const adaptiveIssues = validateAdaptiveMaterial([prepared.candidate]);
         if (adaptiveIssues.length) { await requestRepair({ issues: adaptiveIssues }); return { status: "continue" }; }
         const preparedModule = prepared.candidate, reviewMaterial = createModuleReviewInput(preparedModule, binding.draft, researched.facts);
-        const moduleReview = await advanceModuleReview({ context, binding, index, key: `${prefix}/review`, material: reviewMaterial, model: dependencies.model });
+        const moduleReview = await advanceModuleReview({ context, binding, index, key: `${prefix}/review`, material: reviewMaterial, model });
         if (!moduleReview) return { status: "continue" };
         if (!moduleReview.passed) { await requestRepair({ findings: moduleReview.review }); return { status: "continue" }; }
         await pureStage({ context, binding, key: `${modulePrefix}/complete`, material: { moduleDigest: preparedModule.moduleDigest, reviewStepId: moduleReview.stepId }, schema: CompletedModuleCheckpointSchema,

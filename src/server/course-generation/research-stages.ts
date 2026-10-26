@@ -2,6 +2,7 @@ import "server-only";
 import { z } from "zod";
 import { IdSchema, type JsonValue } from "@/domain/common";
 import type { ModelPort } from "@/server/ai/ports";
+import type { SearchPolicyId } from "@/server/ai/model-policy";
 import { ProviderFailure } from "@/server/ai/failure";
 import type { ApprovedBuildBinding } from "@/server/curricula/build-binding";
 import type { RunContext, StepEffectContext } from "@/server/runs/ports";
@@ -27,7 +28,8 @@ export const ReadCheckpointSchema = z.union([SourceReadCheckpointSchema, ReadFai
 /** Returns null after one new durable step; callers yield before attempting another external effect. */
 export async function advanceModuleResearch(input: {
   context: RunContext; binding: ApprovedBuildBinding; index: StageIndex; moduleId: string;
-  model: ModelPort; research: (effect: StepEffectContext) => ResearchPort;
+  model: ModelPort; research: (effect: StepEffectContext,searchPolicy?:SearchPolicyId) => ResearchPort;
+  searchPolicy?:SearchPolicyId;
   priorKnowledge: readonly ModuleKnowledge[];
   batchingV2?: boolean;
   knowledgeCoveragePolicy?: "approved-scope-v1";
@@ -61,8 +63,9 @@ export async function advanceModuleResearch(input: {
     const key = `${prefix}/search/${query.key}`, existing = await loadStage(context, binding, index, key, SearchResultSchema);
     if (!existing) {
       await context.step({ key, input: { query: query.query, language: binding.draft.contentLanguage, domainHints: query.domainHints, limit: 5 }, digests: generationDigests(binding),
+        ...(input.searchPolicy?{executionProfile:"longform_content" as const}:{}),
         outputSchema: SearchResultSchema, resultSchema: SearchResultSchema,
-        async effect(effect, request) { return input.research(effect).search(request, effect.signal); }, async commit(tx, output) { return sources.saveSearch(tx, output); } });
+        async effect(effect, request) { return input.research(effect,input.searchPolicy).search(request, effect.signal); }, async commit(tx, output) { return sources.saveSearch(tx, output); } });
       return null;
     }
     searches.push({ stepId: existing.id, result: existing.result });

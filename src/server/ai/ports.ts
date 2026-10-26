@@ -3,7 +3,7 @@ import type { z } from "zod";
 import type { JsonValue } from "../../domain/common";
 import type { BillablePurpose, BudgetOperationContext } from "../budget/ports";
 import type { MODEL_ID, PROVIDER_TAG } from "./constants";
-import type {ModelPolicyId} from "./model-policy";
+import type {ModelPolicyId,SearchPolicyId} from "./model-policy";
 
 export type ModelPurpose = Exclude<BillablePurpose, "web_search" | "capability_probe">;
 export type ProviderCapability = "model_structured" | "model_text" | "research_search" | "rubric";
@@ -32,6 +32,7 @@ export interface ModelRequestBase {
   untrustedInput: JsonValue;
   model: typeof MODEL_ID | "google/gemini-3.8-flash";
   modelPolicy?: ModelPolicyId;
+  searchPolicy?: SearchPolicyId;
   maxOutputTokens: number;
   executionProfile?: "longform_curriculum" | "longform_content";
   deadlineAt: number;

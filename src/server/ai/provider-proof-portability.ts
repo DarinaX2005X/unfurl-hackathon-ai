@@ -10,7 +10,7 @@ import {validateRubricJudgement} from "../evaluation/contracts";
 import {stableExecutionId} from "../runs/identity";
 import {CAPABILITY_TEST_VERSION,runtimeConfigurationDigest,type CapabilityTransaction,type RuntimeWorld} from "./capabilities";
 import {MODEL_POLICY_VERSION,OPENROUTER_BASE_URL,SEARCH_POLICY} from "./constants";
-import {CANDIDATE_MODEL_POLICY,ModelPolicySchema,modelPolicy,type ModelPolicyId} from "./model-policy";
+import {CANDIDATE_MODEL_POLICY,ModelPolicySchema,modelPolicy,structuredPolicyProof,type ModelPolicyId} from "./model-policy";
 import {jsonDigest,parseProviderJson,parseStructuredOutput} from "./json";
 import {ProviderFailure} from "./failure";
 import {OpenRouterRateCards} from "./rate-card";
@@ -109,9 +109,10 @@ async function loadProof(tx:DbTransaction,sourceHeadReceiptId:string,budgetId:st
   const identity=modelPolicy(policy);
   if(operation.model_id!==identity.model||operation.provider_tag!==identity.provider||source.configuration_digest!==runtimeConfigurationDigest("local",policy)||
     operation.rate_card.model!==identity.model||operation.rate_card.provider!==identity.provider)throw unavailable();
-  if(policy!==MODEL_POLICY_VERSION&&(source.capability!=="model_structured"||policy!==CANDIDATE_MODEL_POLICY||
-    source.evidence.modelPolicy!==policy||source.evidence.test!=="saved-decision-native-schema-v2"||source.evidence.requestDigest!==operation.request_digest))throw unavailable();
-  const allowedInstances=policy===CANDIDATE_MODEL_POLICY?["saved-decision-native-schema-v2"]:source.capability==="research_search"?
+  const nativeProof=structuredPolicyProof(policy);
+  if(policy!==MODEL_POLICY_VERSION&&(source.capability!=="model_structured"||!nativeProof||
+    source.evidence.modelPolicy!==policy||source.evidence.test!==nativeProof||source.evidence.requestDigest!==operation.request_digest))throw unavailable();
+  const allowedInstances=nativeProof?[nativeProof]:source.capability==="research_search"?
     ["provider-probe-v1","bounded-primary-source-search-v1"]:source.capability==="model_text"?["provider-probe-v1"]:
       ["provider-probe-v1","prompt-json-local-schema-rubric-v4"];
   if(!allowedInstances.includes(source.instance_id))throw unavailable();
@@ -172,8 +173,13 @@ export async function authorizeProviderProofPortability(input:{sourceReceiptId:s
   if(source.capability==="model_text"){
     if(source.evidence.exactSentenceValidated!==true||result.content.trim()!=="A transaction commits all changes together.")throw unavailable();
   }else if(source.capability==="model_structured"&&policy!==MODEL_POLICY_VERSION){
-    if(jsonDigest(parseStructuredOutput(result.content))!==source.evidence.resultDigest||typeof source.evidence.sourceInputDigest!=="string"||typeof source.evidence.sourceSchemaDigest!=="string")throw unavailable();
-    digest.parse(source.evidence.sourceInputDigest);digest.parse(source.evidence.sourceSchemaDigest);
+    if(policy===CANDIDATE_MODEL_POLICY){
+      const {verifySavedCoverageProbeEvidence}=await import("./saved-coverage-probe");
+      await run(tx=>verifySavedCoverageProbeEvidence(tx,source.evidence,input.budgetId,operation.request_digest,result.content));
+    }else{
+      if(jsonDigest(parseStructuredOutput(result.content))!==source.evidence.resultDigest||typeof source.evidence.sourceInputDigest!=="string"||typeof source.evidence.sourceSchemaDigest!=="string")throw unavailable();
+      digest.parse(source.evidence.sourceInputDigest);digest.parse(source.evidence.sourceSchemaDigest);
+    }
   }else if(source.capability==="model_structured"||source.capability==="rubric"){
     const root=stableExecutionId(input.budgetId,source.instance_id==="provider-probe-v1"?"provider-probe-v1":"provider-diagnostic-rubric-v4");
     const rubricCase={rubric:{id:stableExecutionId(root,"rubric-case"),dimensions:[{id:"addition",criterion:"The response correctly adds two and two.",met:"States the sum is four.",partial:"Uses addition but omits the final sum.",notMet:"States a different sum."}]},

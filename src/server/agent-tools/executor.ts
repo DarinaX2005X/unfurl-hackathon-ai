@@ -43,7 +43,7 @@ const ToolOutputSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("failure"), code: z.string(), summary: z.string(), validationFeedback: CurriculumValidationFeedbackSchema.optional() }).strict(),
 ]);
 type ToolOutput = z.infer<typeof ToolOutputSchema>;
-export interface AgentToolDependencies { model: ModelPort; researchForStep(context: StepEffectContext): ResearchPort }
+export interface AgentToolDependencies { model: ModelPort; researchForStep(context: StepEffectContext,searchPolicy?:import("../ai/model-policy").SearchPolicyId): ResearchPort }
 const notInScope = () => new ServiceFault(404, "not_found", "curriculum.notFound");
 
 export async function prepareAgentDecision(tx: DbTransaction, authority: AgentToolAuthority, decision: AgentDecision, index: number,
@@ -140,6 +140,7 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
   }
   const result = await context.step({
     key: journalKey(receipt.index, "tool"), input: agentToolStepInput(receipt),
+    ...(decision.tool==="search"&&snapshot.searchPolicy?{executionProfile:"longform_curriculum" as const}:{}),
     digests: { schema: jsonDigest({ version: "agent-tool-output-v1" }), capability: jsonDigest({ model: MODEL_ID, policy: MODEL_POLICY_VERSION, tools: "agent-tools-v1" }),
       validationPolicy: jsonDigest({ version: "curriculum-evidence-v1" }), approval: null },
     outputSchema: jsonSchema(ToolOutputSchema), resultSchema: jsonSchema(ToolObservationSchema),
@@ -149,7 +150,7 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
         if (receipt.preparationError) return jsonValue({ kind: "failure", code: receipt.preparationError, summary: "The selected record changed or is outside this conversation. Read its current state before trying again." });
         if (compositionFailure) return jsonValue(compositionFailure);
         switch (decision.tool) {
-          case "search": output = { kind: "search", result: await dependencies.researchForStep(step).search(decision.input, step.signal) }; break;
+          case "search": output = { kind: "search", result: await dependencies.researchForStep(step,snapshot.searchPolicy).search(decision.input, step.signal) }; break;
           case "read_source": {
             if (decision.input.kind === "url") output = { kind: "source", result: await dependencies.researchForStep(step).read({ url: decision.input.url }, step.signal) };
             else if (decision.input.kind === "search_result") {
