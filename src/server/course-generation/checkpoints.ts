@@ -9,6 +9,7 @@ import { stableExecutionId } from "@/server/runs/identity";
 import { SourceClaimSchema } from "@/server/curriculum-research/contracts";
 import { PassageSchema } from "@/server/research/ports";
 import { ContentReviewSchema } from "@/server/course-validation/content-review";
+import { KnowledgeCoverageReviewSchema } from "@/server/course-validation/knowledge";
 
 export const COURSE_GENERATION_SCHEMA_DIGEST = jsonDigest({ courseGeneration: 3, knowledge: 1, candidate: 1, validation: 1, readingPieces: 1, moduleReviewPages: 1, plannedAssessmentRoles: 1, planPages: 1 });
 export const COURSE_VALIDATION_POLICY_DIGEST = jsonDigest({ courseValidation: 2, independentContentReview: 1, requiredOutcomeCoverage: 1, immutableEvidence: 1, adaptiveMaterial: 1 });
@@ -17,7 +18,10 @@ export const COURSE_GENERATION_V2_SCHEMA_DIGEST = jsonDigest({ legacy: COURSE_GE
 export const COURSE_VALIDATION_V2_POLICY_DIGEST = jsonDigest({ legacy: COURSE_VALIDATION_POLICY_DIGEST, batchProvenance: 2, operationModelIdentity: 1 });
 export const COURSE_GENERATION_POLICY_KEY = "course/generation-policy";
 export const CourseGenerationPolicyCheckpointSchema = z.object({ kind: z.literal("course.generation.policy"),
-  version: z.literal("course-generation-batch-v2"), batchSize: z.literal(5), maxOutputTokens: z.literal(16384), approvalDigest: DigestSchema }).strict();
+  version: z.literal("course-generation-batch-v2"), batchSize: z.literal(5), maxOutputTokens: z.literal(16384), approvalDigest: DigestSchema,
+  planPagePolicy: z.literal("bounded-plan-pages-v1").optional(),
+  knowledgeCoveragePolicy: z.literal("approved-scope-v1").optional(),
+}).strict();
 export const BatchKindSchema = z.enum(["candidate", "cases", "review"]);
 export type BatchKind = z.infer<typeof BatchKindSchema>;
 export const BatchItemProofSchema = z.object({ kind: z.literal("batch-item-v2"), batchStepId: IdSchema,
@@ -40,10 +44,27 @@ export const ModuleKnowledgeCheckpointSchema = z.object({
 export const ApprovedKnowledgeSufficientProposalSchema = z.object({ status: z.literal("sufficient"), knowledge: ModuleKnowledgeSchema }).strict();
 export const ApprovedKnowledgeProposalSchema = z.discriminatedUnion("status", [ApprovedKnowledgeSufficientProposalSchema,
   z.object({ status: z.literal("needs_research"), gaps: z.array(z.string().trim().min(1)).min(1) }).strict()]);
+export const ApprovedKnowledgeCommentaryResponseSchema = z.object({ proposal: ApprovedKnowledgeProposalSchema,
+  publicCommentary: z.string().trim().min(1).max(1600) }).strict();
+export const ApprovedKnowledgeNarrationProofSchema = z.object({ kind: z.literal("approved-knowledge-commentary-v1"),
+  response: ApprovedKnowledgeCommentaryResponseSchema }).strict();
 export const ApprovedModuleKnowledgeCheckpointSchema = z.object({ kind: z.literal("course.module.approved_knowledge"),
   knowledge: ModuleKnowledgeSchema, proposal: ApprovedKnowledgeSufficientProposalSchema, operationId: IdSchema,
-  sourceReadStepIds: z.array(IdSchema).max(0), approvedFactsDigest: DigestSchema }).strict();
-export const AnyModuleKnowledgeCheckpointSchema = z.union([ModuleKnowledgeCheckpointSchema, ApprovedModuleKnowledgeCheckpointSchema]);
+  sourceReadStepIds: z.array(IdSchema).max(0), approvedFactsDigest: DigestSchema,
+  narration: ApprovedKnowledgeNarrationProofSchema.optional() }).strict();
+export const KnowledgeCoverageCheckpointSchema = z.object({ kind: z.literal("course.module.knowledge.review.v1"),
+  sourceKnowledgeStepId: IdSchema, operationId: IdSchema, material: JsonValueSchema, review: KnowledgeCoverageReviewSchema }).strict();
+export const RevisedModuleKnowledgeCheckpointSchema = z.object({ kind: z.literal("course.module.knowledge.revision.v1"),
+  knowledge: ModuleKnowledgeSchema, operationId: IdSchema, sourceReadStepIds: z.array(IdSchema).min(1),
+  previousKnowledgeStepId: IdSchema, gapReviewStepIds: z.array(IdSchema).min(1), correction: JsonValueSchema,
+  material: JsonValueSchema }).strict();
+export const CheckedModuleKnowledgeCheckpointSchema = z.object({ kind: z.literal("course.module.knowledge.checked.v1"),
+  knowledge: ModuleKnowledgeSchema, sourceKnowledgeStepId: IdSchema, sourceReadStepIds: z.array(IdSchema),
+  reviewStepIds: z.array(IdSchema).min(1), correction: JsonValueSchema }).strict();
+export const SourceModuleKnowledgeCheckpointSchema = z.union([
+  ModuleKnowledgeCheckpointSchema, ApprovedModuleKnowledgeCheckpointSchema, RevisedModuleKnowledgeCheckpointSchema,
+]);
+export const AnyModuleKnowledgeCheckpointSchema = z.union([SourceModuleKnowledgeCheckpointSchema, CheckedModuleKnowledgeCheckpointSchema]);
 export const TaskCandidateCheckpointSchema = z.object({
   kind: z.literal("course.task.candidate"), moduleId: IdSchema, knowledgeStepId: IdSchema,
   candidate: PreparedTaskCandidateSchema, authored: AuthoredTaskSchema, authoringOperationId: IdSchema, modelProof: BatchItemProofSchema.optional(),

@@ -25,6 +25,7 @@ import type { ApproveCurriculum } from "./CurriculumPanel";
 import { chatScenarios } from "./scenarios";
 import { LegacyChatImport } from "./LegacyChatImport";
 import { cancelRun, getRunSnapshot, readRunEvents, retryRun } from "./run-observer-client";
+import { useConversationBuilds } from "./use-conversation-builds";
 import "./creator.css";
 
 const sessions = new Map<string, WeakMap<ConversationPort, WeakMap<ApplicationPort, Map<string, ChatSession>>>>();
@@ -173,6 +174,16 @@ function AccountCreator({ actorId, conversationId = null, store = chatStore, con
   const composerText = state.composerText;
   const observedRunId = state.stream?.run.id ?? null;
   const observedRunStatus = state.stream?.run.status ?? null;
+  const builds = useConversationBuilds(actorId, conversation?.id, conversation?.activeBranchId, conversations, detail => {
+    for (const artifact of detail.artifacts) {
+      const current = session.getSnapshot().conversation?.artifacts.find(item => item.courseId === artifact.courseId);
+      if (current && (artifact.revision < current.revision || (artifact.revision === current.revision
+        && ((current.approval && artifact.approval?.id !== current.approval.id) || (current.readyVersionId && artifact.readyVersionId !== current.readyVersionId))))) continue;
+      void session.updateArtifact(artifact);
+    }
+  });
+  const approvedBuildsKey = artifacts.map(artifact => artifact.approval?.id ?? "").join(":");
+  useEffect(() => { if (approvedBuildsKey) void builds.controller?.refresh(); }, [builds.controller, approvedBuildsKey]);
 
   useEffect(() => {
     void session.open();
@@ -364,6 +375,11 @@ function AccountCreator({ actorId, conversationId = null, store = chatStore, con
   const chat = <section className={`creator-chat${hasMessages ? " creator-chat--conversation" : ""}`} aria-label="Chat">
     {!hasMessages && <div className="creator-introduction"><h1>What would you like to learn?</h1></div>}
     {hasMessages && <Conversation messages={conversation?.messages ?? []} actionEvents={state.actionEvents} currentRunId={state.stream?.run.id ?? null} pending={pending} transmittingId={state.transmittingId}
+      builds={builds.state.builds} buildInteraction={{ actorId,
+        showCourseLabels: new Set(builds.state.builds.map(build => build.courseId)).size > 1,
+        onCommand: (approvalId, kind) => { void builds.controller?.command(approvalId, kind); },
+        onEarlier: runId => { void builds.controller?.earlier(runId); },
+        onViewProgram: courseId => { session.selectCourse(courseId); setPanel("courses"); } }}
       hasEarlierActivity={state.actionHistoryNextCursor !== null} earlierActivityPending={state.actionHistoryStatus === "loading"} earlierActivityError={state.actionHistoryStatus === "error"} onLoadEarlierActivity={() => { void session.loadEarlierActivity(); }}
       interrupted={state.run?.status === "cancelled" || state.run?.status === "failed"} active={!compact || !hasArtifacts || panel === "chat"}
       onRetry={(id) => { void session.retry(id); }} onEdit={(id) => { if (session.editMessage(id)) { setEditNotice(false); inputRef.current?.focus(); } else setEditNotice(true); }} />}
@@ -375,6 +391,7 @@ function AccountCreator({ actorId, conversationId = null, store = chatStore, con
         <div className="creator-composer__toolbar"><span className="creator-composer__shortcut">Shift + Enter for a new line</span><div className="creator-composer__actions">{state.stream?.pending ? <IconButton type="button" variant="primary" className="creator-composer__send creator-composer__stop" label={runCancelPending ? "Stopping response" : "Stop response"} title="Stop response" icon={<Square fill="currentColor" strokeWidth={0} />} pending={runCancelPending} onClick={() => void stopActiveRun()} /> : <IconButton type="submit" variant="primary" className="creator-composer__send" label={state.editingMessageId ? "Send edited message" : "Send message"} icon={<ArrowUp size={22} strokeWidth={2} />} pending={state.transmittingId !== null} disabled={!composerText.trim() || pending || Boolean(state.composerConflict)} />}</div></div>
       </form>
       <div className="creator-feedback">
+        {builds.state.error && <Notice tone="warning" action={<Button variant="quiet" size="compact" onClick={() => void builds.controller?.refresh()}>Reconnect</Button>}>Course build history couldn’t be loaded. Your saved program is still available.</Notice>}
         {composerText.length >= MESSAGE_LIMIT && <p className="creator-composer__limit" role="status">This message has reached the {MESSAGE_LIMIT.toLocaleString("en-US")} character limit.</p>}
         {state.saveStatus === "error" && <Notice tone="error"><p>{chatStorageMessage(state.storageError)}</p><Button variant="quiet" size="compact" onClick={() => { if (conversation) void session.flush(); else void session.send(); }}>{conversation ? "Retry saving" : "Retry sending"}</Button></Notice>}
         {state.composerConflict && <Notice tone="warning"><p>Your saved input changed in another session. Both versions have been kept.</p><Button variant="quiet" size="compact" onClick={() => setConflictOpen(true)}>Review both versions</Button></Notice>}
@@ -388,6 +405,7 @@ function AccountCreator({ actorId, conversationId = null, store = chatStore, con
   </section>;
 
   const courses = <CourseArtifactsPanel actorId={actorId} artifacts={artifacts} selectedCourseId={conversation?.selectedCourseId ?? null} onSelect={(id) => session.selectCourse(id)}
+    buildsInChat onViewBuild={() => setPanel("chat")} onBuildApproved={() => { setPanel("chat"); void builds.controller?.refreshAfterMutation(); }}
     getCurrentArtifact={(id) => session.getSnapshot().conversation?.artifacts.find((artifact) => artifact.courseId === id)} onArtifactChange={(artifact) => session.updateArtifact(artifact)}
     onApproval={(courseId, approval) => session.acknowledgeApproval(courseId, approval)} awaitingSnapshotCourseIds={state.stream?.pendingSnapshotCourseIds ?? []}
     conversationRun={state.stream?.run ?? state.run}

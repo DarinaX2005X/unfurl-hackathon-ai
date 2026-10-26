@@ -4,6 +4,7 @@ import { ChatEventSchema, type ChatEvent, type ResearchAction } from "../../doma
 import { GenerationEventSchema, type GenerationEvent } from "../../domain/generation-observer";
 import type { DbTransaction } from "../db";
 import { ProviderFailure } from "../ai/failure";
+import { jsonDigest } from "../ai/json";
 import type { ChatEventPayload, ExecutionTarget, GenerationEventPayload, JobClaim } from "./ports";
 
 const actionLabels:Partial<Record<ResearchAction,readonly string[]>>={
@@ -31,6 +32,26 @@ export async function appendChatEvent(tx: DbTransaction, target: Extract<Executi
   return event;
 }
 export async function appendGenerationEvent(tx: DbTransaction, target: Extract<ExecutionTarget, { kind: "generation" }>, payload: GenerationEventPayload): Promise<GenerationEvent> {
+  if (payload.type === "generation.commentary" || payload.type === "generation.action.started" || payload.type === "generation.action.completed") {
+    const stepId = payload.type === "generation.commentary" ? payload.stepId : payload.invocationId;
+    // Lock the owning run before deduplicating. An expired delivery cannot invent an action for another build.
+    const producer = (await tx.query(`SELECT s.id FROM unfurl.run_steps s JOIN unfurl.execution_jobs j ON j.id=s.job_id
+      JOIN unfurl.generation_runs r ON r.id=j.generation_run_id
+      WHERE s.id=$1 AND r.id=$2 AND r.owner_id=$3 AND r.branch_id=$4 AND r.course_id=$5 AND r.approval_id=$6
+        AND s.approval_digest=$7 AND s.status IN ('running','succeeded') FOR UPDATE OF r`,
+    [stepId, target.runId, target.ownerId, target.branchId, target.courseId, target.approvalId, target.approvalDigest])).rows[0];
+    if (!producer) throw new ProviderFailure("invalid_output");
+    const existing = (await tx.query<{ event: unknown }>(`SELECT event FROM unfurl.generation_events
+      WHERE run_id=$1 AND type=$2 AND COALESCE(event->>'stepId',event->>'invocationId')=$3 ORDER BY seq LIMIT 1`,
+    [target.runId, payload.type, stepId])).rows[0];
+    if (existing) {
+      const event = GenerationEventSchema.parse(existing.event);
+      const expected = GenerationEventSchema.parse({ ...payload, id: event.id, runId: target.runId, courseId: target.courseId,
+        branchId: target.branchId, seq: event.seq, at: event.at });
+      if (jsonDigest(event) !== jsonDigest(expected)) throw new ProviderFailure("invalid_output");
+      return event;
+    }
+  }
   const row = (await tx.query<{ last_seq: number; updated_at: Date | string }>(`UPDATE unfurl.generation_runs
     SET last_seq=last_seq+1,updated_at=now() WHERE id=$1 AND owner_id=$2 AND branch_id=$3 AND course_id=$4 RETURNING last_seq,updated_at`,
   [target.runId, target.ownerId, target.branchId, target.courseId])).rows[0];

@@ -78,14 +78,16 @@ describe("generation policy lineage", () => {
     schema: COURSE_GENERATION_SCHEMA_DIGEST, validationPolicy: COURSE_VALIDATION_POLICY_DIGEST, capability: getCapabilityCatalogDigest(), approval: digest };
   const row = (steps: unknown[], depth = 0, retry: string | null = null) => ({ id: depth ? id(799) : binding.run.id, retry_of_run_id: retry, depth, steps });
   const lineageTx = (rows: unknown[]) => ({ query: vi.fn(async () => ({ rows })) }) as unknown as DbTransaction;
-  it("selects v2 only for pristine original builds", async () => {
+  it("selects current policy for pristine builds but preserves already-started unmarked work", async () => {
     await expect(resolveGenerationPolicy(lineageTx([row([])]), binding)).resolves.toBe("batch-v2");
     await expect(resolveGenerationPolicy(lineageTx([row([{ ...policy, key: "course/old", status: "running", result: null }])]), binding)).resolves.toBe("legacy-v1");
   });
-  it("inherits exact parent policy and preserves an empty legacy ancestor", async () => {
+  it("lets a fresh retry capture current policy without rewriting legacy ancestors", async () => {
     await expect(resolveGenerationPolicy(lineageTx([row([], 0, id(799)), row([policy], 1)]), binding)).resolves.toBe("batch-v2");
-    await expect(resolveGenerationPolicy(lineageTx([row([], 0, id(799)), row([], 1)]), binding)).resolves.toBe("legacy-v1");
-    await expect(resolveGenerationPolicy(lineageTx([row([policy], 0, id(799)), row([], 1)]), binding)).rejects.toThrow("provider.invalid_output");
+    await expect(resolveGenerationPolicy(lineageTx([row([], 0, id(799)), row([], 1)]), binding)).resolves.toBe("batch-v2");
+    const legacy = { ...policy, key: "course/old", status: "succeeded", result: null };
+    await expect(resolveGenerationPolicy(lineageTx([row([policy], 0, id(799)), row([legacy], 1)]), binding)).resolves.toBe("batch-v2");
+    await expect(resolveGenerationPolicy(lineageTx([row([legacy], 0, id(799)), row([policy], 1)]), binding)).resolves.toBe("legacy-v1");
   });
   it("does not silently fall back when an ancestor or policy is malformed", async () => {
     await expect(resolveGenerationPolicy(lineageTx([row([], 0, id(799))]), binding)).rejects.toThrow("provider.invalid_output");

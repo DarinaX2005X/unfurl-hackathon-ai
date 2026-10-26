@@ -1,6 +1,6 @@
 import "server-only";
 import { z } from "zod";
-import { IdSchema } from "@/domain/common";
+import { IdSchema, type JsonValue } from "@/domain/common";
 import type { ModelPort } from "@/server/ai/ports";
 import { ProviderFailure } from "@/server/ai/failure";
 import type { ApprovedBuildBinding } from "@/server/curricula/build-binding";
@@ -8,12 +8,12 @@ import type { RunContext, StepEffectContext } from "@/server/runs/ports";
 import { SearchResultSchema, SourceDocumentSchema, type ResearchPort } from "@/server/research/ports";
 import { PostgresResearchRepository } from "@/server/research/repository";
 import { PostgresCurriculumResearchRepository } from "@/server/curriculum-research/repository";
-import { validateModuleKnowledge } from "@/server/course-validation/knowledge";
+import { validateKnowledgeRevision, validateModuleKnowledge, type KnowledgeCoverageReview } from "@/server/course-validation/knowledge";
 import { ModuleKnowledgeSchema, type ModuleKnowledge } from "./contracts";
 import { ModuleResearchPlanSchema, SourceSelectionSchema } from "./planning";
-import { ModuleKnowledgeCheckpointSchema, SourceClaimsCheckpointSchema, SourceClaimsProposalSchema, SourceReadCheckpointSchema } from "./checkpoints";
-import { GenerationEvidenceRepository, verifyStoredModelData } from "./repository";
-import { generationDigests, loadStage, mappedModelStage, modelStage, ModelStageSchema, type StageIndex } from "./stages";
+import { ModuleKnowledgeCheckpointSchema, RevisedModuleKnowledgeCheckpointSchema, SourceModuleKnowledgeCheckpointSchema, SourceClaimsCheckpointSchema, SourceClaimsProposalSchema, SourceReadCheckpointSchema } from "./checkpoints";
+import { GenerationEvidenceRepository, verifyStoredModelData, type LoadedModuleKnowledge } from "./repository";
+import { checkpointJson, generationDigests, loadStage, mappedModelStage, mappedPolicyModelStage, modelStage, ModelStageSchema, type StageIndex } from "./stages";
 import { advanceApprovedModuleResearch } from "./approved-research";
 import { projectSourcePassages } from "./source-passage-projection";
 
@@ -30,21 +30,28 @@ export async function advanceModuleResearch(input: {
   model: ModelPort; research: (effect: StepEffectContext) => ResearchPort;
   priorKnowledge: readonly ModuleKnowledge[];
   batchingV2?: boolean;
+  knowledgeCoveragePolicy?: "approved-scope-v1";
+  revision?: { prefix: string; previous: LoadedModuleKnowledge; reviews: Array<{ stepId: string; review: KnowledgeCoverageReview }>; correction: JsonValue };
 }) {
   const { context, binding, index, moduleId, model } = input;
-  if (input.batchingV2) {
+  if (input.batchingV2 && !input.revision) {
     const approved = await advanceApprovedModuleResearch(input);
     if (!approved) return null;
     if (approved.status === "sufficient") return approved.loaded;
   }
-  const prefix = `course/${moduleId}/research`, sources = new PostgresResearchRepository(), claims = new PostgresCurriculumResearchRepository();
+  const prefix = input.revision?.prefix ?? `course/${moduleId}/research`, sources = new PostgresResearchRepository(), claims = new PostgresCurriculumResearchRepository();
+  const revision = input.revision;
+  const repairMaterial = revision ? { previousKnowledgeStepId: revision.previous.step.id, previousKnowledge: revision.previous.knowledge,
+    gapReviewStepIds: revision.reviews.map(item => item.stepId), reviews: revision.reviews.map(item => item.review), correction: revision.correction } : null;
   const section = binding.draft.modules.find((entry) => entry.id === moduleId)!;
   const outcomes = binding.draft.outcomes.filter((entry) => section.outcomeIds.includes(entry.id));
   const planStep = await loadStage(context, binding, index, `${prefix}/plan`, ModelStageSchema);
   if (!planStep) {
     await modelStage({ context, binding, model, key: `${prefix}/plan`, purpose: "module_knowledge", schema: ModuleResearchPlanSchema,
-      material: { module: section, outcomes, contentLanguage: binding.draft.contentLanguage, approvedClaims: binding.facts.claims },
-      instructions: "Plan targeted research for the approved module's concepts, learner actions, misconceptions and assessment criteria. Identify real knowledge gaps. Prefer authoritative primary sources. Keep queries focused and avoid redundant searches. Cover every approved outcome." });
+      material: { module: section, outcomes, contentLanguage: binding.draft.contentLanguage, approvedClaims: binding.facts.claims,
+        ...(revision ? { repair: repairMaterial, establishedClaims: revision.previous.facts.claims } : {}) },
+      instructions: "Plan targeted research for the approved module's concepts, learner actions, misconceptions and assessment criteria. Identify real knowledge gaps. Prefer authoritative primary sources. Keep queries focused and avoid redundant searches. Cover every approved outcome." +
+        (revision ? " Address the actual failed or uncertain coverage checks in repair. Research the missing approved competencies specifically; retain valid prior evidence and do not repeat unrelated searches." : "") });
     return null;
   }
   const plan = ModuleResearchPlanSchema.parse(planStep.result.data);
@@ -63,7 +70,7 @@ export async function advanceModuleResearch(input: {
   const selectedStep = await loadStage(context, binding, index, `${prefix}/selection`, ModelStageSchema);
   if (!selectedStep) {
     await modelStage({ context, binding, model, key: `${prefix}/selection`, purpose: "module_knowledge", schema: SourceSelectionSchema,
-      material: { moduleId, outcomes, searches }, instructions: "Select the strongest actual search hits to read. Cite exact searchStepId/hitId pairs. Snippets are discovery only. Cover each approved outcome with authoritative sources; record source limitations." });
+      material: { moduleId, outcomes, searches, ...(revision ? { repair: repairMaterial } : {}) }, instructions: "Select the strongest actual search hits to read. Cite exact searchStepId/hitId pairs. Snippets are discovery only. Cover each approved outcome with authoritative sources; record source limitations." });
     return null;
   }
   const selection = SourceSelectionSchema.parse(selectedStep.result.data);
@@ -108,15 +115,31 @@ export async function advanceModuleResearch(input: {
     extractions.push(extracted.result);
   }
   if (!reads.length) throw new ProviderFailure("unavailable");
-  const knowledgeKey = `${prefix}/knowledge`, knowledge = await loadStage(context, binding, index, knowledgeKey, ModuleKnowledgeCheckpointSchema);
+  const knowledgeKey = `${prefix}/knowledge`, knowledge = await loadStage(context, binding, index, knowledgeKey, SourceModuleKnowledgeCheckpointSchema);
   if (!knowledge) {
     const documents = await context.read((tx) => sources.getSources(tx, reads.map((read) => read.sourceId)));
     const unique = <T extends { id: string }>(values: T[]) => [...new Map(values.map((value) => [value.id, value])).values()];
-    const facts = { ownerId: binding.course.ownerId, authorizedSourceIds: new Set([...binding.facts.authorizedSourceIds, ...documents.map((d) => d.id)]),
-      sources: unique([...binding.facts.sources, ...documents]), claims: unique([...binding.facts.claims, ...extractions.flatMap((e) => e.claims)]), passages: unique([...binding.facts.passages, ...extractions.flatMap((e) => e.passages)]) };
-    await mappedModelStage({ context, binding, model, key: knowledgeKey, purpose: "module_knowledge", schema: ModuleKnowledgeSchema, resultSchema: ModuleKnowledgeCheckpointSchema,
-      material: { moduleId, approvalDigest: binding.approval.contentDigest, section, outcomes, claims: facts.claims, passages: facts.passages, limitations: selection.limitations,
-        establishedCriteria: input.priorKnowledge.flatMap((known) => known.outcomes.filter((outcome) => section.outcomeIds.includes(outcome.outcomeId)).map(({ outcomeId, criteria }) => ({ outcomeId, criteria }))) },
+    const priorFacts = revision?.previous.facts;
+    const facts = { ownerId: binding.course.ownerId, authorizedSourceIds: new Set([...binding.facts.authorizedSourceIds, ...documents.map((d) => d.id), ...(priorFacts?.authorizedSourceIds ?? [])]),
+      sources: unique([...binding.facts.sources, ...documents, ...(priorFacts?.sources ?? [])]),
+      claims: unique([...binding.facts.claims, ...extractions.flatMap((e) => e.claims), ...(priorFacts?.claims ?? [])]),
+      passages: unique([...binding.facts.passages, ...extractions.flatMap((e) => e.passages), ...(priorFacts?.passages ?? [])]) };
+    const material = { moduleId, approvalDigest: binding.approval.contentDigest, section, outcomes, claims: facts.claims, passages: facts.passages, limitations: selection.limitations,
+      establishedCriteria: input.priorKnowledge.flatMap((known) => known.outcomes.filter((outcome) => section.outcomeIds.includes(outcome.outcomeId)).map(({ outcomeId, criteria }) => ({ outcomeId, criteria }))),
+      ...(revision ? { repair: repairMaterial } : {}) };
+    if (revision) await mappedPolicyModelStage({ context, binding, model, key: knowledgeKey, purpose: "module_knowledge", instructionVersion: "course-knowledge-revision-v1",
+      schema: ModuleKnowledgeSchema, resultSchema: RevisedModuleKnowledgeCheckpointSchema, material,
+      instructions: "Repair the saved teaching knowledge using the complete approved demonstrations and exact coverage findings in repair. Add every missing competence, concept, implementation requirement and canonical criterion using actual supplied source claims. Preserve all valid prior criterion IDs and their exact descriptions, and preserve valid prior source claims for their original outcomes. Retire only criteria explicitly marked invalid by the independent review; any replacement competency needs a NEW criterion ID. Do not reuse claims marked unsupported. A missing competence usually requires additions, not deleting existing knowledge. Preserve approved depth and prerequisites; no introductory proxies. Return the complete revised ModuleKnowledge, not a patch.",
+      async commit(_tx, data, operationId) {
+        if (validateKnowledgeRevision(data, revision.previous.knowledge, revision.reviews.map(item => item.review),
+          { ...facts, draft: binding.draft, approvalDigest: binding.approval.contentDigest }).length) throw new ProviderFailure("invalid_output");
+        return { kind: "course.module.knowledge.revision.v1" as const, knowledge: data, operationId,
+          sourceReadStepIds: [...new Set([...revision.previous.step.result.sourceReadStepIds, ...reads.map(read => read.stepId)])],
+          previousKnowledgeStepId: revision.previous.step.id, gapReviewStepIds: revision.reviews.map(item => item.stepId), correction: revision.correction,
+          material: checkpointJson(material) };
+      } });
+    else await mappedModelStage({ context, binding, model, key: knowledgeKey, purpose: "module_knowledge", schema: ModuleKnowledgeSchema, resultSchema: ModuleKnowledgeCheckpointSchema,
+      material,
       instructions: "Build grounded teaching knowledge for every approved module outcome. Define stable canonical criterion IDs describing demonstrable competence, concept explanations and misconceptions. For an outcome also taught earlier, reuse its established criterion IDs and exact descriptions whenever assessing the same competence; add distinct criteria only for genuinely additional approved competence. Reference only actual supplied claim IDs. Preserve depth and prerequisites; do not replace advanced outcomes with introductory proxies.",
       async commit(_tx, data, operationId) {
         if (validateModuleKnowledge(data, { ...facts, draft: binding.draft, approvalDigest: binding.approval.contentDigest }).length) throw new ProviderFailure("invalid_output");
@@ -124,6 +147,7 @@ export async function advanceModuleResearch(input: {
       } });
     return null;
   }
+  if (Boolean(revision) !== (knowledge.result.kind === "course.module.knowledge.revision.v1")) throw new ProviderFailure("invalid_output");
   await context.read(async (tx) => { await verifyStoredModelData(tx, planStep, planStep.result.operationId, ModuleResearchPlanSchema, plan); await verifyStoredModelData(tx, selectedStep, selectedStep.result.operationId, SourceSelectionSchema, selection); });
   return context.read((tx) => new GenerationEvidenceRepository().loadKnowledge(tx, binding, knowledge.id));
 }

@@ -38,6 +38,9 @@ interface Props {
   catalog?: CatalogPort;
   awaitingSnapshotCourseIds?: string[];
   conversationRun?: AgentTurnRun | null;
+  buildsInChat?: boolean;
+  onViewBuild?: () => void;
+  onBuildApproved?: () => void;
 }
 
 interface AuthoringEntry { status: "loading" | "ready" | "error"; snapshot: CurriculumAuthoringSnapshot | null }
@@ -50,7 +53,7 @@ function errorMessage(code?: string): string {
   return "The change could not be confirmed. Your edits are still here.";
 }
 
-export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onSelect, getCurrentArtifact, onArtifactChange, onApproval, onApprove, onEditMetadata, curriculumPort = httpCurriculum, catalog = httpCatalog, awaitingSnapshotCourseIds = [], conversationRun = null }: Props) {
+export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onSelect, getCurrentArtifact, onArtifactChange, onApproval, onApprove, onEditMetadata, curriculumPort = httpCurriculum, catalog = httpCatalog, awaitingSnapshotCourseIds = [], conversationRun = null, buildsInChat = false, onViewBuild, onBuildApproved }: Props) {
   const selected = artifacts.find((artifact) => artifact.courseId === selectedCourseId) ?? artifacts[0];
   const [authoring, setAuthoring] = useState<Record<string, AuthoringEntry>>({});
   const [programCourseId, setProgramCourseId] = useState<string | null>(null);
@@ -146,7 +149,7 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
     finally { request.release(); }
   }
   useEffect(() => {
-    if (!actorId || !selected || !readyVersionId || ready[selected.courseId]?.status === "loading" || ready[selected.courseId]?.result?.kind === "ready") return;
+    if (buildsInChat || !actorId || !selected || !readyVersionId || ready[selected.courseId]?.status === "loading" || ready[selected.courseId]?.result?.kind === "ready") return;
     const courseId = selected.courseId;
     const request = accountScope.request(actorId);
     void catalog.getCourse(courseId, readyVersionId, request.signal).then((result) => {
@@ -154,14 +157,14 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
       setReady((current) => ({ ...current, [courseId]: result.ok ? { status: "ready", result: result.data } : { status: "error", result: null } }));
     }).catch(() => { if (request.isCurrent()) setReady((current) => ({ ...current, [courseId]: { status: "error", result: null } })); }).finally(request.release);
     return request.abort;
-  }, [actorId, catalog, readyVersionId, selected?.courseId]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [actorId, catalog, readyVersionId, selected?.courseId, buildsInChat]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const selectedSnapshot = selected ? authoring[selected.courseId]?.snapshot : null;
   const observableRun = selectedSnapshot && selected?.curriculum
     && selectedSnapshot.draft.id === selected.curriculum.id && selectedSnapshot.draft.revision === selected.curriculum.revision
     ? selectedSnapshot.generationRun : null;
   useEffect(() => {
-    if (!actorId || !selected || !selected.curriculum || !observableRun || !selected.approval) return;
+    if (buildsInChat || !actorId || !selected || !selected.curriculum || !observableRun || !selected.approval) return;
     const courseId = selected.courseId;
     const draftId = selected.curriculum.id;
     const draftRevision = selected.curriculum.revision;
@@ -264,7 +267,7 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
     return () => { clearTimeout(refreshTimer); request.abort(); };
     // The run identity defines one observer lifetime; state updates are reducer-owned.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [actorId, observableRun?.id, selected?.courseId, selected?.curriculum?.id, selected?.curriculum?.revision, selected?.approval?.id]);
+  }, [actorId, observableRun?.id, selected?.courseId, selected?.curriculum?.id, selected?.curriculum?.revision, selected?.approval?.id, buildsInChat]);
 
   const observableAuthoringRun = selectedSnapshot && selected?.curriculum
     && selectedSnapshot.draft.id === selected.curriculum.id && selectedSnapshot.draft.revision === selected.curriculum.revision
@@ -480,6 +483,7 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
       if (conversationAuthoringActive) throw new CurriculumApprovalFailure("curriculum.authoringInProgress");
     const receipt = await approve(input);
     if (onApprove && !await onApproval(input.courseId, receipt)) throw new Error("This program changed before approval was confirmed");
+    onBuildApproved?.();
     return receipt;
   } : undefined;
 
@@ -582,6 +586,7 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
     {curriculum ? <CurriculumPanel key={selected.courseId} draft={curriculum} currentRevision={curriculum.revision}
       awaitingApproval={selected.approvalRequestedRevision === curriculum.revision && !awaitingSnapshotCourseIds.includes(selected.courseId) && (!actorId || snapshot !== null)} approval={snapshot?.artifact.approval ?? selected.approval} showTitle={false}
       conversationAuthoringActive={conversationAuthoringActive}
+      buildInChat={buildsInChat} {...(onViewBuild ? { onViewBuild } : {})}
       {...(snapshot ? { evidence: snapshot.evidence, generationRun: generation?.run ?? snapshot.generationRun, languageRun: snapshot.languageRun } : {})}
       {...(generation ? { generation } : {})}
       generationConnectionError={Boolean(generationError[selected.courseId])} cancelPending={cancelPending}
@@ -594,7 +599,7 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
       {...(selectedAuthoringRun && ["failed", "cancelled"].includes(selectedAuthoringRun.status) && selectedAuthoringRun.error?.code !== "revision_conflict" ? { onRetryAuthoring: retryAuthoring } : {})}
       {...(actorId ? { onEdit: openProgram } : {})}
       {...(approveAndRetain ? { onApprove: approveAndRetain } : {})} /> : <p className="creator-artifacts__no-program">This course doesn’t have a program to review yet.</p>}
-    {selected.readyVersionId && <section className="creator-ready"><h3>Your course is ready</h3>{readyDetail ? <><p>Open the course to review it, or start learning now.</p><div><LinkButton href={routes.course(readyDetail.course.slug)} variant="secondary">View course</LinkButton><Button pending={startPending} onClick={() => void startCourse()}>Start course</Button></div></> : readyEntry?.status === "error" ? <><p>The course is ready, but its link could not be loaded.</p><Button variant="quiet" size="compact" onClick={() => void fetchReady(selected.courseId, selected.readyVersionId!)}>Try again</Button></> : <p>Loading the course link…</p>}{startError && <Notice tone="error">{startError}</Notice>}</section>}
+    {!buildsInChat && selected.readyVersionId && <section className="creator-ready"><h3>Your course is ready</h3>{readyDetail ? <><p>Open the course to review it, or start learning now.</p><div><LinkButton href={routes.course(readyDetail.course.slug)} variant="secondary">View course</LinkButton><Button pending={startPending} onClick={() => void startCourse()}>Start course</Button></div></> : readyEntry?.status === "error" ? <><p>The course is ready, but its link could not be loaded.</p><Button variant="quiet" size="compact" onClick={() => void fetchReady(selected.courseId, selected.readyVersionId!)}>Try again</Button></> : <p>Loading the course link…</p>}{startError && <Notice tone="error">{startError}</Notice>}</section>}
 
     <Dialog open={metadataCourseId !== null} onOpenChange={(open) => { if (!open && !metadataPending) setMetadataCourseId(null); }} title="Edit course details" footer={<><Button variant="quiet" onClick={() => setMetadataCourseId(null)} disabled={metadataPending}>Cancel</Button><Button pending={metadataPending} disabled={!metadata.title.trim() || !metadata.summary.trim()} onClick={() => void saveMetadata()}>Save changes</Button></>}>
       <div className="creator-metadata-form"><TextField id="course-title" label="Title" value={metadata.title} maxLength={120} disabled={metadataPending} onChange={(event) => { setMetadata({ ...metadata, title: event.target.value }); setMetadataKey(crypto.randomUUID()); }} /><Textarea id="course-summary" label="Description" value={metadata.summary} maxLength={4000} disabled={metadataPending} onChange={(event) => { setMetadata({ ...metadata, summary: event.target.value }); setMetadataKey(crypto.randomUUID()); }} />{metadataError && <Notice tone="error">{metadataError}</Notice>}</div>

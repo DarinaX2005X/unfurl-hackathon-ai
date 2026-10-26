@@ -8,6 +8,7 @@ import { ComposerDraftSchema, ConversationActionPageSchema, ConversationDetailSc
 import type { Actor } from "../auth/actor";
 import { ServiceFault, unavailable } from "../auth/errors";
 import type { DbTransaction } from "../db";
+import { readConversationBuilds } from "./build-history";
 
 type DateValue = Date | string;
 export interface ConversationRow { id: string; owner_id: string; title: string; active_branch_id: string; revision: number; created_at: DateValue; updated_at: DateValue }
@@ -151,8 +152,10 @@ export async function readDetail(tx: DbTransaction, actor: Actor, conversation: 
   const activeTurn = await readActiveTurn(tx, actor, conversation);
   const artifacts = await readArtifacts(tx, actor, conversation.id);
   const actionHistory = await readActionHistory(tx, actor, conversation);
+  const builds = await readConversationBuilds(tx, actor, conversation);
   return ConversationDetailSchema.parse({ conversation, messages, activeTurn, artifacts,
     retainedActionEvents: actionHistory.items, actionHistoryNextCursor: actionHistory.nextCursor,
+    builds,
     composerDraft: { ...composerDraft, pendingMessages: unacceptedIntents(composerDraft.pendingMessages, messages) } });
 }
 

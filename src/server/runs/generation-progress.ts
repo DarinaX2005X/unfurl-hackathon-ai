@@ -20,10 +20,12 @@ export function classifyGenerationStep(key: string | null, approvedModules: Read
   const section = /^course\/([^/]+)\/(.+)$/.exec(key);
   if (!section || !approvedModules.has(section[1]!) || !IdSchema.safeParse(section[1]).success) return null;
   const moduleId = section[1]!, suffix = section[2]!;
+  const researchSuffix = suffix.replace(/^research\/coverage-v1\/round\/\d+\/revision\/\d+\//, "research/");
   let stage: GenerationProgress["stage"] | null = null;
-  if (suffix === "research-v2/approved-knowledge" || /^research\/(?:plan|selection|knowledge|(?:search|claims)\/[^/]+)$/.test(suffix)) stage = "researching";
-  else if (/^research\/read\/[^/]+$/.test(suffix)) stage = "reading_sources";
-  else if (/^round\/\d+\/plan(?:\/[^/]+\/\d+)?$/.test(suffix)) stage = "planning_lessons";
+  if (suffix === "research-v2/approved-knowledge" || /^research\/(?:plan|selection|knowledge|(?:search|claims)\/[^/]+)$/.test(researchSuffix)
+    || /^research\/coverage-v1\/round\/\d+\/(?:checked|revision\/\d+\/review\/[^/]+)$/.test(suffix)) stage = "researching";
+  else if (/^research\/read\/[^/]+$/.test(researchSuffix)) stage = "reading_sources";
+  else if (/^round\/\d+\/plan(?:\/(?:bounded-v1\/)?[^/]+\/\d+)?$/.test(suffix)) stage = "planning_lessons";
   else if (/^round\/\d+\/reading\/[^/]+(?:\/[^/]+\/\d+)?$/.test(suffix)) stage = "writing_lessons";
   else if (/^round\/\d+\/(?:task\/[^/]+\/\d+|batch\/v2\/(?:repair\/)?[^/]+\/\d+)\/candidate$/.test(suffix)) stage = "creating_practice";
   else if (/^round\/\d+\/task\/[^/]+\/\d+\/(?:cases|review|validation|case\/[^/]+(?:\/execute)?|specialized\/[^/]+)$/.test(suffix)
@@ -71,11 +73,13 @@ export async function readGenerationProgress(tx: DbTransaction, run: GenerationR
   if (moduleId && completedModuleIds.has(moduleId)) moduleId = undefined;
   let completedSources: number | undefined;
   if (moduleId) {
+    // Count successful read proofs across original and targeted research paths.
+    // A path name alone is neither evidence of a completed read nor its approved scope.
     const count = (await tx.query<{ completed_sources: number }>(`SELECT count(DISTINCT result_reference->>'sourceId')::int AS completed_sources
       FROM unfurl.run_steps WHERE job_id=$1 AND approval_digest=$2 AND status='succeeded'
-        AND step_key LIKE $3 AND result_reference->>'kind'='course.source.read'
-        AND result_reference->>'moduleId'=$4 AND result_reference->>'approvalDigest'=$2`,
-    [stored.job_id, approvalDigest, `course/${moduleId}/research/read/%`, moduleId])).rows[0]?.completed_sources;
+        AND result_reference->>'kind'='course.source.read'
+        AND result_reference->>'moduleId'=$3 AND result_reference->>'approvalDigest'=$2`,
+    [stored.job_id, approvalDigest, moduleId])).rows[0]?.completed_sources;
     if (Number.isSafeInteger(count) && count! >= 0) completedSources = count;
   }
   return GenerationProgressSchema.parse({ stage: active ? classified?.stage ?? "preparing" : "preparing",

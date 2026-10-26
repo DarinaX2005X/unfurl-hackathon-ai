@@ -1,7 +1,8 @@
 import { z } from "zod";
-import { ContentLanguageSchema, IdSchema, IsoDateTimeSchema, RevisionSchema, pageSchema } from "./common";
+import { ContentLanguageSchema, DigestSchema, IdSchema, IsoDateTimeSchema, RevisionSchema, pageSchema } from "./common";
 import { CourseArtifactRefSchema } from "./chat";
 import { ActionEventSchema, AgentTurnRunSchema, ChatMessageSchema, ConversationSchema } from "./generation";
+import { GenerationSnapshotSchema } from "./generation-observer";
 
 export const MESSAGE_TEXT_LIMIT = 20_000;
 export const PENDING_MESSAGE_LIMIT = 100;
@@ -57,6 +58,23 @@ export const ComposerDraftSchema = z.object({
 }).strict().refine(withinComposerLimit, "The saved input is larger than 2 MB");
 export type ComposerDraft = z.infer<typeof ComposerDraftSchema>;
 
+/** A user approval is an immutable action, separate from the text-message parent chain. */
+export const ConversationBuildSchema = z.object({
+  approvalId: IdSchema, draftId: IdSchema, draftRevision: RevisionSchema, approvalDigest: DigestSchema,
+  approvedAt: IsoDateTimeSchema, courseId: IdSchema, branchId: IdSchema,
+  title: z.string().trim().min(1).max(120), summary: z.string().trim().min(1).max(4000), contentLanguage: ContentLanguageSchema,
+  initialRunId: IdSchema, runs: z.array(z.object({ retryOfRunId: IdSchema.nullable(), snapshot: GenerationSnapshotSchema }).strict()).min(1),
+}).strict().superRefine((build, ctx) => {
+  if (build.runs[0]!.snapshot.run.id !== build.initialRunId || build.runs[0]!.retryOfRunId !== null
+    || new Set(build.runs.map(entry => entry.snapshot.run.id)).size !== build.runs.length
+    || build.runs.some((entry, index) => entry.snapshot.run.approvalId !== build.approvalId
+      || entry.snapshot.run.courseId !== build.courseId || entry.snapshot.run.branchId !== build.branchId
+      || entry.snapshot.approvalDigest !== build.approvalDigest || entry.snapshot.approvedDraftRevision !== build.draftRevision
+      || (index > 0 && entry.retryOfRunId !== build.runs[index - 1]!.snapshot.run.id)))
+    ctx.addIssue({ code: "custom", message: "An approval history must contain its exact ordered retry lineage" });
+});
+export type ConversationBuild = z.infer<typeof ConversationBuildSchema>;
+
 export const ConversationDetailSchema = z.object({
   conversation: ConversationSchema,
   messages: z.array(ChatMessageSchema),
@@ -65,6 +83,7 @@ export const ConversationDetailSchema = z.object({
   composerDraft: ComposerDraftSchema,
   retainedActionEvents: z.array(ActionEventSchema).optional(),
   actionHistoryNextCursor: z.string().min(1).max(2000).nullable().optional(),
+  builds: z.array(ConversationBuildSchema).optional(),
 }).strict().superRefine((detail, context) => {
   const { conversation, messages, activeTurn, artifacts, composerDraft } = detail;
   if (composerDraft.conversationId !== conversation.id) context.addIssue({ code: "custom", path: ["composerDraft"], message: "The input belongs to another chat" });
@@ -83,6 +102,10 @@ export const ConversationDetailSchema = z.object({
     || artifacts.some((artifact) => artifact.curriculum && artifact.curriculum.conversationId !== conversation.id)) {
     context.addIssue({ code: "custom", path: ["artifacts"], message: "Course references must belong to this chat" });
   }
+  if (new Set(detail.builds?.map(build => build.approvalId) ?? []).size !== (detail.builds?.length ?? 0)
+    || detail.builds?.some(build => build.branchId !== conversation.activeBranchId || !artifacts.some(artifact => artifact.courseId === build.courseId)
+      || build.runs.some(({ snapshot }) => snapshot.run.conversationId !== conversation.id || snapshot.run.ownerId !== conversation.ownerId)))
+    context.addIssue({ code: "custom", path: ["builds"], message: "Builds must belong to this owner's visible chat and branch" });
 });
 export type ConversationDetail = z.infer<typeof ConversationDetailSchema>;
 export const ConversationPageSchema = pageSchema(ConversationSchema);

@@ -16,6 +16,7 @@ import * as repository from "./repository";
 import { ContextSnapshotSchema, type ContextSnapshot } from "./repository";
 import { advanceCurriculumPatch, readCurriculumPatchIntent } from "./curriculum-patch";
 import { ARTIFACT_MEMORY_INSTRUCTIONS } from "./artifact-memory";
+import { GENERATION_MEMORY_INSTRUCTIONS } from "./generation-memory";
 
 export interface AgentJournal {
   assertAuthority(tx: DbTransaction, target: ExecutionTarget): Promise<void>;
@@ -146,9 +147,12 @@ export function buildAgentDecisionRequest(snapshot:ContextSnapshot,budget:Budget
   const memoryVersion=snapshot.artifactMemory?.version;
   const instructionVersion=readerVersion?`${policy.instructionVersion}:${readerVersion}`:policy.instructionVersion;
   const trustedInstructions=readerVersion?`${baseInstructions}\n${READER_CAPABILITY_INSTRUCTIONS}`:baseInstructions;
+  const artifactInstructionVersion=memoryVersion?`${instructionVersion}:${memoryVersion}`:instructionVersion;
+  const artifactInstructions=memoryVersion?`${trustedInstructions}\n${ARTIFACT_MEMORY_INSTRUCTIONS}`:trustedInstructions;
+  const generationVersion=snapshot.generationMemory?.version;
   return {operationId:budget.logicalOperationId,purpose:"turn_planning" as const,
-    instructionVersion:memoryVersion?`${instructionVersion}:${memoryVersion}`:instructionVersion,
-    trustedInstructions:memoryVersion?`${trustedInstructions}\n${ARTIFACT_MEMORY_INSTRUCTIONS}`:trustedInstructions,
+    instructionVersion:generationVersion?`${artifactInstructionVersion}:${generationVersion}`:artifactInstructionVersion,
+    trustedInstructions:generationVersion?`${artifactInstructions}\n${GENERATION_MEMORY_INSTRUCTIONS}`:artifactInstructions,
     untrustedInput:repository.jsonValue(selected),model:modelPolicy(selected.modelPolicy).model,
     ...(selected.modelPolicy?{modelPolicy:selected.modelPolicy}:{}),maxOutputTokens:plannerOutputTokens(selected,retryEpoch,retryPolicy),
     executionProfile:"longform_curriculum" as const,deadlineAt,budget,schema:policy.schema,schemaId:"agent_decision",schemaVersion:policy.schemaVersion};

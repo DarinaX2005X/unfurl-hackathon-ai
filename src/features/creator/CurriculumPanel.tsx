@@ -80,9 +80,11 @@ export interface CurriculumPanelProps {
   onCancelAuthoring?: () => void;
   onRetryAuthoring?: () => void;
   onEdit?: () => void;
+  buildInChat?: boolean;
+  onViewBuild?: () => void;
 }
 
-export function CurriculumPanel({ draft, currentRevision, onApprove, approval = null, awaitingApproval = false, showTitle = true, evidence, generationRun = null, languageRun = null, generation, generationConnectionError = false, cancelPending = false, onCancelBuild, retryPending = false, retryError = false, onRetryBuild, authoringRun = null, conversationAuthoringActive = false, authoringConnectionError = false, authoringCommandPending = false, authoringCommandError = false, onCancelAuthoring, onRetryAuthoring, onEdit }: CurriculumPanelProps) {
+export function CurriculumPanel({ draft, currentRevision, onApprove, approval = null, awaitingApproval = false, showTitle = true, evidence, generationRun = null, languageRun = null, generation, generationConnectionError = false, cancelPending = false, onCancelBuild, retryPending = false, retryError = false, onRetryBuild, authoringRun = null, conversationAuthoringActive = false, authoringConnectionError = false, authoringCommandPending = false, authoringCommandError = false, onCancelAuthoring, onRetryAuthoring, onEdit, buildInChat = false, onViewBuild }: CurriculumPanelProps) {
   const [pending, setPending] = useState(false);
   const [receipt, setReceipt] = useState<CurriculumApproval | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -147,7 +149,7 @@ export function CurriculumPanel({ draft, currentRevision, onApprove, approval = 
       {!isCurrent && <Notice tone="warning">A newer program is being loaded. Review it before approving.</Notice>}
       {evidence?.status === "needs_research" && <Notice tone="info">Your changes are saved. Research support is being refreshed before this version can be approved.</Notice>}
       {evidence?.status === "blocked" && <Notice tone="warning">Research could not verify this program yet. Keep the saved draft and try again when the source issue is resolved.</Notice>}
-      {generationRun && <CourseBuildProgress run={generationRun} {...(generation ? { generation } : {})} connectionError={generationConnectionError}
+      {!buildInChat && generationRun && <CourseBuildProgress run={generationRun} {...(generation ? { generation } : {})} connectionError={generationConnectionError}
         action={onCancelBuild ? <Button variant="quiet" size="compact" pending={cancelPending} onClick={onCancelBuild}>Cancel build</Button>
           : onRetryBuild ? <Button variant="quiet" size="compact" pending={retryPending} onClick={onRetryBuild}>Retry build</Button> : undefined} />}
       {retryError && <Notice tone="error">The build could not be retried. Your approved program is still safe; try again.</Notice>}
@@ -160,7 +162,7 @@ export function CurriculumPanel({ draft, currentRevision, onApprove, approval = 
       {authoringCommandError && <Notice tone="error">That answer-check action could not be confirmed. Your edits are still safe; try again.</Notice>}
       {languageRun && <Notice tone={languageRun.status === "failed" ? "error" : languageRun.status === "succeeded" ? "success" : "info"}>{languageStatus(languageRun)}</Notice>}
       {error && <Notice tone="error">{error}</Notice>}
-      {approved && isCurrent ? <p className="creator-program__approved" role="status"><Check size={18} aria-hidden="true" /> Version {draft.revision} approved</p> : <>
+      {approved && isCurrent ? <div className="creator-program__approved" role="status">{buildInChat ? <><Button disabled variant="secondary"><Check size={18} aria-hidden="true" />Approved</Button><Button variant="quiet" size="compact" onClick={onViewBuild}>View in conversation</Button></> : <><Check size={18} aria-hidden="true" /> Version {draft.revision} approved</>}</div> : <>
         <p>{blockers ? "Answer the open questions in the conversation before approving." : "Check the scope and sequence before lessons are created."}</p>
         {onApprove && awaitingApproval && <Button onClick={() => void handleApprove()} pending={pending} disabled={!isCurrent || blockers || !valid || !researchReady || approvalBlockedByAuthoring}>Approve version {draft.revision}</Button>}
       </>}

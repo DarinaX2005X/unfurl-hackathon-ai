@@ -17,6 +17,7 @@ import { compactSourceMemory, ReadMemoryReceiptSchema, SourceMemorySchema } from
 import { researchHistoryOrder, visibleResearchStepsCte } from "./research-visibility";
 import { ToolObservationSchema, type AgentToolAuthority } from "../agent-tools/contracts";
 import { ArtifactMemorySchema, compactArtifactMemory } from "./artifact-memory";
+import { GenerationMemorySchema, readGenerationMemory } from "./generation-memory";
 
 export function jsonValue(value: unknown): JsonValue { return JsonValueSchema.parse(JSON.parse(JSON.stringify(value))); }
 export function jsonSchema<T>(schema: z.ZodType<T>): z.ZodType<JsonValue> { return schema.transform(jsonValue); }
@@ -31,6 +32,7 @@ export const ContextSnapshotSchema = z.object({
   searchMemory: SearchMemorySchema.optional(),
   sourceMemory: SourceMemorySchema.optional(),
   artifactMemory: ArtifactMemorySchema.optional(),
+  generationMemory: GenerationMemorySchema.optional(),
   agentProtocol: z.literal("conversational-v3").optional(),
   readerCapabilities: ReaderCapabilitiesSchema.optional(),
   modelPolicy:ModelPolicySchema.optional(),
@@ -213,8 +215,10 @@ export async function captureContext(tx: DbTransaction, target: ExecutionTarget,
     FROM visible_research_steps WHERE result_reference->>'tool'='search' AND result_reference->>'ok'='true' ORDER BY ${researchHistoryOrder()}`, [jobId])).rows;
   const searches = searchRows.map((row) => CompactSearchSchema.parse(row.search));
   const intent = (await tx.query<{ course_id: string; expected_course_revision: number; draft_id: string; expected_draft_revision: number; target_language: string }>(`SELECT * FROM unfurl.course_language_revision_intents WHERE run_id=$1 AND owner_id=$2`, [agent.runId, agent.ownerId])).rows[0];
+  const generationMemory = await readGenerationMemory(tx, agent, artifactRecords.map(record => record.draft));
   const snapshot = ContextSnapshotSchema.parse(attachSearchMemory({ kind: "context", index, now, currentMessage, recentMessages, artifacts, sources, recentTools,
     artifactMemory: await compactArtifactMemory(artifactRecords),
+    ...(generationMemory.builds.length ? { generationMemory } : {}),
     modelPolicy:await readActiveModelPolicy(tx),planningPolicy: { version: "planner-headroom-v1", maxOutputTokens: 32768 }, sourceMemory, agentProtocol: "conversational-v3", readerCapabilities: currentReaderCapabilities(),
     lastAssistantMessageId: commentaryRows[0]?.id ?? null, currentTurnCommentary,
     languageIntent: intent ? { courseId: intent.course_id, expectedCourseRevision: intent.expected_course_revision, draftId: intent.draft_id,

@@ -285,3 +285,63 @@
   .creator-build__activity { animation: none; transform: none; border-color: currentColor; }
 }
 
+
+.creator-plan-approved { margin-top: 12px; }
+.creator-plan-approved__receipt { display: flex; align-items: flex-start; gap: 12px; max-width: 440px; padding: 17px 20px; border: 1px solid var(--color-line-soft); border-radius: 18px 18px 4px 18px; background: var(--color-surface-inset); }
+.creator-plan-approved__check { display: grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; border: 1px solid color-mix(in srgb, var(--color-success) 25%, transparent); border-radius: 50%; color: var(--color-success); }
+.creator-plan-approved__receipt > div { min-width: 0; }
+.creator-plan-approved__receipt strong { display: block; font-size: 15px; line-height: 1.7; }
+.creator-plan-approved__receipt p { margin-top: 3px; font-size: 14px; line-height: 1.6; overflow-wrap: anywhere; }
+.creator-plan-approved__receipt button { display: block; min-height: 34px; margin-top: 5px; padding: 3px 0; color: var(--color-muted); border: 0; background: transparent; text-align: left; font: inherit; font-size: 13px; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; transition: color var(--motion-hover); }
+.creator-plan-approved__receipt button span { display: inline; text-decoration: none; }
+.creator-plan-approved__receipt button:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 3px; border-radius: 3px; }
+.creator-plan-approved__receipt button:active { color: var(--color-ink); }
+.creator-build-commentary > h2 { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 12px; }
+.creator-build-commentary > h2 > span { color: var(--color-muted); font-size: 12px; font-weight: 450; }
+.creator-build-actions .creator-actions__label small { display: block; margin-top: 1px; font-size: 12px; font-weight: 450; }
+.creator-build-update { margin: 12px 0 30px; }
+.creator-build-update__course { margin-bottom: 9px; color: var(--color-muted); font-size: 12px; }
+.creator-build-update .creator-build { border-color: var(--color-line-soft); border-radius: 14px; }
+.creator-build-update .creator-build__detail { min-height: 0; font-size: 14px; }
+.creator-build-update .uf-notice { margin-top: 8px; }
+.creator-build-retry { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 18px 0; color: var(--color-muted); font-size: 13px; }
+.creator-build-retry > span { flex-basis: 100%; margin-left: 22px; font-size: 12px; }
+.creator-build-earlier { margin: 12px 0; color: var(--color-muted); font-size: 13px; }
+.creator-program__approved { flex-wrap: wrap; }
+.creator-program__approved > .uf-button:disabled { opacity: 1; color: var(--color-success); background: transparent; border-color: color-mix(in srgb, var(--color-success) 30%, var(--color-line-soft)); }
+.creator-course-result { position: relative; display: flex; align-items: flex-start; gap: 22px; min-width: 0; margin: 24px 0 36px; padding: 28px; border: 1px solid var(--color-line-soft); border-radius: 22px; background: var(--color-surface); box-shadow: var(--shadow-card); }
+.creator-course-result__book { position: relative; display: grid; place-items: center; flex: 0 0 64px; width: 64px; height: 82px; margin-top: 4px; border: 1px solid color-mix(in srgb, var(--color-action) 75%, var(--color-ink)); border-radius: 4px 10px 10px 4px; color: var(--color-surface); background: var(--color-action); box-shadow: -4px 0 0 color-mix(in srgb, var(--color-action) 80%, var(--color-ink)), 0 5px 0 var(--color-surface-inset), 0 6px 0 var(--color-border); }
+.creator-course-result__book::before { content: ""; position: absolute; left: 7px; top: 0; bottom: 0; width: 1px; background: rgb(255 255 255 / 24%); }
+.creator-course-result__book > span { position: absolute; top: -1px; right: 9px; width: 7px; height: 18px; background: var(--color-surface); clip-path: polygon(0 0, 100% 0, 100% 100%, 50% 78%, 0 100%); }
+.creator-course-result__content { min-width: 0; flex: 1; }
+.creator-course-result__status { display: flex; align-items: center; gap: 6px; color: var(--color-success); font-size: 13px; line-height: 1.5; }
+.creator-course-result h2 { margin: 10px 0 10px; font-size: 24px; font-weight: 700; line-height: 1.35; letter-spacing: -.035em; overflow-wrap: anywhere; }
+.creator-course-result__summary { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 5; overflow: hidden; color: var(--color-muted); font-size: 14px; line-height: 1.7; overflow-wrap: anywhere; }
+.creator-course-result__facts { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; color: var(--color-muted); font-size: 13px; }
+.creator-course-result__actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+.creator-course-result__content > [role=status] { margin-top: 18px; font-size: 14px; color: var(--color-muted); }
+.creator-course-result .uf-notice { margin-top: 12px; }
+@media (hover: hover) and (pointer: fine) {
+  .creator-plan-approved__receipt button:hover { color: var(--color-ink); }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .creator-course-result { animation: creator-course-arrive 280ms var(--ease-out) both; }
+  .creator-plan-approved__check { animation: creator-approval-settle 220ms var(--ease-out) both; }
+  @keyframes creator-course-arrive { from { transform: translateY(7px); opacity: .3; } to { transform: translateY(0); opacity: 1; } }
+  @keyframes creator-approval-settle { from { transform: scale(.92); } to { transform: scale(1); } }
+}
+@media (max-width: 639px) {
+  .creator-plan-approved__receipt { gap: 10px; padding: 15px 16px; }
+  .creator-course-result { gap: 15px; padding: 22px 18px; border-radius: 18px; }
+  .creator-course-result__book { flex-basis: 42px; width: 42px; height: 58px; }
+  .creator-course-result__book > svg { width: 23px; }
+  .creator-course-result__book::before { left: 5px; }
+  .creator-course-result h2 { font-size: 21px; }
+  .creator-course-result__actions { margin-left: -57px; padding-top: 4px; }
+  .creator-course-result__actions > .uf-button { flex: 1; }
+  .creator-build-actions .creator-actions__hint { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .creator-plan-approved__receipt button { transition: none; }
+}
+.creator-build-update__continuing { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; padding-top: 10px; border-top: 1px solid var(--color-line-soft); color: var(--color-muted); font-size: 13px; }

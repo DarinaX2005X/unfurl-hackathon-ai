@@ -27,6 +27,7 @@ import { COURSE_GENERATION_POLICY_KEY, CourseGenerationPolicyCheckpointSchema, C
 import type { AuthoredModule } from "./contracts";
 import { LessonReadingSchema, validateModulePlan } from "./planning";
 import { advanceModuleResearch } from "./research-stages";
+import { advanceKnowledgeCoverage } from "./knowledge-coverage-stages";
 import { advanceLessonReading } from "./reading-stages";
 import { advanceModuleReview, loadVerifiedModuleReview } from "./module-review-stages";
 import { advanceModulePlan } from "./plan-stages";
@@ -61,10 +62,12 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
       const index = await context.read((tx) => loadStageIndex(tx, context.claim.jobId));
       const batchingV2 = await context.read(async (tx) => (await resolveGenerationPolicy(tx, binding)) === "batch-v2");
       if (batchingV2 && !index.has(COURSE_GENERATION_POLICY_KEY)) {
-        await pureStage({ context, binding, key: COURSE_GENERATION_POLICY_KEY, material: { approvalDigest: binding.approval.contentDigest }, schema: CourseGenerationPolicyCheckpointSchema,
-          async commit() { return { kind: "course.generation.policy" as const, version: "course-generation-batch-v2" as const, batchSize: 5 as const, maxOutputTokens: 16384 as const, approvalDigest: binding.approval.contentDigest }; } });
+        await pureStage({ context, binding, key: COURSE_GENERATION_POLICY_KEY, material: { approvalDigest: binding.approval.contentDigest }, schema: jsonCheckpointSchema(CourseGenerationPolicyCheckpointSchema),
+          async commit() { return { kind: "course.generation.policy" as const, version: "course-generation-batch-v2" as const, batchSize: 5 as const, maxOutputTokens: 16384 as const, approvalDigest: binding.approval.contentDigest,
+            planPagePolicy: "bounded-plan-pages-v1" as const, knowledgeCoveragePolicy: "approved-scope-v1" as const }; } });
         return { status: "continue" };
       }
+      const policy = batchingV2 ? (await loadStage(context, binding, index, COURSE_GENERATION_POLICY_KEY, CourseGenerationPolicyCheckpointSchema))?.result : undefined;
       if (batchingV2) {
         const original = context;
         context = { ...original, step: (spec) => original.step({ ...spec, digests: { ...spec.digests,
@@ -95,10 +98,17 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
         const prefix = `${modulePrefix}/round/${round}`;
         const requestRepair = async (issues: unknown) => pureStage({ context, binding, key: `${modulePrefix}/repair/${round}`, material: { round }, schema: RepairSchema,
           async commit() { return { kind: "course.module.repair" as const, issues: checkpointJson(issues) }; } });
-        const researched = await advanceModuleResearch({ context, binding, index, moduleId: outline.id, model: dependencies.model, research: dependencies.research, priorKnowledge: completed.map((entry) => entry.module.knowledge), batchingV2 });
+        let researched = await advanceModuleResearch({ context, binding, index, moduleId: outline.id, model: dependencies.model, research: dependencies.research, priorKnowledge: completed.map((entry) => entry.module.knowledge), batchingV2,
+          ...(policy?.knowledgeCoveragePolicy ? { knowledgeCoveragePolicy: policy.knowledgeCoveragePolicy } : {}) });
         if (!researched) return { status: "continue" };
+        if (policy?.knowledgeCoveragePolicy === "approved-scope-v1") {
+          researched = await advanceKnowledgeCoverage({ context, binding, index, source: researched, round, correction: moduleCorrection,
+            model: dependencies.model, research: dependencies.research, priorKnowledge: completed.map(entry => entry.module.knowledge) });
+          if (!researched) return { status: "continue" };
+        }
         const planStep = await advanceModulePlan({ context, binding, index, key: `${prefix}/plan`, knowledge: researched.knowledge, runtime, correction: moduleCorrection,
-          priorModules: completed.map((entry) => ({ moduleId: entry.module.moduleId, outcomes: entry.module.knowledge.outcomes.map(({ outcomeId, learnerAction, criteria }) => ({ outcomeId, learnerAction, criteria })) })), model: dependencies.model });
+          priorModules: completed.map((entry) => ({ moduleId: entry.module.moduleId, outcomes: entry.module.knowledge.outcomes.map(({ outcomeId, learnerAction, criteria }) => ({ outcomeId, learnerAction, criteria })) })), model: dependencies.model,
+          ...(policy?.planPagePolicy ? { planPagePolicy: policy.planPagePolicy } : {}) });
         if (!planStep) return { status: "continue" };
         const plan = planStep.plan;
         const planIssues = validateModulePlan(plan, { draft: binding.draft, knowledge: researched.knowledge, runtime });

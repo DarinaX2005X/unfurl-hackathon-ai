@@ -29,10 +29,14 @@ function fixture() {
     if (sql.includes("SELECT r.* FROM unfurl.generation_runs")) {
       expect(values).toEqual([runId, actor.id]);
       rows = [state.run];
-    } else if (sql.includes("SELECT revision.document")) rows = [{ document: state.draft, content_digest: digest }];
-    else if (sql.includes("SELECT DISTINCT ON")) rows = state.completedEvents.map(event => ({ event }));
-    else if (sql.includes("type='generation.validation.summary'")) rows = state.validationEvent ? [{ event: state.validationEvent }] : [];
-    else if (sql.includes("SELECT j.id AS job_id")) {
+    } else if (sql.startsWith("SELECT r.*,revision.document,a.content_digest")) {
+      expect(values).toEqual([[runId], actor.id, ["generation.commentary", "generation.action.started", "generation.action.completed"]]);
+      expect(sql).toContain("r.id=ANY($1::uuid[]) AND r.owner_id=$2");
+      expect(sql).toContain("a.approved_by=r.owner_id AND a.draft_revision=r.source_draft_revision");
+      expect(sql).toContain("revision.content_digest=a.content_digest");
+      rows = [{ ...state.run, document: state.draft, content_digest: digest,
+        completed: state.completedEvents, validation: state.validationEvent, timeline: [], ready_course: null }];
+    } else if (sql.includes("SELECT j.id AS job_id")) {
       expect(values).toEqual([runId, ids.actor, ids.approval, digest]);
       expect(sql).toContain("r.id=j.generation_run_id");
       expect(sql).toContain("r.owner_id=$2");
@@ -41,9 +45,13 @@ function fixture() {
       expect(sql).not.toContain("result_reference");
       rows = state.hasJob ? [state.stored] : [];
     } else if (sql.includes("count(DISTINCT result_reference->>'sourceId')")) {
-      expect(values).toEqual([jobId, digest, `course/${ids.moduleA}/research/read/%`, ids.moduleA]);
+      expect(values).toEqual([jobId, digest, ids.moduleA]);
+      expect(sql).toContain("job_id=$1 AND approval_digest=$2");
       expect(sql).toContain("status='succeeded'");
+      expect(sql).toContain("result_reference->>'kind'='course.source.read'");
+      expect(sql).toContain("result_reference->>'moduleId'=$3");
       expect(sql).toContain("result_reference->>'approvalDigest'=$2");
+      expect(sql).not.toContain("step_key LIKE");
       rows = [{ completed_sources: state.sourceCount }];
     } else if (sql.includes("SELECT DISTINCT candidate.result_reference")) {
       expect(values).toEqual([jobId, digest, JSON.stringify([{ caseId: ids.task }]), [ids.moduleA, ids.moduleB]]);
@@ -77,6 +85,17 @@ describe("safe generation progress from existing execution records", () => {
     const snapshot = await h.read();
     expect(snapshot.progress).toMatchObject({ stage: "reading_sources", moduleId: ids.moduleA, completedSources: 2 });
     expect(JSON.stringify(snapshot)).not.toMatch(/private-hit-id|step_key|result_reference|job_id/);
+  });
+  it("reports the approved section during bounded planning and targeted source reads", async () => {
+    const h = fixture();
+    h.state.stored.step_key = `course/${ids.moduleA}/round/1/plan/bounded-v1/${ids.outcomeA}/2`;
+    expect((await h.read()).progress).toMatchObject({ stage: "planning_lessons", moduleId: ids.moduleA, activity: "running" });
+    h.state.stored.step_key = `course/${ids.moduleA}/research/coverage-v1/round/1/revision/2/read/private-extra-hit`;
+    const snapshot = await h.read();
+    expect(snapshot.progress).toMatchObject({ stage: "reading_sources", moduleId: ids.moduleA, completedSources: 2 });
+    expect(JSON.stringify(snapshot)).not.toContain("private-extra-hit");
+    h.state.stored.job_live = false;
+    expect((await h.read()).progress).toMatchObject({ stage: "preparing", moduleId: ids.moduleA, activity: "waiting" });
   });
   it("preserves the confirmed section while waiting between durable steps", async () => {
     const h = fixture(); h.state.stored.job_status = "queued"; h.state.stored.job_live = false;
@@ -128,6 +147,10 @@ describe("generation progress vocabulary and backward compatibility", () => {
   it.each([
     [`research/plan`, "researching"], [`research/search/query-1`, "researching"], [`research/claims/hit-1`, "researching"],
     [`round/0/plan/${ids.outcomeA}/0`, "planning_lessons"], [`round/0/reading/${ids.sample}/${ids.request}/0`, "writing_lessons"],
+    [`round/1/plan/bounded-v1/${ids.outcomeA}/2`, "planning_lessons"],
+    [`research/coverage-v1/round/1/revision/2/review/${ids.outcomeA}`, "researching"], [`research/coverage-v1/round/1/checked`, "researching"],
+    ...["plan", "selection", "knowledge", "search/query-1", "claims/hit-1"].map(suffix => [`research/coverage-v1/round/1/revision/2/${suffix}`, "researching"]),
+    [`research/coverage-v1/round/1/revision/2/read/hit-1`, "reading_sources"],
     [`round/0/task/${ids.task}/0/candidate`, "creating_practice"], [`round/0/batch/v2/${ids.task}/0/candidate`, "creating_practice"],
     [`round/0/batch/v2/repair/${ids.task}/1/review`, "validating_practice"], [`round/0/task/${ids.task}/0/case/valid/execute`, "validating_practice"],
     [`round/0/review/${ids.outcomeA}`, "reviewing_section"], [`complete`, "saving_section"],
@@ -136,6 +159,15 @@ describe("generation progress vocabulary and backward compatibility", () => {
   });
   it("supports final materialization without inventing a module", () => {
     expect(classifyGenerationStep("course/materialize", new Set())).toEqual({ stage: "finalizing_course" });
+  });
+  it.each([
+    `research/coverage-v1/round/invalid/revision/2/read/hit-1`,
+    `research/coverage-v1/round/1/revision/invalid/read/hit-1`,
+    `research/coverage-v2/round/1/revision/2/read/hit-1`,
+    `research/coverage-v1/round/1/revision/2/unknown/hit-1`,
+    `round/1/plan/bounded-v2/${ids.outcomeA}/0`,
+  ])("does not infer work from an unrecognized new-path variant %s", suffix => {
+    expect(classifyGenerationStep(`course/${ids.moduleA}/${suffix}`, new Set([ids.moduleA]))).toBeNull();
   });
   it("accepts old snapshots but rejects foreign modules, raw material and unknown stages", async () => {
     const snapshot = await fixture().read();

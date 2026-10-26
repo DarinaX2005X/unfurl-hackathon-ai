@@ -12,6 +12,7 @@ import { appendChatEvent, appendGenerationEvent, completeGenerationInTransaction
 import type { DurableStep, JobClaim, RunContext, RunHandler, StepEffectContext } from "./ports";
 import { claimJob, guardClaim, runtimeTransaction, type RuntimeTransaction } from "./store";
 import type { RunHandlerRegistry } from "./registry";
+import { recordGenerationStepCompleted, recordGenerationStepStarted } from "./generation-timeline";
 
 interface StepRow { id: string; input_digest: string; schema_digest: string; capability_digest: string; validation_policy_digest: string;
   approval_digest: string | null; status: string; result_reference: unknown; fencing_token: string; live: boolean }
@@ -71,6 +72,7 @@ export class DurableRunExecutor {
           if(spec.prepare)await spec.prepare(tx,effectContextFor(stepId,owner,saved.fencing_token,stepSignal,deadlineAt),spec.input);
           const prepared=(await tx.query("SELECT id FROM unfurl.run_steps WHERE id=$1 AND status='running' AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>now()",[stepId,owner,saved.fencing_token])).rows[0];
           if(!prepared)throw new ProviderFailure("cancelled");
+          await recordGenerationStepStarted(tx, claim, spec.key, stepId, spec.input);
           return { replay: false as const, stepId, owner, fence: saved.fencing_token };
         });
         if (begun.replay) return begun.result;
@@ -87,6 +89,7 @@ export class DurableRunExecutor {
             const result = spec.resultSchema.parse(await spec.commit(tx, output));
             canonicalJson(result, 2 * 1024 * 1024);
             await tx.query("UPDATE unfurl.run_steps SET status='succeeded',result_reference=$2,error=NULL,lease_owner=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1", [begun.stepId, JSON.stringify(result)]);
+            await recordGenerationStepCompleted(tx, claim, begun.stepId, result, spec.input, output);
             return result;
           } finally { commitTx = null; }
         });

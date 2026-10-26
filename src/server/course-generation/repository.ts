@@ -1,6 +1,6 @@
 import "server-only";
 import { z } from "zod";
-import { DigestSchema, IdSchema } from "@/domain/common";
+import { DigestSchema, IdSchema, type JsonValue } from "@/domain/common";
 import type { DbTransaction } from "@/server/db";
 import { loadApprovedBuild, type ApprovedBuildBinding } from "@/server/curricula/build-binding";
 import { PostgresResearchRepository } from "@/server/research/repository";
@@ -13,12 +13,15 @@ import { ProviderFailure } from "@/server/ai/failure";
 import { taskDigest } from "@/server/mechanics/digest";
 import { getCapabilityCatalogDigest } from "@/server/mechanics/catalog";
 import { prepareTaskCandidate } from "@/server/mechanics/materialization";
-import { knowledgeClaimIds, validateModuleKnowledge } from "@/server/course-validation/knowledge";
+import { assessKnowledgeCoverageReview, createKnowledgeCoverageInput, KnowledgeCoverageReviewSchema,
+  knowledgeClaimIds, validateKnowledgeRevision, validateModuleKnowledge } from "@/server/course-validation/knowledge";
 import {
   AuthoredTaskSchema, COURSE_GENERATION_SCHEMA_DIGEST, COURSE_VALIDATION_POLICY_DIGEST,
-  AnyModuleKnowledgeCheckpointSchema, ApprovedKnowledgeSufficientProposalSchema, SourceClaimsCheckpointSchema, SourceClaimsProposalSchema,
+  AnyModuleKnowledgeCheckpointSchema, ApprovedKnowledgeProposalSchema, ApprovedKnowledgeSufficientProposalSchema, ApprovedKnowledgeCommentaryResponseSchema,
+  ApprovedKnowledgeNarrationProofSchema, SourceClaimsCheckpointSchema, SourceClaimsProposalSchema,
   SourceReadCheckpointSchema, TaskCandidateCheckpointSchema, COURSE_GENERATION_V2_SCHEMA_DIGEST, COURSE_VALIDATION_V2_POLICY_DIGEST,
   COURSE_GENERATION_POLICY_KEY, CourseGenerationPolicyCheckpointSchema, ModelBatchCheckpointSchema, batchResponseSchema,
+  KnowledgeCoverageCheckpointSchema,
   type BatchItemProof, type BatchKind,
 } from "./checkpoints";
 import { ModuleKnowledgeSchema, type ModuleKnowledge } from "./contracts";
@@ -28,7 +31,10 @@ import { projectSourcePassages } from "./source-passage-projection";
 const StepRowSchema = z.object({ id: IdSchema, input_digest: DigestSchema, result_reference: z.unknown(),
   schema_digest: DigestSchema, capability_digest: DigestSchema, validation_policy_digest: DigestSchema, approval_digest: DigestSchema,
   generation_policy: z.unknown().optional() });
-export type StoredGenerationStep<T> = { id: string; inputDigest: string; result: T };
+export type StoredGenerationStep<T> = { id: string; inputDigest: string; result: T;
+  knowledgeCoveragePolicy?: "approved-scope-v1" };
+export type LoadedModuleKnowledge = { step: StoredGenerationStep<z.infer<typeof AnyModuleKnowledgeCheckpointSchema>>;
+  knowledge: ModuleKnowledge; facts: CurriculumEvidenceFacts };
 const invalid = (): never => { throw new ProviderFailure("invalid_output"); };
 
 export async function resolveGenerationPolicy(tx: DbTransaction, binding: ApprovedBuildBinding): Promise<"legacy-v1" | "batch-v2"> {
@@ -62,13 +68,9 @@ export async function resolveGenerationPolicy(tx: DbTransaction, binding: Approv
     }
     return row.steps.some((step) => step.key !== COURSE_GENERATION_POLICY_KEY) ? "legacy-v1" as const : "empty" as const;
   });
-  if (lineage.length > 1) {
-    // An untouched failed delivery between the current retry and its v2 origin cannot change the protocol.
-    const inherited = states.at(-1) === "batch-v2" && states.slice(1).every((state) => state !== "legacy-v1") ? "batch-v2" : "legacy-v1";
-    if (states[0] === "batch-v2" && inherited !== "batch-v2") return invalid();
-    if (states[0] === "legacy-v1" && inherited === "batch-v2") return invalid();
-    return inherited;
-  }
+  // A retry is a new execution identity. Its first capture may adopt current policy;
+  // ancestors remain immutable and each reused step is verified under its own capture.
+  // An already-started unmarked execution must keep its original request bytes.
   return states[0] === "legacy-v1" ? "legacy-v1" : "batch-v2";
 }
 
@@ -99,18 +101,38 @@ export async function loadGenerationStep<T>(tx: DbTransaction, binding: Approved
   const versioned = z.object({ kind: z.string().optional(), modelProof: z.unknown().optional() }).passthrough().safeParse(parsed.data.result_reference);
   if (!newProtocol && versioned.success && (versioned.data.kind === "course.model.batch.v2" ||
       versioned.data.kind === "course.module.approved_knowledge" || versioned.data.kind === "course.module.approved_knowledge_gap" || versioned.data.modelProof !== undefined)) return invalid();
+  const boundedPlan = versioned.success && versioned.data.kind === "course.module.plan.page.bounded.v1";
+  const coveredKnowledge = versioned.success && ["course.module.knowledge.review.v1", "course.module.knowledge.revision.v1",
+    "course.module.knowledge.checked.v1"].includes(versioned.data.kind ?? "");
+  const narratedApprovedKnowledge = versioned.success && versioned.data.narration !== undefined;
+  if ((boundedPlan || coveredKnowledge || narratedApprovedKnowledge) && !newProtocol) return invalid();
+  let knowledgeCoveragePolicy: "approved-scope-v1" | undefined;
   if (newProtocol) {
     const policy = z.object({ result: CourseGenerationPolicyCheckpointSchema, schema: z.literal(COURSE_GENERATION_SCHEMA_DIGEST),
       validationPolicy: z.literal(COURSE_VALIDATION_POLICY_DIGEST), capability: z.literal(getCapabilityCatalogDigest()), approval: z.literal(binding.approval.contentDigest) }).safeParse(parsed.data.generation_policy);
     if (!policy.success || policy.data.result.approvalDigest !== binding.approval.contentDigest) return invalid();
+    if (boundedPlan && policy.data.result.planPagePolicy !== "bounded-plan-pages-v1" ||
+        (coveredKnowledge || narratedApprovedKnowledge) && policy.data.result.knowledgeCoveragePolicy !== "approved-scope-v1") return invalid();
+    knowledgeCoveragePolicy = policy.data.result.knowledgeCoveragePolicy;
   }
-  return { id: parsed.data.id, inputDigest: parsed.data.input_digest, result: schema.parse(parsed.data.result_reference) };
+  return { id: parsed.data.id, inputDigest: parsed.data.input_digest, result: schema.parse(parsed.data.result_reference),
+    ...(knowledgeCoveragePolicy ? { knowledgeCoveragePolicy } : {}) };
 }
 
 /** Exact persisted provider response, including actual operation/step linkage; no model-authored receipt is accepted. */
 export async function verifyStoredModelData<T>(tx: DbTransaction, step: Pick<StoredGenerationStep<unknown>, "id" | "inputDigest">,
   operationId: string, schema: z.ZodType<T>, expected: T): Promise<void> {
   await verifyStoredModelDataAndIdentity(tx, step, operationId, schema, expected);
+}
+
+/** New narration is an exact projection of the first existing paid response, never a second model call. */
+export async function verifyStoredApprovedResearchProposal(tx: DbTransaction, step: StoredGenerationStep<unknown>, operationId: string,
+  proposal: z.infer<typeof ApprovedKnowledgeProposalSchema>, narration?: z.infer<typeof ApprovedKnowledgeNarrationProofSchema>,
+  legacySchema: z.ZodType<z.infer<typeof ApprovedKnowledgeProposalSchema>> = ApprovedKnowledgeProposalSchema) {
+  if (narration) {
+    if (step.knowledgeCoveragePolicy !== "approved-scope-v1" || taskDigest(narration.response.proposal) !== taskDigest(proposal)) return invalid();
+    await verifyStoredModelData(tx, step, operationId, ApprovedKnowledgeCommentaryResponseSchema, narration.response);
+  } else await verifyStoredModelData(tx, step, operationId, legacySchema, proposal);
 }
 
 /** The operation's immutable approved profile, never today's active policy, decides its exact identity. */
@@ -170,6 +192,17 @@ export async function verifyStoredModelItem<T>(tx: DbTransaction, binding: Appro
   return verifyStoredModelDataAndIdentity(tx, step, operationId, schema, expected);
 }
 
+export async function loadVerifiedKnowledgeCoverageReview(tx: DbTransaction, binding: ApprovedBuildBinding, stepId: string,
+  source: LoadedModuleKnowledge, correction: JsonValue) {
+  const step = await loadGenerationStep(tx, binding, stepId, KnowledgeCoverageCheckpointSchema);
+  const expected = createKnowledgeCoverageInput({ draft: binding.draft, knowledge: source.knowledge,
+    sourceKnowledgeStepId: source.step.id, outcomeId: step.result.review.outcomeId, facts: source.facts, correction });
+  if (step.result.sourceKnowledgeStepId !== source.step.id || taskDigest(step.result.material) !== taskDigest(expected) ||
+      step.inputDigest !== jsonDigest(expected)) return invalid();
+  await verifyStoredModelData(tx, step, step.result.operationId, KnowledgeCoverageReviewSchema, step.result.review);
+  return { step, ...assessKnowledgeCoverageReview(step.result.review, expected) };
+}
+
 export class GenerationEvidenceRepository {
   constructor(private readonly sources = new PostgresResearchRepository(), private readonly claims = new PostgresCurriculumResearchRepository()) {}
 
@@ -227,11 +260,28 @@ export class GenerationEvidenceRepository {
     return { ownerId: binding.course.ownerId, authorizedSourceIds: allowed, sources: [...sourceMap.values()], claims, passages };
   }
 
-  async loadKnowledge(tx: DbTransaction, binding: ApprovedBuildBinding, stepId: string) {
+  async loadKnowledge(tx: DbTransaction, binding: ApprovedBuildBinding, stepId: string, ancestry = new Set<string>()): Promise<LoadedModuleKnowledge> {
+    if (ancestry.has(stepId)) return invalid();
+    const visited = new Set(ancestry); visited.add(stepId);
     const step = await loadGenerationStep(tx, binding, stepId, AnyModuleKnowledgeCheckpointSchema);
+    if (step.result.kind === "course.module.knowledge.checked.v1") {
+      const checkpoint = step.result;
+      if (step.inputDigest !== jsonDigest({ sourceKnowledgeStepId: checkpoint.sourceKnowledgeStepId,
+        knowledgeDigest: taskDigest(checkpoint.knowledge), reviewStepIds: checkpoint.reviewStepIds, correction: checkpoint.correction })) return invalid();
+      const source = await this.loadKnowledge(tx, binding, checkpoint.sourceKnowledgeStepId, visited);
+      if (source.step.result.kind === "course.module.knowledge.checked.v1" || taskDigest(source.knowledge) !== taskDigest(checkpoint.knowledge) ||
+          taskDigest(source.step.result.sourceReadStepIds) !== taskDigest(checkpoint.sourceReadStepIds) ||
+          new Set(checkpoint.reviewStepIds).size !== checkpoint.reviewStepIds.length) return invalid();
+      const reviews = [];
+      for (const id of checkpoint.reviewStepIds) reviews.push(await loadVerifiedKnowledgeCoverageReview(tx, binding, id, source, checkpoint.correction));
+      const expected = binding.draft.modules.find(item => item.id === checkpoint.knowledge.moduleId)?.outcomeIds ?? invalid();
+      if (reviews.length !== expected.length || new Set(reviews.map(item => item.review.outcomeId)).size !== reviews.length ||
+          reviews.some(item => !item.passed || !expected.includes(item.review.outcomeId))) return invalid();
+      return { step, knowledge: source.knowledge, facts: source.facts };
+    }
     if (step.result.kind === "course.module.approved_knowledge") {
       if (step.result.approvedFactsDigest !== approvedResearchFactsDigest(binding.facts) || taskDigest(step.result.knowledge) !== taskDigest(step.result.proposal.knowledge)) return invalid();
-      await verifyStoredModelData(tx, step, step.result.operationId, ApprovedKnowledgeSufficientProposalSchema, step.result.proposal);
+      await verifyStoredApprovedResearchProposal(tx, step, step.result.operationId, step.result.proposal, step.result.narration, ApprovedKnowledgeSufficientProposalSchema);
     } else await verifyStoredModelData(tx, step, step.result.operationId, ModuleKnowledgeSchema, step.result.knowledge);
     const facts = await this.sourceFacts(tx, binding, step.result.knowledge, step.result.sourceReadStepIds);
     if (step.result.kind === "course.module.approved_knowledge") {
@@ -245,6 +295,24 @@ export class GenerationEvidenceRepository {
       }
     }
     if (validateModuleKnowledge(step.result.knowledge, { ...facts, draft: binding.draft, approvalDigest: binding.approval.contentDigest }).length) return invalid();
+    if (step.result.kind === "course.module.knowledge.revision.v1") {
+      const checkpoint = step.result, previous = await this.loadKnowledge(tx, binding, checkpoint.previousKnowledgeStepId, visited);
+      if (previous.step.result.kind === "course.module.knowledge.checked.v1" || previous.knowledge.moduleId !== checkpoint.knowledge.moduleId ||
+          new Set(checkpoint.gapReviewStepIds).size !== checkpoint.gapReviewStepIds.length ||
+          previous.step.result.sourceReadStepIds.some(id => !checkpoint.sourceReadStepIds.includes(id))) return invalid();
+      const reviews = [];
+      for (const id of checkpoint.gapReviewStepIds) reviews.push(await loadVerifiedKnowledgeCoverageReview(tx, binding, id, previous, checkpoint.correction));
+      const section = binding.draft.modules.find(item => item.id === checkpoint.knowledge.moduleId) ?? invalid();
+      const material = z.object({ moduleId: IdSchema, approvalDigest: DigestSchema, section: z.unknown(), outcomes: z.unknown(), repair: z.unknown() }).parse(checkpoint.material);
+      if (step.inputDigest !== jsonDigest(checkpoint.material) || material.moduleId !== section.id || material.approvalDigest !== binding.approval.contentDigest ||
+          taskDigest(material.section) !== taskDigest(section) || taskDigest(material.outcomes) !== taskDigest(binding.draft.outcomes.filter(item => section.outcomeIds.includes(item.id))) ||
+          taskDigest(material.repair) !== taskDigest({ previousKnowledgeStepId: previous.step.id, previousKnowledge: previous.knowledge,
+            gapReviewStepIds: checkpoint.gapReviewStepIds, reviews: reviews.map(item => item.review), correction: checkpoint.correction }) ||
+          reviews.length !== section.outcomeIds.length || new Set(reviews.map(item => item.review.outcomeId)).size !== reviews.length ||
+          reviews.some(item => !section.outcomeIds.includes(item.review.outcomeId))) return invalid();
+      if (!reviews.some(review => !review.passed) || validateKnowledgeRevision(checkpoint.knowledge, previous.knowledge, reviews.map(item => item.review),
+        { ...facts, draft: binding.draft, approvalDigest: binding.approval.contentDigest }).length) return invalid();
+    }
     return { step, knowledge: step.result.knowledge, facts };
   }
 
@@ -254,6 +322,7 @@ export class GenerationEvidenceRepository {
     const prepared = prepareTaskCandidate(step.result.authored, { approvalDigest: binding.approval.contentDigest });
     if (taskDigest(prepared) !== taskDigest(step.result.candidate)) return invalid();
     const knowledge = await this.loadKnowledge(tx, binding, step.result.knowledgeStepId);
+    if (step.knowledgeCoveragePolicy === "approved-scope-v1" && knowledge.step.result.kind !== "course.module.knowledge.checked.v1") return invalid();
     if (knowledge.knowledge.moduleId !== step.result.moduleId) return invalid();
     const knownClaims = knowledgeClaimIds(knowledge.knowledge);
     if (!prepared.privateTask.sourceClaimIds.length || prepared.privateTask.sourceClaimIds.some((id) => !knownClaims.has(id))) return invalid();

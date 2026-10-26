@@ -6,6 +6,9 @@ import { Button, IconButton } from "@/components/ui";
 import type { ActionEvent } from "@/domain/generation";
 import type { LocalMessage } from "@/domain/chat";
 import { AssistantMarkdown } from "./AssistantMarkdown";
+import { ConversationBuild, type BuildInteraction } from "./ConversationBuild";
+import { buildTimeline } from "./build-timeline";
+import type { ConversationBuildView } from "./conversation-builds";
 import { actionFactLines, actionLabel, actionResultSummary, collectActions, conversationTimeline, isCourseProgramAction, sourceLink, type ConversationAction } from "./conversation-timeline";
 
 export interface ConversationProps {
@@ -22,21 +25,26 @@ export interface ConversationProps {
   onLoadEarlierActivity?: () => void;
   onRetry: (messageId: string) => void;
   onEdit: (messageId: string) => void;
+  builds?: ConversationBuildView[];
+  buildInteraction?: BuildInteraction;
 }
 
 export function Conversation({ messages, actionEvents = [], currentRunId = null, pending, transmittingId, interrupted = false, active = true,
-  hasEarlierActivity = false, earlierActivityPending = false, earlierActivityError = false, onLoadEarlierActivity, onRetry, onEdit }: ConversationProps) {
+  hasEarlierActivity = false, earlierActivityPending = false, earlierActivityError = false, onLoadEarlierActivity, onRetry, onEdit, builds = [], buildInteraction }: ConversationProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const [hasNewContent, setHasNewContent] = useState(false);
   const [copyState, setCopyState] = useState<{ id: string; status: "copied" | "error" } | null>(null);
   const latest = messages.at(-1);
-  const timeline = conversationTimeline(messages, actionEvents);
+  const timeline = [...conversationTimeline(messages, actionEvents), ...buildTimeline(builds)].sort((a, b) => {
+    const time = (item: typeof a) => "build" in item ? item.at : item.kind === "message" ? item.message.createdAt : item.actions[0]!.at;
+    return time(a).localeCompare(time(b));
+  });
   const runActions = collectActions(actionEvents).filter((action) => action.runId === currentRunId);
   const lastAction = runActions.at(-1);
   const activeAction = lastAction?.status === "working" ? lastAction : [...runActions].reverse().find((action) => action.status === "working" && isCourseProgramAction(action));
   const activeActionId = pending && !interrupted ? activeAction?.id ?? null : null;
-  const updateKey = `${latest?.id}:${latest?.text.length}:${latest?.delivery}:${actionEvents.length}:${pending}`;
+  const updateKey = `${latest?.id}:${latest?.text.length}:${latest?.delivery}:${actionEvents.length}:${pending}:${builds.map(build => build.runs.map(run => `${run.stream.run.id}:${run.stream.lastAppliedSeq}:${run.events.length}:${run.stream.progress?.updatedAt}:${run.connectionError}`).join(",")).join("|")}`;
   useEffect(() => {
     const area = scrollRef.current;
     if (!area || !active) return;
@@ -58,6 +66,7 @@ export function Conversation({ messages, actionEvents = [], currentRunId = null,
     }}><div className="creator-conversation__content">
       {(hasEarlierActivity || earlierActivityError) && <div className="creator-conversation__earlier"><Button type="button" variant="quiet" size="compact" pending={earlierActivityPending} disabled={!hasEarlierActivity} onClick={onLoadEarlierActivity}>Earlier activity</Button>{earlierActivityError && <span role="status">Earlier activity couldn’t be loaded.</span>}</div>}
       {timeline.map((item) => {
+        if ("build" in item) return buildInteraction ? <ConversationBuild key={item.id} item={item} interaction={buildInteraction} /> : null;
         if (item.kind === "actions") return <ActionGroup key={item.id} actions={item.actions} activeActionId={activeActionId} currentRunId={currentRunId} pending={pending} interrupted={interrupted} />;
         const message = item.message;
         return <article className={`creator-message creator-message--${message.role}${message.status === "streaming" ? " creator-message--streaming" : ""}`} key={message.id}>

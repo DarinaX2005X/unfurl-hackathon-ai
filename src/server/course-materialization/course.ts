@@ -56,6 +56,8 @@ export async function loadVerifiedModule(tx: DbTransaction, binding: ApprovedBui
   const tasks = [], validation = new TaskValidationRepository(evidence);
   for (const references of stored.taskReferences) {
     const loaded = await evidence.loadTaskCandidate(tx, binding, references.candidateStepId);
+    if (knowledge.step.result.kind === "course.module.knowledge.checked.v1" &&
+        loaded.step.result.knowledgeStepId !== stored.knowledgeStepId) return invalid();
     const proof = await validation.validateStoredTask(tx, binding, references);
     if (proof.receipt.verdict !== "passed" || loaded.step.result.moduleId !== stored.module.moduleId) return invalid();
     tasks.push(loaded.step.result.authored);

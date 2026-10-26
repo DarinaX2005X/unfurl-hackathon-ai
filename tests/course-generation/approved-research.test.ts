@@ -14,7 +14,7 @@ import { getCapabilityCatalogDigest } from "@/server/mechanics/catalog";
 import { advanceModuleResearch } from "@/server/course-generation/research-stages";
 import { approvedKnowledgeKey, prepareApprovedResearchCheckpoint, ApprovedResearchCheckpointSchema } from "@/server/course-generation/approved-research";
 import { approvedResearchFactsDigest } from "@/server/course-generation/batch-provenance";
-import { ApprovedKnowledgeProposalSchema, ModuleKnowledgeCheckpointSchema, COURSE_GENERATION_SCHEMA_DIGEST,
+import { ApprovedKnowledgeProposalSchema, ApprovedKnowledgeCommentaryResponseSchema, ModuleKnowledgeCheckpointSchema, COURSE_GENERATION_SCHEMA_DIGEST,
   COURSE_VALIDATION_POLICY_DIGEST, COURSE_GENERATION_V2_SCHEMA_DIGEST, COURSE_VALIDATION_V2_POLICY_DIGEST } from "@/server/course-generation/checkpoints";
 import { fixture, id, digest } from "./fixtures";
 
@@ -32,12 +32,15 @@ function approvedFixture() {
 
 // Synthetic in-memory receipts exercise the real proposal, stage and repository boundaries.
 // No database, provider, source fetch or capability gate is contacted.
-function harness(proposals: unknown[], batchingV2 = true) {
+function harness(proposals: unknown[], batchingV2 = true, narrated = false) {
   const fixture = approvedFixture(), { binding, moduleId } = fixture;
   const index = new Map<string, string>();
   const records = new Map<string, { inputDigest: string; result: unknown; schema: string; validationPolicy: string }>();
   const providers = new Map<string, { stepId: string; data: unknown }>();
   const calls: StructuredRequest<unknown>[] = [];
+  const events: Array<{ type: string; text?: string; stepId?: string }> = [], timeline: string[] = [];
+  const policy = { kind: "course.generation.policy", version: "course-generation-batch-v2", batchSize: 5, maxOutputTokens: 16384, approvalDigest: digest,
+    ...(narrated ? { knowledgeCoveragePolicy: "approved-scope-v1" as const } : {}) };
   const rateCard = { policyVersion: CANDIDATE_MODEL_POLICY, model: candidatePolicy.model, provider: candidatePolicy.provider };
   const rateCardDigest = jsonDigest(rateCard), capability = getCapabilityCatalogDigest();
   const query = vi.fn(async (sql: string, params: unknown[] = []) => {
@@ -52,7 +55,7 @@ function harness(proposals: unknown[], batchingV2 = true) {
         result: { model: candidatePolicy.model, provider: candidatePolicy.providerName, failure: null, finishReason: "stop", content: JSON.stringify(provider.data) } };
     } else if (stored) row = { id: params[0], input_digest: stored.inputDigest, result_reference: stored.result,
       schema_digest: stored.schema, validation_policy_digest: stored.validationPolicy, capability_digest: capability, approval_digest: digest,
-      generation_policy: batchingV2 ? { result: { kind: "course.generation.policy", version: "course-generation-batch-v2", batchSize: 5, maxOutputTokens: 16384, approvalDigest: digest },
+      generation_policy: batchingV2 ? { result: policy,
         schema: COURSE_GENERATION_SCHEMA_DIGEST, validationPolicy: COURSE_VALIDATION_POLICY_DIGEST, capability, approval: digest } : null };
     return { rows: row ? [row] : [], rowCount: row ? 1 : 0 };
   });
@@ -63,11 +66,13 @@ function harness(proposals: unknown[], batchingV2 = true) {
     binding.facts.passages.filter(passage => ids.includes(passage.id)));
   const model = { generateStructured: vi.fn(async (request: StructuredRequest<unknown>) => {
     calls.push(request);
+    timeline.push("model");
     const data = request.schema.parse(proposals.shift());
     providers.set(request.budget.reservationId, { stepId: request.budget.runStepId!, data: structuredClone(data) });
     return { data };
   }) } as unknown as ModelPort;
   const context = { claim: { jobId: id(802) }, signal: new AbortController().signal,
+    async emitGeneration(_tx: DbTransaction, event: { type: string; text?: string; stepId?: string }) { events.push(event); timeline.push(event.type); },
     read: async <T>(work: (tx: DbTransaction) => Promise<T>) => work(tx),
     async step<I extends JsonValue, O extends JsonValue, R extends JsonValue>(spec: DurableStep<I, O, R>) {
       const previous = index.get(spec.key);
@@ -86,8 +91,9 @@ function harness(proposals: unknown[], batchingV2 = true) {
     },
   } as unknown as RunContext;
   const research = vi.fn(() => { throw new Error("No external research expected in this contract test"); });
-  const advance = () => advanceModuleResearch({ context, binding, index, moduleId, model, research, priorKnowledge: [], batchingV2 });
-  return { ...fixture, calls, index, records, providers, advance, research, claimRead, passageRead };
+  const advance = () => advanceModuleResearch({ context, binding, index, moduleId, model, research, priorKnowledge: [], batchingV2,
+    ...(narrated ? { knowledgeCoveragePolicy: "approved-scope-v1" as const } : {}) });
+  return { ...fixture, calls, index, records, providers, advance, research, claimRead, passageRead, events, timeline, policy };
 }
 
 describe("approved research reuse", () => {
@@ -131,6 +137,7 @@ describe("approved research reuse", () => {
     expect((await test.advance())?.knowledge).toEqual(expected.knowledge);
     expect(test.calls).toHaveLength(1);
     expect(test.research).not.toHaveBeenCalled();
+    expect(test.events).toEqual([]);
   });
 
   it.each(["declared", "validated"])("persists a %s gap before falling through unchanged legacy research planning", async mode => {
@@ -183,5 +190,46 @@ describe("approved research reuse", () => {
     await expect(test.advance()).rejects.toThrow("No external research expected");
     expect(test.calls).toHaveLength(1);
     expect(test.research).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(["sufficient", "needs_research"] as const)("emits the first actual model paragraph for %s before any later paid action", async status => {
+    const input = approvedFixture(), publicCommentary = "I'll begin with the approved affine-functions section and check what needs more source support.";
+    const proposal = status === "sufficient" ? { status, knowledge: input.knowledge } : { status, gaps: ["Need more support for an approved operation."] };
+    const plan = { moduleId: input.moduleId, queries: [{ key: "support", query: "Primary support for the missing operation", domainHints: [],
+      outcomeIds: input.binding.draft.modules[0]!.outcomeIds, knowledgeGap: "Investigate the demonstrated operation." }] };
+    const test = harness([{ proposal, publicCommentary }, plan], true, true);
+    await test.advance();
+    expect(test.calls).toHaveLength(1); expect(test.calls[0]!.schema).toBe(ApprovedKnowledgeCommentaryResponseSchema);
+    expect(test.calls[0]).toMatchObject({ instructionVersion: "course-approved-knowledge-commentary-v1", schemaVersion: 3, maxOutputTokens: 16384 });
+    expect(test.events).toEqual([{ type: "generation.commentary", text: publicCommentary, stepId: test.index.get(approvedKnowledgeKey(test.moduleId)) }]);
+    expect(test.timeline).toEqual(["model", "generation.commentary"]);
+    await test.advance();
+    expect(test.events).toHaveLength(1);
+    expect(test.calls).toHaveLength(status === "sufficient" ? 1 : 2);
+    if (status === "needs_research") expect(test.timeline).toEqual(["model", "generation.commentary", "model"]);
+  });
+
+  it.each(["sufficient", "needs_research"] as const)("requires exact paid narration and captured policy when replaying %s", async status => {
+    const input = approvedFixture();
+    const proposal = status === "sufficient" ? { status, knowledge: input.knowledge } : { status, gaps: ["Missing support."] };
+    const test = harness([{ proposal, publicCommentary: "I'll check the approved section's source support first." }], true, true);
+    await test.advance();
+    const stepId = test.index.get(approvedKnowledgeKey(test.moduleId))!;
+    const saved = ApprovedResearchCheckpointSchema.parse(test.records.get(stepId)!.result);
+    if (!saved.narration) throw new Error("Expected original narration proof");
+    saved.narration.response.publicCommentary = "A fabricated replacement message";
+    test.records.get(stepId)!.result = saved;
+    await expect(test.advance()).rejects.toThrow("provider.invalid_output");
+    saved.narration.response.publicCommentary = "I'll check the approved section's source support first.";
+    Object.assign(test.policy, { knowledgeCoveragePolicy: undefined });
+    await expect(test.advance()).rejects.toThrow("provider.invalid_output");
+    expect(test.calls).toHaveLength(1); expect(test.events).toHaveLength(1);
+  });
+
+  it("rejects a stored core proposal different from its original narrated response", () => {
+    const input = approvedFixture();
+    expect(() => prepareApprovedResearchCheckpoint({ ...input, operationId: id(900), proposal: { status: "sufficient", knowledge: input.knowledge },
+      narration: { kind: "approved-knowledge-commentary-v1", response: { proposal: { status: "needs_research", gaps: ["Actual model found a gap."] },
+        publicCommentary: "I need additional source support for this section." } } })).toThrow("provider.invalid_output");
   });
 });
