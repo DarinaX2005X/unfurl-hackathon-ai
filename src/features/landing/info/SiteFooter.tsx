@@ -16,7 +16,7 @@ export function SiteFooter() {
           <h2>Product</h2>
           <ul>
             <li><Link href={routes.create()}>{commonCopy.navigation.create}</Link></li>
-            <li><Link href={routes.try}>Try an activity</Link></li>
+            <li><Link href={routes.try}>Try the AI course</Link></li>
             <li><Link href={routes.explore}>Explore courses</Link></li>
             <li><Link href={routes.library}>{commonCopy.navigation.library}</Link></li>
           </ul>

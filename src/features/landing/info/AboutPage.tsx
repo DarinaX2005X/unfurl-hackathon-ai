@@ -17,6 +17,6 @@ export function AboutPage() {
         <div><dt>Get support where you need it</dt><dd>Learners share the course’s core outcomes. Explanations and practice can respond to individual difficulties while preserving the subject’s depth.</dd></div>
       </dl>
     </section>
-    <section className="uf-about-start" aria-labelledby="begin-here"><div><h2 id="begin-here">Choose a subject</h2><p>Describe what you want to learn, or try an activity about how models fit data.</p></div><div className="uf-info__actions"><LinkButton href={routes.chat()}>Create a course</LinkButton><LinkButton href={routes.try} variant="secondary">Try an activity</LinkButton></div></section>
+    <section className="uf-about-start" aria-labelledby="begin-here"><div><h2 id="begin-here">Choose a subject</h2><p>Describe what you want to learn, or begin with the featured AI course.</p></div><div className="uf-info__actions"><LinkButton href={routes.chat()}>Create a course</LinkButton><LinkButton href={routes.try} variant="secondary">Try the featured AI course</LinkButton></div></section>
   </InfoLayout>;
 }

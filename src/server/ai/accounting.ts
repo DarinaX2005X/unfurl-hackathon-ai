@@ -27,11 +27,10 @@ function equalDecimal(a: string, b: string): boolean {
 export class OpenRouterAccounting {
   constructor(private readonly budget: Pick<PostgresBudget, "reconciliationTarget" | "reconcile" | "halt">,
     private readonly apiKey: () => string | undefined, private readonly fetcher: typeof fetch = fetch) {}
-  async reconcile(operationId: string, signal: AbortSignal): Promise<{ settled: boolean; searchFeeVerified: boolean; evidence: JsonObject | null }> {
+  async reconcile(operationId: string, signal: AbortSignal, options: { nativeOnly?: boolean } = {}): Promise<{ settled: boolean; searchFeeVerified: boolean; evidence: JsonObject | null }> {
     const target = await this.budget.reconciliationTarget(operationId);
     const id = target?.receipt?.providerRequestId;
-    const key = this.apiKey();
-    if (!target || !target.receipt || !id || !/^gen-[0-9A-Za-z-]{1,124}$/.test(id) || !key) return { settled: false, searchFeeVerified: false, evidence: null };
+    if (!target || !target.receipt || !id || !/^gen-[0-9A-Za-z-]{1,124}$/.test(id)) return { settled: false, searchFeeVerified: false, evidence: null };
     const savedResult=z.object({nativeUsage:NativeUsageSchema.optional(),finishReason:z.string(),failure:z.unknown(),annotations:z.array(z.unknown())}).safeParse(target.receipt.result);
     const native=NativeUsageSchema.safeParse(target.receipt.nativeUsage??(savedResult.success?savedResult.data.nativeUsage:undefined));
     if(native.success&&(native.data.server_tool_use_details?.web_search_requests??0)>0){
@@ -42,6 +41,8 @@ export class OpenRouterAccounting {
       await this.budget.reconcile(target.reservation,{providerRequestId:id,digest:jsonDigest(evidence),finalCostMicroUsd:proof.costMicroUsd});
       return{settled:true,searchFeeVerified:true,evidence};
     }
+    const key = options.nativeOnly ? undefined : this.apiKey();
+    if (!key) return { settled: false, searchFeeVerified: false, evidence: null };
     let response: Response;
     try {
       response = await this.fetcher(OPENROUTER_BASE_URL + "/generation?id=" + encodeURIComponent(id), {

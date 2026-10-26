@@ -49,7 +49,7 @@ export function LandingPage() {
         <div className="landing-practice__inner landing-section">
           <div className="landing-practice__heading"><h2 id="practice-title">Learn through experiments<br />and explanations</h2><p>Adjust a model, connect the parts of a process, and explain the choices you make.</p></div>
           <PracticePreview />
-          <div className="landing-practice__action"><LinkButton href={routes.try}>Try the learning activity</LinkButton><p>A hands-on introduction to how models fit data.</p></div>
+          <div className="landing-practice__action"><LinkButton href={routes.try}>Try the featured AI course</LinkButton><p>Start a published course and keep your place in your library after signing in.</p></div>
         </div>
       </section>
       <section className="landing-workspace landing-section" aria-labelledby="workspace-title">

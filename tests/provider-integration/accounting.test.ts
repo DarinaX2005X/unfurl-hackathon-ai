@@ -23,6 +23,11 @@ function harness(options: { search?: boolean; total?: number; engine?: string } 
   return { budget, fetcher, accounting: new OpenRouterAccounting(budget, () => "test-key", fetcher) };
 }
 describe("authenticated generation accounting", () => {
+  it("native-only recovery never fetches metadata or settles an absent native receipt",async()=>{
+    const h=harness();
+    expect(await h.accounting.reconcile("op",new AbortController().signal,{nativeOnly:true})).toEqual({settled:false,searchFeeVerified:false,evidence:null});
+    expect(h.fetcher).not.toHaveBeenCalled();expect(h.budget.reconcile).not.toHaveBeenCalled();
+  });
   it("settles the provider's final decimal charge once through the durable ledger", async () => {
     const h = harness();
     expect(await h.accounting.reconcile("op", new AbortController().signal)).toMatchObject({ settled: true, searchFeeVerified: false });

@@ -11,7 +11,7 @@ import { executeIdempotentInTransaction } from "../idempotency";
 import { getRuntimeAdmission } from "./composition";
 import { enqueueAcceptedRun } from "./enqueue";
 import { readRunSnapshot, requireObservedRun, type ObservedRunKind } from "./observer";
-import { resumeSavedAgentDecision } from "./receipt-resume";
+import { reconcileSavedSearchBeforeRetry, resumeSavedAgentDecision } from "./receipt-resume";
 
 const conflict=()=>new ServiceFault(409,"revision_conflict","generation.changed");
 export async function retryRunInTransaction(tx:DbTransaction,actor:Actor,id:string,kind:ObservedRunKind){
@@ -66,6 +66,7 @@ export async function retryRunInTransaction(tx:DbTransaction,actor:Actor,id:stri
   return {runId:next};
 }
 export async function retryRun(actor:Actor,id:string,kind:ObservedRunKind,key:string){
+  if(kind==="agent_turn")await withSystemTransaction("run_execution",tx=>reconcileSavedSearchBeforeRetry(tx,actor,id));
   await getRuntimeAdmission().assertAvailable(kind);
   return withSystemTransaction("run_execution",async tx=>{
     // Ownership is checked even on idempotent replay, including after deletion.
