@@ -12,6 +12,7 @@ export interface GenerationStreamState {
   modules: GenerationSnapshot["modules"];
   work: GenerationSnapshot["work"];
   validation: SafeValidationSummary | null;
+  progress?: GenerationSnapshot["progress"];
   readyVersionId: string | null;
   lastAppliedSeq: number;
   bufferedEvents: GenerationEvent[];
@@ -38,6 +39,7 @@ export function createGenerationStreamState(snapshot: GenerationSnapshot): Gener
     modules: snapshot.modules,
     work: snapshot.work,
     validation: snapshot.validation,
+    progress: terminal(snapshot.run) ? undefined : snapshot.progress,
     readyVersionId: snapshot.readyVersionId,
     lastAppliedSeq: snapshot.lastSeq,
     bufferedEvents: [],
@@ -58,9 +60,11 @@ function applyEvent(state: GenerationStreamState, event: GenerationEvent): Gener
   switch (event.type) {
     case "generation.accepted":
       next.run = { ...next.run, status: "queued", error: null };
+      next.progress = undefined;
       break;
     case "generation.phase.changed":
       next.run = { ...next.run, phase: event.phase, status: "running", error: null };
+      next.progress = undefined;
       break;
     case "generation.module.completed": {
       const moduleState = next.modules.find((item) => item.moduleId === event.moduleId);
@@ -73,6 +77,7 @@ function applyEvent(state: GenerationStreamState, event: GenerationEvent): Gener
         : item);
       // The event does not define the work-unit denominator or increment. Refresh it authoritatively.
       next.needsSnapshot = true;
+      if (next.progress?.moduleId === event.moduleId) next.progress = undefined;
       break;
     }
     case "generation.validation.summary":
@@ -92,6 +97,7 @@ function applyEvent(state: GenerationStreamState, event: GenerationEvent): Gener
       break;
   }
   next.pending = pending(next.run);
+  if (terminal(next.run)) next.progress = undefined;
   return next;
 }
 
@@ -109,9 +115,16 @@ function drain(state: GenerationStreamState): GenerationStreamState {
 
 function applySnapshot(state: GenerationStreamState, snapshot: GenerationSnapshot): GenerationStreamState {
   const incoming = snapshot.run;
+  const currentTime = Math.max(Date.parse(state.run.updatedAt), Date.parse(state.progress?.updatedAt ?? state.run.updatedAt));
+  const incomingTime = Math.max(Date.parse(incoming.updatedAt), Date.parse(snapshot.progress?.updatedAt ?? incoming.updatedAt));
+  const becomingTerminal = !terminal(state.run) && terminal(incoming);
   if (incoming.id !== state.run.id || incoming.ownerId !== state.run.ownerId
     || incoming.courseId !== state.run.courseId || incoming.conversationId !== state.run.conversationId
+    || incoming.approvalId !== state.run.approvalId || snapshot.approvedDraftRevision !== state.approvedDraftRevision
+    || snapshot.approvalDigest !== state.approvalDigest
     || incoming.branchId !== state.run.branchId || snapshot.lastSeq < state.lastAppliedSeq
+    || (snapshot.lastSeq === state.lastAppliedSeq && !becomingTerminal && (incomingTime < currentTime
+      || (snapshot.progress && state.progress && Date.parse(snapshot.progress.updatedAt) < Date.parse(state.progress.updatedAt))))
     || (terminal(state.run) && incoming.status !== state.run.status)
     || (state.readyVersionId !== null && snapshot.readyVersionId !== state.readyVersionId)) return state;
   return drain({
@@ -122,6 +135,7 @@ function applySnapshot(state: GenerationStreamState, snapshot: GenerationSnapsho
     modules: snapshot.modules,
     work: snapshot.work,
     validation: snapshot.validation,
+    progress: terminal(incoming) ? undefined : snapshot.progress,
     readyVersionId: snapshot.readyVersionId,
     lastAppliedSeq: snapshot.lastSeq,
     bufferedEvents: state.bufferedEvents.filter((event) => event.seq > snapshot.lastSeq),

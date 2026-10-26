@@ -7,6 +7,7 @@ import { assertCurrentApproval, curriculumDigest, validateCurriculum, type Curri
 import type { CurriculumEvidencePublic } from "@/domain/curriculum-authoring";
 import type { AgentTurnRun, GenerationRun } from "@/domain/generation";
 import { languageLabel } from "./languages";
+import { CourseBuildProgress } from "./CourseBuildProgress";
 import type { GenerationStreamState } from "./generation-stream";
 
 export interface ApproveCurriculumInput { courseId: string; draftId: string; revision: number; contentDigest: string }
@@ -146,13 +147,9 @@ export function CurriculumPanel({ draft, currentRevision, onApprove, approval = 
       {!isCurrent && <Notice tone="warning">A newer program is being loaded. Review it before approving.</Notice>}
       {evidence?.status === "needs_research" && <Notice tone="info">Your changes are saved. Research support is being refreshed before this version can be approved.</Notice>}
       {evidence?.status === "blocked" && <Notice tone="warning">Research could not verify this program yet. Keep the saved draft and try again when the source issue is resolved.</Notice>}
-      {generationRun && <Notice tone={generationRun.status === "failed" ? "error" : generationRun.status === "succeeded" ? "success" : "info"}
+      {generationRun && <CourseBuildProgress run={generationRun} {...(generation ? { generation } : {})} connectionError={generationConnectionError}
         action={onCancelBuild ? <Button variant="quiet" size="compact" pending={cancelPending} onClick={onCancelBuild}>Cancel build</Button>
-          : onRetryBuild ? <Button variant="quiet" size="compact" pending={retryPending} onClick={onRetryBuild}>Retry build</Button> : undefined}>
-        <p>{generationStatus(generationRun)}</p>
-        {generation && <GenerationFacts generation={generation} />}
-      </Notice>}
-      {generationConnectionError && generationRun && !["succeeded", "failed", "cancelled"].includes(generationRun.status) && <Notice tone="warning">Live build updates were interrupted. The approved program is safe; reconnecting…</Notice>}
+          : onRetryBuild ? <Button variant="quiet" size="compact" pending={retryPending} onClick={onRetryBuild}>Retry build</Button> : undefined} />}
       {retryError && <Notice tone="error">The build could not be retried. Your approved program is still safe; try again.</Notice>}
       {authoringRun && <Notice tone={authoringRun.status === "failed" ? "error" : authoringRun.status === "succeeded" ? "success" : "info"}
         action={onCancelAuthoring ? <Button variant="quiet" size="compact" pending={authoringCommandPending} onClick={onCancelAuthoring}>Cancel answer check</Button>
@@ -169,36 +166,6 @@ export function CurriculumPanel({ draft, currentRevision, onApprove, approval = 
       </>}
     </footer>
   </section>;
-}
-
-function GenerationFacts({ generation }: { generation: GenerationStreamState }) {
-  const complete = generation.modules.filter((module) => module.status === "complete");
-  return <div className="creator-program__generation-facts">
-    {complete.length > 0 && <p>{complete.length} of {generation.modules.length} sections saved: {complete.map((module) => module.title).join(", ")}.</p>}
-    {generation.validation && <p>Validation checked {generation.validation.checked} items: {generation.validation.passed} passed, {generation.validation.failed} need attention.</p>}
-  </div>;
-}
-
-function generationStatus(run: GenerationRun): string {
-  if (run.status === "queued") return "Preparing to build your course…";
-  if (run.status === "succeeded") return "Course build complete. The ready course link will appear here shortly.";
-  if (run.status === "failed") {
-    const reasons: Record<string, string> = {
-      "generation.timeout": "The course build stopped because a generation request timed out.",
-      "generation.unavailable": "The course build stopped because the generation service was unavailable.",
-      "generation.rateLimited": "The course build stopped because the generation service was busy.",
-      "generation.budgetExhausted": "The course build stopped because the available generation budget was exhausted.",
-      "generation.invalidResponse": "The course build stopped because a generated response could not be validated.",
-    };
-    return `${reasons[run.error?.messageKey ?? ""] ?? "The course build stopped before completion."} Your approved program is still saved.`;
-  }
-  if (run.status === "cancelled") return "The course build was cancelled. Your approved program is still saved.";
-  const phases: Record<GenerationRun["phase"], string> = {
-    briefing: "Preparing the course build…", researching: "Researching the course…", outlining: "Checking the course outline…",
-    awaiting_approval: "Waiting for program approval…", module_research: "Researching each section…",
-    building_tasks: "Building lessons and practice…", validating: "Validating the course before release…",
-  };
-  return phases[run.phase];
 }
 
 function languageStatus(run: AgentTurnRun): string {

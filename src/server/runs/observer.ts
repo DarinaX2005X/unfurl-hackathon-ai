@@ -7,6 +7,7 @@ import { ServiceFault } from "../auth/errors";
 import { readDetail, requireConversation } from "../conversations/repository";
 import { generationFromRow, turnFromRow, type GenerationRow } from "../curricula/repository";
 import type { DbTransaction } from "../db";
+import { readGenerationProgress } from "./generation-progress";
 
 export type ObservedRunKind = "agent_turn" | "generation";
 const missing = () => new ServiceFault(404, "not_found", "generation.notFound");
@@ -38,19 +39,30 @@ export async function readRunSnapshot(tx: DbTransaction, actor: Actor, id: strin
   [run.approvalId, actor.id, run.courseId, run.sourceDraftRevision])).rows[0];
   if (!approved) throw missing();
   const draft = CurriculumDraftSchema.parse(approved.document);
+  if (draft.courseId !== run.courseId || draft.conversationId !== run.conversationId || draft.revision !== run.sourceDraftRevision) throw missing();
   const completed = (await tx.query<{ event: unknown }>(`SELECT DISTINCT ON (event->>'moduleId') event FROM unfurl.generation_events
     WHERE run_id=$1 AND seq<=$2 AND type='generation.module.completed' ORDER BY event->>'moduleId',seq DESC`, [id, run.lastSeq])).rows.map(item => GenerationEventSchema.parse(item.event));
   const validation = (await tx.query<{ event: unknown }>(`SELECT event FROM unfurl.generation_events
     WHERE run_id=$1 AND seq<=$2 AND type='generation.validation.summary' ORDER BY seq DESC LIMIT 1`, [id, run.lastSeq])).rows[0];
+  const sameBuild = (event: ReturnType<typeof GenerationEventSchema.parse>) => event.runId === run.id
+    && event.courseId === run.courseId && event.branchId === run.branchId;
   const lastValidation = validation ? GenerationEventSchema.parse(validation.event) : null;
   const modules = draft.modules.map(module => {
-    const event = completed.find(item => item.type === "generation.module.completed" && item.moduleId === module.id);
+    const event = completed.find(item => sameBuild(item) && item.type === "generation.module.completed" && item.moduleId === module.id);
     return { moduleId: module.id, title: module.title, status: event ? "complete" : "pending",
       completedTasks: event?.type === "generation.module.completed" ? event.completedTasks : 0 };
   });
+  const progress = await readGenerationProgress(tx, run, approved.content_digest, modules.map(module => module.moduleId),
+    new Set(modules.filter(module => module.status === "complete").map(module => module.moduleId)));
+  if (progress?.activity === "running" && progress.moduleId) {
+    const current = modules.find(module => module.moduleId === progress.moduleId)!;
+    if (current.status !== "complete" && progress.stage !== "preparing") current.status = ["researching", "reading_sources"].includes(progress.stage)
+      ? "researching" : ["validating_practice", "reviewing_section", "saving_section"].includes(progress.stage) ? "validating" : "building";
+  }
   return GenerationSnapshotSchema.parse({ run, approvedDraftRevision: draft.revision, approvalDigest: approved.content_digest,
     modules, work: { completed: modules.filter(module => module.status === "complete").length, total: modules.length || null },
-    validation: lastValidation?.type === "generation.validation.summary" ? lastValidation.summary : null,
+    validation: lastValidation?.type === "generation.validation.summary" && sameBuild(lastValidation) ? lastValidation.summary : null,
+    ...(progress ? { progress } : {}),
     readyVersionId: run.outputVersionId, lastSeq: run.lastSeq });
 }
 

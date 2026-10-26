@@ -72,6 +72,31 @@ function apply(state: GenerationStreamState, ...events: GenerationEvent[]): Gene
 }
 
 describe("independent course generation observation", () => {
+  it("rejects older same-sequence legacy and terminal snapshots using saved timestamps", () => {
+    const active = createGenerationStreamState(snapshot({ run: run({ updatedAt: "2026-10-24T12:00:04.000Z" }),
+      progress: { stage: "reading_sources", activity: "running", updatedAt: "2026-10-24T12:00:08.000Z" } }));
+    const legacy = snapshot({ run: run({ status: "queued", updatedAt: timestamp }) });
+    expect(generationStreamReducer(active, { type: "snapshot", snapshot: legacy })).toBe(active);
+    const terminal = snapshot({ run: run({ status: "cancelled", updatedAt: "2026-10-24T12:00:02.000Z" }) });
+    const cancelled = generationStreamReducer(active, { type: "snapshot", snapshot: terminal });
+    expect(cancelled.run.status).toBe("cancelled");
+    expect(cancelled.progress).toBeUndefined();
+    expect(generationStreamReducer(cancelled, { type: "snapshot", snapshot: { ...terminal, run: { ...terminal.run, updatedAt: timestamp } } })).toBe(cancelled);
+  });
+
+  it("refreshes persisted progress without requiring a new event and rejects older timestamps", () => {
+    const initial = createGenerationStreamState(snapshot({ progress: { stage: "researching", activity: "running", moduleId: ids.moduleA, updatedAt: timestamp } }));
+    const refreshed = snapshot({ progress: { stage: "reading_sources", activity: "running", moduleId: ids.moduleA, completedSources: 2, updatedAt: "2026-10-24T12:00:08.000Z" } });
+    const next = generationStreamReducer(initial, { type: "snapshot", snapshot: refreshed });
+    expect(next.lastAppliedSeq).toBe(initial.lastAppliedSeq);
+    expect(next.progress).toEqual(refreshed.progress);
+    expect(generationStreamReducer(next, { type: "snapshot", snapshot: snapshot({ progress: initial.progress }) })).toBe(next);
+    expect(generationStreamReducer(next, { type: "snapshot", snapshot: snapshot({ run: run({ updatedAt: "2026-10-24T12:00:12.000Z" }), progress: initial.progress }) })).toBe(next);
+    const waiting = generationStreamReducer(next, { type: "snapshot", snapshot: { ...refreshed, progress: { ...refreshed.progress!, stage: "preparing", activity: "waiting" } } });
+    expect(waiting.progress?.activity).toBe("waiting");
+    expect(apply(next, event(2, { type: "generation.cancelled", reason: "user" })).progress).toBeUndefined();
+  });
+
   it("buffers gaps, ignores duplicates, and drains only contiguous events", () => {
     const initial = createGenerationStreamState(snapshot());
     const third = event(3, { type: "generation.validation.summary", summary: { checked: 2, passed: 2, failed: 0, categories: ["structure"] } });

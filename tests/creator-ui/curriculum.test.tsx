@@ -6,8 +6,27 @@ import { curriculumDigest, type CurriculumApproval } from "../../src/domain/cour
 import type { CurriculumEvidencePublic } from "../../src/domain/curriculum-authoring";
 import type { GenerationRun } from "../../src/domain/generation";
 import { createGenerationStreamState } from "../../src/features/creator/generation-stream";
+import { CourseBuildProgress } from "../../src/features/creator/CourseBuildProgress";
 
 describe("program review", () => {
+  it("shows an honest between-step state and keeps factual section progress", () => {
+    const run: GenerationRun = { id: ids.request, ownerId: ids.actor, courseId: ids.course, conversationId: ids.conversation,
+      branchId: ids.sample, inputMessageId: ids.task, sourceDraftRevision: 1, approvalId: ids.approval, phase: "module_research",
+      status: "running", lastSeq: 1, outputVersionId: null, error: null, createdAt: timestamp, updatedAt: timestamp };
+    const generation = createGenerationStreamState({ run, approvedDraftRevision: 1, approvalDigest: "a".repeat(64),
+      modules: [{ moduleId: ids.moduleA, title: "Foundations", status: "complete", completedTasks: 4 }, { moduleId: ids.moduleB, title: "Practice", status: "pending", completedTasks: 0 }],
+      work: { completed: 1, total: 2 }, validation: null, readyVersionId: null, lastSeq: 1,
+      progress: { stage: "preparing", activity: "waiting", moduleId: ids.moduleB, updatedAt: timestamp } });
+    const html = renderToStaticMarkup(<CourseBuildProgress run={run} generation={generation} />);
+    expect(html).toContain("Preparing the next step"); expect(html).toContain("Section 2 of 2 · Practice");
+    expect(html).toContain("1 of 2 sections saved"); expect(html).toContain('aria-live="polite"');
+    expect(html).not.toContain("Preparing to build your course"); expect(html).not.toContain("Researching each section");
+    expect(html).not.toMatch(/\d+%|minutes? remaining/);
+    const cancelled = renderToStaticMarkup(<CourseBuildProgress run={{ ...run, status: "cancelled" }} generation={generation} connectionError />);
+    expect(cancelled).toContain("Build cancelled"); expect(cancelled).not.toContain("creator-build__activity");
+    expect(cancelled).not.toContain("Reconnecting"); expect(cancelled).not.toContain("Preparing the next step");
+  });
+
   it.each([
     ["generation.timeout", "generation request timed out"],
     ["generation.unavailable", "generation service was unavailable"],

@@ -7,7 +7,7 @@ import type { CurriculumAuthoringSnapshot } from "../../src/domain/curriculum-au
 import type { GenerationSnapshot } from "../../src/domain/generation-observer";
 import { accountScope } from "../../src/features/account/account-scope";
 import { CourseArtifactsPanel } from "../../src/features/creator/CourseArtifactsPanel";
-import { getGenerationSnapshot, readGenerationEvents, type GenerationEventHandlers } from "../../src/features/creator/generation-observer-client";
+import { cancelGenerationRun, getGenerationSnapshot, readGenerationEvents, type GenerationEventHandlers } from "../../src/features/creator/generation-observer-client";
 import { curriculum, ids, timestamp } from "../domain/fixtures";
 
 vi.mock("../../src/features/creator/generation-observer-client", () => ({
@@ -50,7 +50,7 @@ beforeEach(() => {
   });
 });
 afterEach(async () => {
-  await act(async () => root.unmount()); container.remove(); accountScope.replaceActor(null); vi.unstubAllGlobals();
+  await act(async () => root.unmount()); container.remove(); accountScope.replaceActor(null); vi.unstubAllGlobals(); vi.useRealTimers();
 });
 async function show(value: CurriculumAuthoringSnapshot) {
   current = value;
@@ -60,6 +60,82 @@ async function show(value: CurriculumAuthoringSnapshot) {
 }
 
 describe("mounted generation observer replacement", () => {
+  it("keeps a confirmed cancellation terminal when an earlier active refresh finishes afterward", async () => {
+    vi.useFakeTimers(); const value = saved(1); const active = observed(value);
+    let finishRefresh!: (snapshot: GenerationSnapshot) => void;
+    vi.mocked(getGenerationSnapshot).mockResolvedValueOnce(active).mockImplementationOnce(() => new Promise((resolve) => { finishRefresh = resolve; }));
+    vi.mocked(cancelGenerationRun).mockResolvedValue({ ...active, run: { ...active.run, status: "cancelled", lastSeq: 2 }, lastSeq: 2 });
+    await show(value); await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+    await act(async () => { [...container.querySelectorAll("button")].find((button) => button.textContent === "Cancel build")!.click(); });
+    expect(container.textContent).toContain("Build cancelled");
+    await act(async () => finishRefresh(active));
+    expect(container.textContent).toContain("Build cancelled");
+    expect(container.querySelector(".creator-build__activity")).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(32000); });
+    expect(getGenerationSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it("refreshes a silent selected run without overlapping requests, then stops on completion", async () => {
+    vi.useFakeTimers();
+    const value = saved(1); value.generationRun = { ...value.generationRun!, status: "queued" };
+    const initial = observed(value);
+    let finishRefresh!: (snapshot: GenerationSnapshot) => void;
+    vi.mocked(getGenerationSnapshot).mockResolvedValueOnce(initial).mockImplementationOnce(() => new Promise((resolve) => { finishRefresh = resolve; }));
+    await show(value);
+    expect(container.textContent).toContain("Preparing to build your course");
+    await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+    expect(getGenerationSnapshot).toHaveBeenCalledTimes(2);
+    await act(async () => { await vi.advanceTimersByTimeAsync(24000); });
+    expect(getGenerationSnapshot).toHaveBeenCalledTimes(2);
+    const active: GenerationSnapshot = { ...initial, run: { ...initial.run, status: "running" },
+      modules: [{ moduleId: ids.moduleA, title: "Model fitting", status: "researching", completedTasks: 0 }],
+      progress: { stage: "reading_sources", activity: "running", moduleId: ids.moduleA, completedSources: 2, updatedAt: timestamp } };
+    await act(async () => finishRefresh(active));
+    expect(container.textContent).toContain("Reading sources");
+    expect(container.textContent).toContain("Section 1 of 1 · Model fitting");
+    const indicator = container.querySelector(".creator-build__activity");
+    vi.mocked(getGenerationSnapshot).mockResolvedValueOnce({ ...active, progress: { ...active.progress!, stage: "writing_lessons" } });
+    await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+    expect(container.textContent).toContain("Writing the lessons");
+    expect(container.querySelector(".creator-build__activity")).toBe(indicator);
+    vi.mocked(getGenerationSnapshot).mockResolvedValueOnce({ ...active, progress: undefined, run: { ...active.run, status: "cancelled", lastSeq: 2 }, lastSeq: 2 });
+    await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+    expect(container.textContent).toContain("Build cancelled");
+    expect(container.querySelector(".creator-build__activity")).toBeNull();
+    const calls = vi.mocked(getGenerationSnapshot).mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(32000); });
+    expect(getGenerationSnapshot).toHaveBeenCalledTimes(calls);
+  });
+
+  it("aborts an old refresh and ignores its delayed result after the selected run changes", async () => {
+    vi.useFakeTimers();
+    const old = saved(1); const next = saved(2);
+    let finishOld!: (snapshot: GenerationSnapshot) => void;
+    vi.mocked(getGenerationSnapshot).mockResolvedValueOnce(observed(old)).mockImplementationOnce(() => new Promise((resolve) => { finishOld = resolve; })).mockResolvedValue(observed(next, "building_tasks"));
+    await show(old); await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+    const oldSignal = vi.mocked(getGenerationSnapshot).mock.calls[1]![1];
+    await show(next); expect(oldSignal.aborted).toBe(true);
+    await act(async () => finishOld({ ...observed(old), progress: { stage: "reading_sources", activity: "running", updatedAt: timestamp } }));
+    expect(container.textContent).toContain("Building lessons and practice");
+    expect(container.textContent).not.toContain("Reading sources");
+    await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+    expect(vi.mocked(getGenerationSnapshot).mock.calls.at(-1)![0]).toBe(next.generationRun!.id);
+    expect(vi.mocked(getGenerationSnapshot).mock.calls.filter(([id]) => id === old.generationRun!.id)).toHaveLength(2);
+  });
+
+  it("shows a reconnecting state after a refresh fails and resumes the confirmed operation", async () => {
+    vi.useFakeTimers(); const value = saved(1);
+    const active = { ...observed(value), progress: { stage: "reading_sources" as const, activity: "running" as const, updatedAt: timestamp } };
+    vi.mocked(getGenerationSnapshot).mockResolvedValueOnce(active).mockRejectedValueOnce(new Error("offline")).mockResolvedValue(active);
+    await show(value); await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+    expect(container.textContent).toContain("Reconnecting to build updates");
+    expect(container.textContent).toContain("Last confirmed: Reading sources");
+    expect(container.querySelector(".creator-build__activity")).toBeNull();
+    await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+    expect(container.textContent).not.toContain("Reconnecting to build updates");
+    expect(container.querySelector(".creator-build__activity")).not.toBeNull();
+  });
+
   it("keeps new progress when the old snapshot resolves after its observer was aborted", async () => {
     const old = saved(1); const next = saved(2);
     let finishOld!: (snapshot: GenerationSnapshot) => void;

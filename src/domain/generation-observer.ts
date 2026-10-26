@@ -29,6 +29,12 @@ export const GenerationModuleStateSchema = z.object({
   status: z.enum(["pending", "researching", "building", "validating", "complete", "failed"]),
   completedTasks: z.number().int().nonnegative(),
 }).strict();
+export const GenerationProgressSchema = z.object({
+  stage: z.enum(["preparing", "researching", "reading_sources", "planning_lessons", "writing_lessons", "creating_practice",
+    "validating_practice", "reviewing_section", "saving_section", "finalizing_course"]),
+  activity: z.enum(["running", "waiting"]),
+  moduleId: IdSchema.optional(), completedSources: z.number().int().nonnegative().optional(), updatedAt: IsoDateTimeSchema,
+}).strict();
 export const GenerationSnapshotSchema = z.object({
   run: GenerationRunSchema,
   approvedDraftRevision: RevisionSchema, approvalDigest: DigestSchema,
@@ -36,6 +42,7 @@ export const GenerationSnapshotSchema = z.object({
   work: z.object({ completed: z.number().int().nonnegative(), total: z.number().int().positive().nullable() }).strict(),
   validation: SafeValidationSummarySchema.nullable(),
   readyVersionId: IdSchema.nullable(), lastSeq: z.number().int().nonnegative(),
+  progress: GenerationProgressSchema.optional(),
 }).strict().superRefine((snapshot, ctx) => {
   if (snapshot.run.courseId === null || snapshot.run.approvalId === null || snapshot.lastSeq !== snapshot.run.lastSeq ||
     snapshot.readyVersionId !== snapshot.run.outputVersionId || snapshot.approvedDraftRevision !== snapshot.run.sourceDraftRevision ||
@@ -43,7 +50,13 @@ export const GenerationSnapshotSchema = z.object({
     new Set(snapshot.modules.map((module) => module.moduleId)).size !== snapshot.modules.length) {
     ctx.addIssue({ code: "custom", message: "A generation snapshot must describe one saved approved build" });
   }
+  if (snapshot.progress && (!["queued", "running"].includes(snapshot.run.status)
+    || (snapshot.progress.moduleId !== undefined && !snapshot.modules.some(module => module.moduleId === snapshot.progress!.moduleId))
+    || (snapshot.progress.completedSources !== undefined && snapshot.progress.moduleId === undefined))) {
+    ctx.addIssue({ code: "custom", path: ["progress"], message: "Progress must describe an active build and its approved modules" });
+  }
 });
 export type GenerationEvent = z.infer<typeof GenerationEventSchema>;
 export type GenerationSnapshot = z.infer<typeof GenerationSnapshotSchema>;
 export type SafeValidationSummary = z.infer<typeof SafeValidationSummarySchema>;
+export type GenerationProgress = z.infer<typeof GenerationProgressSchema>;

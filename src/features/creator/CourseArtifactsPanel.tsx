@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ChevronDown, Languages, Pencil } from "lucide-react";
 import { Button, Dialog, LinkButton, Notice, Select, Textarea, TextField } from "@/components/ui";
 import type { CatalogPort } from "@/application/catalog-port";
@@ -69,6 +69,7 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
   const [startPending, setStartPending] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [generationStreams, setGenerationStreams] = useState<Record<string, GenerationStreamState>>({});
+  const currentGenerationStreams = useRef<Record<string, GenerationStreamState>>({});
   const [generationError, setGenerationError] = useState<Record<string, boolean>>({});
   const [cancelPending, setCancelPending] = useState(false);
   const [retryPending, setRetryPending] = useState(false);
@@ -80,6 +81,13 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
   const [authoringCommandPending, setAuthoringCommandPending] = useState(false);
   const [authoringRetryKeys, setAuthoringRetryKeys] = useState<Record<string, string>>({});
   const [approvalKeys, setApprovalKeys] = useState<Record<string, string>>({});
+
+  function updateGenerationStream(courseId: string, update: (current: GenerationStreamState | undefined) => GenerationStreamState) {
+    const stream = update(currentGenerationStreams.current[courseId]);
+    currentGenerationStreams.current = { ...currentGenerationStreams.current, [courseId]: stream };
+    setGenerationStreams(currentGenerationStreams.current);
+    return stream;
+  }
 
   async function fetchAuthoring(courseId: string, draftId: string, force = false): Promise<CurriculumAuthoringSnapshot | null> {
     if (!actorId) return null;
@@ -160,12 +168,18 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
     const approvalId = selected.approval.id;
     const runId = observableRun.id;
     const request = accountScope.request(actorId);
+    let refreshTimer: ReturnType<typeof setTimeout> | undefined;
+    let snapshotRequest: ReturnType<typeof getGenerationSnapshot> | null = null;
+    const readSnapshot = () => {
+      snapshotRequest ??= getGenerationSnapshot(runId, request.signal).finally(() => { snapshotRequest = null; });
+      return snapshotRequest;
+    };
     void (async () => {
       const retryPause = () => new Promise<void>((resolve) => setTimeout(resolve, 1000));
       const loadSnapshot = async () => {
         while (request.isCurrent()) {
           try {
-            const value = await getGenerationSnapshot(runId, request.signal);
+            const value = await readSnapshot();
             if (!request.isCurrent()) throw new DOMException("Aborted", "AbortError");
             setGenerationError((current) => ({ ...current, [courseId]: false }));
             return value;
@@ -177,22 +191,54 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
         }
         throw new DOMException("Aborted", "AbortError");
       };
-      let stream = createGenerationStreamState(await loadSnapshot());
+      const initial = await loadSnapshot();
+      let stream = createGenerationStreamState(initial);
       if (!request.isCurrent()) return;
-      if (stream.run.ownerId !== actorId || stream.run.courseId !== courseId || stream.run.approvalId !== approvalId
+      if (stream.run.id !== runId || stream.run.ownerId !== actorId || stream.run.courseId !== courseId || stream.run.approvalId !== approvalId
         || stream.approvedDraftRevision !== draftRevision) throw new Error("generation_scope_invalid");
-      setGenerationStreams((current) => ({ ...current, [courseId]: stream }));
+      stream = updateGenerationStream(courseId, (current) => current?.run.id === runId
+        ? generationStreamReducer(current, { type: "snapshot", snapshot: initial }) : stream);
       setGenerationError((current) => ({ ...current, [courseId]: false }));
-      while (request.isCurrent() && ["queued", "running"].includes(stream.run.status)) {
+      let readyRefreshed = false;
+      const refreshReady = async () => {
+        if (!request.isCurrent() || readyRefreshed || stream.run.id !== runId || stream.run.status !== "succeeded") return;
+        readyRefreshed = true;
+        const result = await curriculumPort.getCurriculum(draftId, request.signal);
+        if (request.isCurrent() && result.ok && result.data.artifact.courseId === courseId) {
+          setAuthoring((current) => ({ ...current, [courseId]: { status: "ready", snapshot: result.data } }));
+          await onArtifactChange(result.data.artifact);
+        }
+      };
+      // Persisted work can advance between SSE events, including workflows already in flight.
+      // One timer and shared snapshot request keep refreshes bounded to the selected active run.
+      const refreshProgress = async () => {
+        stream = currentGenerationStreams.current[courseId] ?? stream;
+        if (!request.isCurrent() || stream.run.id !== runId || !stream.pending) return;
+        try {
+          const snapshot = await readSnapshot();
+          if (!request.isCurrent()) return;
+          stream = updateGenerationStream(courseId, (current) => generationStreamReducer(current ?? stream, { type: "snapshot", snapshot }));
+          setGenerationError((current) => ({ ...current, [courseId]: false }));
+          await refreshReady();
+        } catch {
+          if (request.isCurrent()) setGenerationError((current) => ({ ...current, [courseId]: true }));
+        } finally {
+          if (request.isCurrent() && stream.run.id === runId && stream.pending) refreshTimer = setTimeout(() => { void refreshProgress(); }, 8000);
+        }
+      };
+      if (stream.pending) refreshTimer = setTimeout(() => { void refreshProgress(); }, 8000);
+      while (request.isCurrent() && stream.run.id === runId && ["queued", "running"].includes(stream.run.status)) {
         let snapshotRequired = false;
         try {
           await readGenerationEvents(runId, stream.lastAppliedSeq, request.signal, {
             onEvent(event) {
               if (!request.isCurrent()) return;
-              const next = generationStreamReducer(stream, { type: "event", event });
-              if (next === stream && event.seq > stream.lastAppliedSeq) snapshotRequired = true;
-              else stream = next;
-              setGenerationStreams((current) => ({ ...current, [courseId]: stream }));
+              stream = updateGenerationStream(courseId, (current) => {
+                const latest = current ?? stream;
+                const next = generationStreamReducer(latest, { type: "event", event });
+                if (latest.run.id === runId && next === latest && event.seq > latest.lastAppliedSeq) snapshotRequired = true;
+                return next;
+              });
             },
             onSnapshotRequired() { snapshotRequired = true; },
           });
@@ -208,21 +254,14 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
         if (snapshotRequired || stream.needsSnapshot || stream.replayAfterSeq !== null) {
           const repair = await loadSnapshot();
           if (!request.isCurrent()) return;
-          stream = generationStreamReducer(stream, { type: "snapshot", snapshot: repair });
-          setGenerationStreams((current) => ({ ...current, [courseId]: stream }));
+          stream = updateGenerationStream(courseId, (current) => generationStreamReducer(current ?? stream, { type: "snapshot", snapshot: repair }));
         }
       }
-      if (request.isCurrent() && stream.run.status === "succeeded") {
-        const result = await curriculumPort.getCurriculum(draftId, request.signal);
-        if (request.isCurrent() && result.ok && result.data.artifact.courseId === courseId) {
-          setAuthoring((current) => ({ ...current, [courseId]: { status: "ready", snapshot: result.data } }));
-          await onArtifactChange(result.data.artifact);
-        }
-      }
+      await refreshReady();
     })().catch((error) => {
       if (request.isCurrent() && !(error instanceof Error && error.name === "AbortError")) setGenerationError((current) => ({ ...current, [courseId]: true }));
-    }).finally(request.release);
-    return request.abort;
+    }).finally(() => { clearTimeout(refreshTimer); request.release(); });
+    return () => { clearTimeout(refreshTimer); request.abort(); };
     // The run identity defines one observer lifetime; state updates are reducer-owned.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [actorId, observableRun?.id, selected?.courseId, selected?.curriculum?.id, selected?.curriculum?.revision, selected?.approval?.id]);
@@ -465,7 +504,8 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
     try {
       const cancelled = await cancelGenerationRun(run.id, request.signal);
       if (!request.isCurrent() || cancelled.run.ownerId !== actorId || cancelled.run.courseId !== courseId) return;
-      setGenerationStreams((current) => ({ ...current, [courseId]: createGenerationStreamState(cancelled) }));
+      updateGenerationStream(courseId, (current) => current
+        ? generationStreamReducer(current, { type: "snapshot", snapshot: cancelled }) : createGenerationStreamState(cancelled));
       setGenerationError((current) => ({ ...current, [courseId]: false }));
     } catch { if (request.isCurrent()) setGenerationError((current) => ({ ...current, [courseId]: true })); }
     finally { if (request.isCurrent()) setCancelPending(false); request.release(); }
@@ -484,7 +524,7 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
       const retried = await retryGenerationRun(run.id, key, request.signal);
       if (!request.isCurrent() || retried.run.ownerId !== actorId || retried.run.courseId !== courseId
         || retried.run.approvalId !== run.approvalId || retried.approvedDraftRevision !== run.sourceDraftRevision) throw new Error("generation_retry_scope");
-      setGenerationStreams((current) => ({ ...current, [courseId]: createGenerationStreamState(retried) }));
+      updateGenerationStream(courseId, () => createGenerationStreamState(retried));
       setAuthoring((current) => current[courseId]?.snapshot ? { ...current, [courseId]: { status: "ready", snapshot: { ...current[courseId]!.snapshot!, generationRun: retried.run } } } : current);
       setRetryKeys((current) => { const next = { ...current }; delete next[run.id]; return next; });
     } catch { if (request.isCurrent()) setRetryError((current) => ({ ...current, [courseId]: true })); }
