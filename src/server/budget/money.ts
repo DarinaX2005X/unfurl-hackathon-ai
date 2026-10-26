@@ -1,7 +1,7 @@
 import "server-only";
 
-export const CAMPAIGN_LIMIT_MICRO_USD = 10_000_000n;
-export const SPENDABLE_LIMIT_MICRO_USD = 9_500_000n;
+export const CAMPAIGN_LIMIT_MICRO_USD = 20_000_000n;
+export const SPENDABLE_LIMIT_MICRO_USD = 19_500_000n;
 export const PROBE_LIMIT_MICRO_USD = 2_500_000n;
 export const FINAL_VERIFICATION_RESERVE_MICRO_USD = 750_000n;
 

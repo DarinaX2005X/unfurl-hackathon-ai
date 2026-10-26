@@ -34,6 +34,7 @@ describe.skipIf(!modulePath)("actual budget adapter with many held operations (i
       CREATE TABLE unfurl.execution_job_retry_receipts(job_id uuid,from_epoch integer,actor_id uuid);
       CREATE TABLE unfurl.ai_provider_response_normalizations(operation_id uuid,normalizer_version text,response_digest text,evidence_digest text,native_usage jsonb,source_evidence jsonb);`);
     await sql.query("INSERT INTO unfurl.ai_budgets(id,campaign_key) VALUES($1,'isolated-test')", [budgetId]);
+    await sql.exec(await readFile("supabase/migrations/202610250026_total_campaign_budget.sql", "utf8"));
     tx = { query: async (text: string, values?: unknown[]) => !values && text.includes(";")
       ? (await sql.exec(text) as unknown[]).at(-1) : sql.query(text, values) } as DbTransaction;
     ledger = new PostgresBudget(budgetId, async work => {
@@ -43,7 +44,7 @@ describe.skipIf(!modulePath)("actual budget adapter with many held operations (i
     });
   });
   afterAll(async () => { await sql?.close(); });
-  it("admits after 100 unknown requests, retains their cost, and still enforces the $10 campaign", async () => {
+  it("admits after 100 unknown requests, retains their cost, and still enforces the $20 total campaign", async () => {
     await sql.exec("BEGIN");
     try {
       for (let index = 0; index < 100; index++) {
@@ -58,8 +59,8 @@ describe.skipIf(!modulePath)("actual budget adapter with many held operations (i
       expect(await sql.query("SELECT id,state,reserved_micro_usd FROM unfurl.ai_provider_operations WHERE state='unknown' ORDER BY id")).toEqual(heldRows);
       const counter = await sql.query("SELECT reserved_micro_usd::text,settled_micro_usd::text FROM unfurl.ai_budgets WHERE id=$1", [budgetId]);
       expect(counter).toMatchObject({ rows: [{ reserved_micro_usd: "100000", settled_micro_usd: "0" }] });
-      await expect(ledger.reserve(request("9400001"))).rejects.toMatchObject({ code: "budget_exhausted" });
-      const exact = await ledger.reserve(request("9400000"));
+      await expect(ledger.reserve(request("19400001"))).rejects.toMatchObject({ code: "budget_exhausted" });
+      const exact = await ledger.reserve(request("19400000"));
       await expect(ledger.assertAvailable({ probe: false })).rejects.toMatchObject({ code: "budget_exhausted" });
       await ledger.releaseUnsent(exact);
       await expect(ledger.assertAvailable({ probe: false })).resolves.toBeUndefined();

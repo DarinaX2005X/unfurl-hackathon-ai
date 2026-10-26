@@ -39,7 +39,7 @@ describe("conversation send admission errors", () => {
   });
 
   it.each([
-    { reason: "campaign limit", settled: "9500000", status: 503, code: "service_unavailable", messageKey: "generation.budgetExhausted", retryable: false },
+    { reason: "campaign limit", settled: "19500000", status: 503, code: "service_unavailable", messageKey: "generation.budgetExhausted", retryable: false },
   ])("preserves the budget contract for $reason admission failures", async ({ settled, status, code, messageKey, retryable }) => {
     const tx = { query: vi.fn(async (sql: string) => ({ rows: sql.includes("FROM unfurl.ai_budgets")
       ? [{ id: ids.source, settled_micro_usd: settled, reserved_micro_usd: "0", halted: false }]

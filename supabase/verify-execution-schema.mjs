@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
 
-// Live, rollback-only proof for migration 004.
+// Live, rollback-only proof for execution accounting and the current campaign limits.
 // node --env-file=.env.local supabase/verify-execution-schema.mjs --project-ref <ref>
 const args = process.argv.slice(2);
 const expectedRef = args[args.indexOf("--project-ref") + 1];
@@ -73,10 +73,12 @@ try {
       [budgetId, `rollback-proof-${randomUUID()}`],
     );
   }
-  check("fixed_campaign_limits", (await client.query(
+  const campaign = (await client.query(
     "SELECT hard_limit_micro_usd::text, spendable_limit_micro_usd::text FROM unfurl.ai_budgets WHERE id=$1",
     [budgetId],
-  )).rows[0]?.hard_limit_micro_usd === "10000000");
+  )).rows[0];
+  check("fixed_campaign_limits", campaign?.hard_limit_micro_usd === "20000000"
+    && campaign?.spendable_limit_micro_usd === "19500000");
   await rejected(
     "singleton_campaign_unique",
     "INSERT INTO unfurl.ai_budgets (id, campaign_key) VALUES ($1, $2)",

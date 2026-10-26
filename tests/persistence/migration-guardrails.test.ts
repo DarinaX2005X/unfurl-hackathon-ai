@@ -52,6 +52,19 @@ describe("migration static guardrails (live PostgreSQL proof still required)", (
     expect(sql).not.toContain("old.state = 'unknown' and new.state = 'released'");
   });
 
+  it("raises the same campaign to USD 20 without resetting accounting", () => {
+    const increase = readFileSync(`${directory}/202610250026_total_campaign_budget.sql`, "utf8");
+    expect(increase).toContain("alter column hard_limit_micro_usd set default 20000000");
+    expect(increase).toContain("alter column spendable_limit_micro_usd set default 19500000");
+    expect(increase).toContain("check (hard_limit_micro_usd = 20000000)");
+    expect(increase).toContain("check (spendable_limit_micro_usd = 19500000)");
+    const updates = [...increase.matchAll(/update unfurl\.ai_budgets\s+set\s+([\s\S]*?);/gi)];
+    expect(updates).toHaveLength(1);
+    const columns = updates[0]![1]!.split(",").map(assignment => assignment.trim().split(/\s*=\s*/)[0]);
+    expect(columns).toEqual(["hard_limit_micro_usd", "spendable_limit_micro_usd", "revision", "updated_at"]);
+    expect(increase).not.toMatch(/drop (table|trigger|index)|delete from|truncate|insert into|ai_provider_operations|ai_provider_responses|ai_budget_entries/i);
+  });
+
   it("pins publication and learning authority to immutable versions and saved identities", () => {
     expect(sql).toContain("add column published_version_id uuid");
     expect(sql).toContain("rename column key_version to token_key_version");

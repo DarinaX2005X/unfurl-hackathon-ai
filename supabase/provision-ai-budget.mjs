@@ -46,7 +46,7 @@ try {
     ? env.replace(/^AI_BUDGET_ID=.*$/m, `AI_BUDGET_ID=${budgetId}`)
     : `${env.replace(/\s*$/, "")}\nAI_BUDGET_ID=${budgetId}\n`;
   await writeFile(envPath, updated, { mode: 0o600 });
-  console.log(JSON.stringify({ ok: true, created: true, hardLimitMicroUsd: "10000000", spendableLimitMicroUsd: "9500000", paidCalls: 0, envConfigured: true }));
+  console.log(JSON.stringify({ ok: true, created: true, hardLimitMicroUsd: "20000000", spendableLimitMicroUsd: "19500000", paidCalls: 0, envConfigured: true }));
 } catch (error) {
   await client?.query("ROLLBACK").catch(() => undefined);
   console.error(JSON.stringify({ ok: false, phase, code: error.code ?? error.message ?? "provision_failed" }));
