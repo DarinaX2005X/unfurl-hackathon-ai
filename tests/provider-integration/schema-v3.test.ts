@@ -43,8 +43,8 @@ describe("immutable Gemini schema v3 projection",()=>{
       untrustedInput:{synthetic:true},model:modelPolicy(CANDIDATE_MODEL_POLICY).model,maxOutputTokens:16384,deadlineAt:0,budget:{logicalOperationId:id(900),reservationId:id(901),attempt:1,runStepId:id(902),probe:false}};
     const options={schema,schemaName:"coverage_3"},old=buildProviderRequestBody({...request,modelPolicy:GEMINI_SCHEMA_V2_POLICY},options),next=buildProviderRequestBody({...request,modelPolicy:CANDIDATE_MODEL_POLICY},options);
     expect(old.messages).toEqual(next.messages);expect(old.messages[0]!.content).toContain('"propertyNames"');
-    expect(evidenceItems(old.response_format!.json_schema.schema)[0]!.required).toEqual(["path","value"]);
-    expect(evidenceItems(next.response_format!.json_schema.schema)[0]!.required).toEqual(["path"]);
+    expect(evidenceItems(old.response_format!.json_schema!.schema)[0]!.required).toEqual(["path","value"]);
+    expect(evidenceItems(next.response_format!.json_schema!.schema)[0]!.required).toEqual(["path"]);
   });
   it("finds cycles structurally and preserves required ordinary refs, IDs and schema property names",()=>{
     const schema:JsonObject={type:"object",properties:{id:{$ref:"#/$defs/identifier"},proof:{$ref:"#/$defs/evidence~1node"},propertyNames:{type:"string"}},

@@ -103,3 +103,50 @@ export function geminiNativeShapeV3(schema:JsonObject):JsonObject{
   }
   const result=project(shaped) as JsonObject;canonicalJson(result,65536);return result;
 }
+
+/** V4 conservatively uses JSON mode for real local reference cycles, including
+ * unused definitions which the provider may still compile. Definition maps are
+ * separate roots, not instance edges; repeated acyclic refs are not recursion.
+ * Unknown/external refs are not classified as cycles. All application schemas
+ * are generated locally by Zod and retain their original acceptance validator.
+ */
+export function schemaHasLocalReferenceCycle(schema:JsonObject):boolean{
+  canonicalJson(schema,65536);
+  const object=(value:JsonValue|undefined):value is JsonObject=>value!==null&&typeof value==="object"&&!Array.isArray(value);
+  const maps=["properties","patternProperties","dependentSchemas"],definitions=["$defs","definitions"];
+  const positions=["items","prefixItems","anyOf","oneOf","allOf","not","if","then","else","contains","additionalItems","additionalProperties","propertyNames","unevaluatedItems","unevaluatedProperties","contentSchema"];
+  function children(node:JsonObject):JsonObject[]{
+    const result:JsonObject[]=[];
+    for(const key of maps){const map=node[key];if(object(map))for(const child of Object.values(map))if(object(child))result.push(child);}
+    for(const key of positions){const value=node[key];if(object(value))result.push(value);else if(Array.isArray(value))for(const child of value)if(object(child))result.push(child);}
+    return result;
+  }
+  function referenced(ref:string):JsonObject|undefined{
+    if(!ref.startsWith("#"))return undefined;
+    let pointer:string;try{pointer=decodeURIComponent(ref.slice(1));}catch{return undefined;}
+    if(pointer==="")return schema;if(!pointer.startsWith("/"))return undefined;
+    let value:JsonValue|undefined=schema;
+    for(const encoded of pointer.slice(1).split("/")){
+      if(/~(?:[^01]|$)/.test(encoded))return undefined;
+      const key=encoded.replace(/~1/g,"/").replace(/~0/g,"~");
+      if(Array.isArray(value)){if(!/^(0|[1-9]\d*)$/.test(key))return undefined;value=value[Number(key)];}
+      else if(object(value)&&Object.hasOwn(value,key))value=value[key];else return undefined;
+    }
+    return object(value)?value:undefined;
+  }
+  const roots:JsonObject[]=[schema],collected=new Set<JsonObject>();
+  function collect(node:JsonObject){
+    if(collected.has(node))return;collected.add(node);
+    for(const key of definitions){const map=node[key];if(object(map))for(const child of Object.values(map))if(object(child)){roots.push(child);collect(child);}}
+    for(const child of children(node))collect(child);
+  }
+  collect(schema);
+  const visiting=new Set<JsonObject>(),done=new Set<JsonObject>();
+  function cyclic(node:JsonObject):boolean{
+    if(visiting.has(node))return true;if(done.has(node))return false;visiting.add(node);
+    const target=typeof node.$ref==="string"?referenced(node.$ref):undefined;
+    if(target&&cyclic(target)||children(node).some(cyclic))return true;
+    visiting.delete(node);done.add(node);return false;
+  }
+  return roots.some(cyclic);
+}

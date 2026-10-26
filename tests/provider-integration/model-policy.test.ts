@@ -65,10 +65,10 @@ describe("explicit model operation policy",()=>{
     const schema=z.toJSONSchema(AgentDecisionV3Schema) as JsonObject,before=canonicalJson(schema),input=request();
     const old=buildProviderRequestBody({...input,modelPolicy:"gemini-flash-google-v1"},{schema,schemaName:"agent_decision_3"});
     const next=buildProviderRequestBody(input,{schema,schemaName:"agent_decision_3"});
-    expect(old.response_format?.json_schema.schema).toEqual(schema);
+    expect(old.response_format?.json_schema?.schema).toEqual(schema);
     expect(old.messages).toEqual(next.messages);expect(next.messages[0]!.content).toContain('"maxItems":256');
     expect(canonicalJson(schema)).toBe(before);
-    const wire=next.response_format!.json_schema.schema as {type:string;anyOf:{properties:{tool:{enum:string[]};input:unknown}}[]};
+    const wire=next.response_format!.json_schema!.schema as {type:string;anyOf:{properties:{tool:{enum:string[]};input:unknown}}[]};
     expect(wire.type).toBe("object");
     expect(wire.anyOf.map(branch=>branch.properties.tool.enum[0])).toEqual(["search","read_source","read_artifact","create_course","revise_curriculum","update_metadata","revise_language","respond"]);
     expect(JSON.stringify(wire)).not.toMatch(/"(?:oneOf|const|maxItems|minimum|maximum|pattern|format)":/);

@@ -10,7 +10,7 @@ import {validateRubricJudgement} from "../evaluation/contracts";
 import {stableExecutionId} from "../runs/identity";
 import {CAPABILITY_TEST_VERSION,runtimeConfigurationDigest,type CapabilityTransaction,type RuntimeWorld} from "./capabilities";
 import {MODEL_POLICY_VERSION,OPENROUTER_BASE_URL,SEARCH_POLICY} from "./constants";
-import {CANDIDATE_MODEL_POLICY,ModelPolicySchema,modelPolicy,structuredPolicyProof,type ModelPolicyId} from "./model-policy";
+import {CANDIDATE_MODEL_POLICY,GEMINI_SCHEMA_V4_POLICY,ModelPolicySchema,modelPolicy,structuredPolicyProof,type ModelPolicyId} from "./model-policy";
 import {jsonDigest,parseProviderJson,parseStructuredOutput} from "./json";
 import {ProviderFailure} from "./failure";
 import {OpenRouterRateCards} from "./rate-card";
@@ -173,7 +173,10 @@ export async function authorizeProviderProofPortability(input:{sourceReceiptId:s
   if(source.capability==="model_text"){
     if(source.evidence.exactSentenceValidated!==true||result.content.trim()!=="A transaction commits all changes together.")throw unavailable();
   }else if(source.capability==="model_structured"&&policy!==MODEL_POLICY_VERSION){
-    if(policy===CANDIDATE_MODEL_POLICY){
+    if(policy===GEMINI_SCHEMA_V4_POLICY){
+      const {verifySavedCoverageJsonProbeEvidence}=await import("./saved-coverage-json-probe");
+      await run(tx=>verifySavedCoverageJsonProbeEvidence(tx,source.evidence,input.budgetId,operation.request_digest,result.content,receipt.responseDigest));
+    }else if(policy===CANDIDATE_MODEL_POLICY){
       const {verifySavedCoverageProbeEvidence}=await import("./saved-coverage-probe");
       await run(tx=>verifySavedCoverageProbeEvidence(tx,source.evidence,input.budgetId,operation.request_digest,result.content));
     }else{

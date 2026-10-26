@@ -2,7 +2,7 @@ import "server-only";
 import {z} from "zod";
 import {MODEL_ID,MODEL_POLICY_VERSION,PROVIDER_TAG,PROVIDER_PRICE_CAP} from "./constants";
 
-export const ModelPolicySchema=z.enum(["kimi-digitalocean-v1","gemini-flash-google-v1","gemini-flash-google-schema-v2","gemini-flash-google-schema-v3"]);
+export const ModelPolicySchema=z.enum(["kimi-digitalocean-v1","gemini-flash-google-v1","gemini-flash-google-schema-v2","gemini-flash-google-schema-v3","gemini-flash-google-schema-v4"]);
 export type ModelPolicyId=z.infer<typeof ModelPolicySchema>;
 export const SEARCH_HEADROOM_POLICY="bounded-search-headroom-v2" as const;
 export const SearchPolicySchema=z.literal(SEARCH_HEADROOM_POLICY);
@@ -14,10 +14,14 @@ export const legacyCandidatePolicy=Object.freeze({id:"gemini-flash-google-v1",mo
 export const schemaV2Policy=Object.freeze({...legacyCandidatePolicy,id:GEMINI_SCHEMA_V2_POLICY,wireSchema:"gemini-native-shape-v2"} as const);
 export const candidatePolicy=Object.freeze({...legacyCandidatePolicy,id:CANDIDATE_MODEL_POLICY,wireSchema:"gemini-native-shape-v3"} as const);
 export const GEMINI_SCHEMA_V3_PROOF="saved-coverage-native-schema-v3" as const;
+export const GEMINI_SCHEMA_V4_POLICY="gemini-flash-google-schema-v4" as const;
+export const GEMINI_SCHEMA_V4_PROOF="saved-coverage-json-mode-v4" as const;
+export const schemaV4Policy=Object.freeze({...legacyCandidatePolicy,id:GEMINI_SCHEMA_V4_POLICY,wireSchema:"gemini-recursive-json-mode-v4"} as const);
 export function structuredPolicyProof(id:ModelPolicyId):string|null{
-  return id===CANDIDATE_MODEL_POLICY?GEMINI_SCHEMA_V3_PROOF:id===GEMINI_SCHEMA_V2_POLICY?"saved-decision-native-schema-v2":null;
+  return id===GEMINI_SCHEMA_V4_POLICY?GEMINI_SCHEMA_V4_PROOF:id===CANDIDATE_MODEL_POLICY?GEMINI_SCHEMA_V3_PROOF:id===GEMINI_SCHEMA_V2_POLICY?"saved-decision-native-schema-v2":null;
 }
 export function modelPolicy(id:ModelPolicyId=MODEL_POLICY_VERSION){
+  if(id===GEMINI_SCHEMA_V4_POLICY)return schemaV4Policy;
   if(id===CANDIDATE_MODEL_POLICY)return candidatePolicy;
   if(id===GEMINI_SCHEMA_V2_POLICY)return schemaV2Policy;
   if(id===legacyCandidatePolicy.id)return legacyCandidatePolicy;

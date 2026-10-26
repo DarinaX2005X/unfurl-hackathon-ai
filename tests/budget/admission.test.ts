@@ -24,8 +24,8 @@ describe("budget admission policy (pure logic, not a durable concurrency test)",
   });
 
   it("applies the probe envelope inside the same campaign ceiling", () => {
-    expect(canReserve({ ...empty, probeSettled: 2_450_000n }, 50_000n, true)).toEqual({ allowed: true });
-    expect(canReserve({ ...empty, probeSettled: 2_450_000n, probeReserved: 49_999n }, 2n, true)).toEqual({ allowed: false, reason: "probe_limit" });
+    expect(canReserve({ ...empty, probeSettled: 3_450_000n }, 50_000n, true)).toEqual({ allowed: true });
+    expect(canReserve({ ...empty, probeSettled: 3_450_000n, probeReserved: 49_999n }, 2n, true)).toEqual({ allowed: false, reason: "probe_limit" });
     expect(canReserve({ ...empty, settled: 18_700_000n }, 50_000n, true)).toEqual({ allowed: true });
     expect(canReserve({ ...empty, settled: 18_700_000n }, 50_001n, true)).toEqual({ allowed: false, reason: "campaign_limit" });
     expect(canReserve({ ...empty, settled: 19_499_999n }, 2n, true)).toEqual({ allowed: false, reason: "campaign_limit" });
@@ -49,7 +49,7 @@ describe("budget adapter denial classification", () => {
     attempt: 1, runStepId: null, probe: false, purpose: "curriculum", amountMicroUsd: "1", requestDigest: "a".repeat(64), rateCard, rateCardDigest: jsonDigest(rateCard) };
   it.each([
     { reason: "campaign limit", state: { ...empty, settled: 19_500_000n }, probe: false, code: "budget_exhausted" },
-    { reason: "probe limit", state: { ...empty, probeSettled: 2_500_000n }, probe: true, code: "budget_exhausted" },
+    { reason: "probe limit", state: { ...empty, probeSettled: 3_500_000n }, probe: true, code: "budget_exhausted" },
     { reason: "halt", state: { ...empty, halted: true }, probe: false, code: "budget_exhausted" },
   ])("classifies $reason consistently before any reservation write", async ({ state, probe, code }) => {
     const query = vi.fn(async (sql: string) => {

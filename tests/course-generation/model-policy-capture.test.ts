@@ -6,7 +6,7 @@ import {GenerationEvidenceRepository} from "@/server/course-generation/repositor
 import {COURSE_GENERATION_POLICY_KEY,COURSE_GENERATION_SCHEMA_DIGEST,COURSE_VALIDATION_POLICY_DIGEST,CourseGenerationPolicyCheckpointSchema} from "@/server/course-generation/checkpoints";
 import {getCapabilityCatalogDigest} from "@/server/mechanics/catalog";
 import {withCapturedModelPolicy} from "@/server/ai/captured-policy";
-import {CANDIDATE_MODEL_POLICY,GEMINI_SCHEMA_V2_POLICY,modelPolicy} from "@/server/ai/model-policy";
+import {CANDIDATE_MODEL_POLICY,GEMINI_SCHEMA_V2_POLICY,GEMINI_SCHEMA_V4_POLICY,modelPolicy,type ModelPolicyId} from "@/server/ai/model-policy";
 import {jsonDigest} from "@/server/ai/json";
 import type {ApprovedBuildBinding} from "@/server/curricula/build-binding";
 import type {RunContext} from "@/server/runs/ports";
@@ -14,9 +14,9 @@ import type {ModelPort,StructuredRequest} from "@/server/ai/ports";
 import {fixture,id,digest} from "./fixtures";
 
 afterEach(()=>vi.restoreAllMocks());
-function harness(started:boolean){
+function harness(started:boolean,oldPolicy:ModelPolicyId=GEMINI_SCHEMA_V2_POLICY){
   const data=fixture(),binding={run:{id:id(930)},course:{id:data.draft.courseId,ownerId:data.context.ownerId},approval:{id:id(931),draftRevision:1,contentDigest:digest},draft:data.draft} as ApprovedBuildBinding;
-  const old={kind:"course.generation.policy",version:"course-generation-batch-v2",batchSize:5,maxOutputTokens:16384,approvalDigest:digest,modelPolicy:GEMINI_SCHEMA_V2_POLICY};
+  const old={kind:"course.generation.policy",version:"course-generation-batch-v2",batchSize:5,maxOutputTokens:16384,approvalDigest:digest,modelPolicy:oldPolicy};
   const saved={key:COURSE_GENERATION_POLICY_KEY,status:"succeeded",result:old,schema:COURSE_GENERATION_SCHEMA_DIGEST,validationPolicy:COURSE_VALIDATION_POLICY_DIGEST,capability:getCapabilityCatalogDigest(),approval:digest};
   const writes:unknown[]=[];let selections=0;
   const query=vi.fn(async(sql:string)=>{
@@ -39,15 +39,15 @@ function harness(started:boolean){
 }
 
 describe("generation model capture and fresh retries",()=>{
-  it("captures certified v3 for a fresh run after a failed v2 ancestor without rewriting its capture",async()=>{
+  it("captures certified v4 for a fresh run after a failed v2 ancestor without rewriting its capture",async()=>{
     const h=harness(false),before=structuredClone(h.old);
     await expect(h.handler.advance(h.context)).resolves.toEqual({status:"continue"});
-    expect(h.writes).toHaveLength(1);expect(h.writes[0]).toMatchObject({modelPolicy:CANDIDATE_MODEL_POLICY});expect(h.old).toEqual(before);
+    expect(h.writes).toHaveLength(1);expect(h.writes[0]).toMatchObject({modelPolicy:GEMINI_SCHEMA_V4_POLICY});expect(h.old).toEqual(before);
     expect(h.selections()).toBe(1);expect(h.runtime).not.toHaveBeenCalled();
   });
-  it("keeps an already-started v2 capture even when v3 becomes available",async()=>{
-    const h=harness(true);await expect(h.handler.advance(h.context)).rejects.toThrow("stop-after-policy-binding");
-    expect(h.writes).toHaveLength(0);expect(h.selections()).toBe(0);expect(h.old.modelPolicy).toBe(GEMINI_SCHEMA_V2_POLICY);
+  it.each([GEMINI_SCHEMA_V2_POLICY,CANDIDATE_MODEL_POLICY])("keeps an already-started %s capture even when v4 becomes available",async policy=>{
+    const h=harness(true,policy);await expect(h.handler.advance(h.context)).rejects.toThrow("stop-after-policy-binding");
+    expect(h.writes).toHaveLength(0);expect(h.selections()).toBe(0);expect(h.old.modelPolicy).toBe(policy);
   });
   it("binds only uncaptured non-rubric requests and leaves historical missing captures untouched",async()=>{
     const generateStructured=vi.fn<(request:StructuredRequest<unknown>,signal:AbortSignal)=>Promise<{data:object;evidence:object}>>(async()=>({data:{},evidence:{}})),model={generateStructured,streamText:vi.fn(),capabilities:vi.fn()} as unknown as ModelPort;

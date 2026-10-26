@@ -4,7 +4,7 @@ vi.mock("server-only",()=>({}));
 const state=vi.hoisted(()=>({query:vi.fn()}));
 vi.mock("../../src/server/db",()=>({withSystemTransaction:async(_purpose:unknown,work:(tx:unknown)=>Promise<unknown>)=>work({query:state.query})}));
 import {assertModelPolicyAvailable,readActiveModelPolicy} from "../../src/server/ai/active-policy";
-import {CANDIDATE_MODEL_POLICY,GEMINI_SCHEMA_V2_POLICY,candidatePolicy} from "../../src/server/ai/model-policy";
+import {CANDIDATE_MODEL_POLICY,GEMINI_SCHEMA_V2_POLICY,GEMINI_SCHEMA_V4_POLICY,candidatePolicy} from "../../src/server/ai/model-policy";
 import {runtimeConfigurationDigest} from "../../src/server/ai/capabilities";
 import {jsonDigest} from "../../src/server/ai/json";
 import {OpenRouterModel,providerRequestDigest} from "../../src/server/ai/openrouter";
@@ -16,6 +16,9 @@ const tx={query:state.query} as unknown as DbTransaction;
 function proof(overrides:Record<string,unknown>={}){
   return {id:randomUUID(),configuration_digest:runtimeConfigurationDigest("local",CANDIDATE_MODEL_POLICY),
     credential_digest:jsonDigest({credential:"policy-test-key"}),rejected:false,expires_at:"2026-01-02T00:00:00.000Z",...overrides};
+}
+function selectV3(row:ReturnType<typeof proof>){
+  state.query.mockImplementation(async(_sql:string,args:unknown[])=>({rows:args[1]===GEMINI_SCHEMA_V4_POLICY?[]:[row]}));
 }
 function input():ModelRequestBase{
   const operationId=randomUUID();return {operationId,model:candidatePolicy.model,modelPolicy:CANDIDATE_MODEL_POLICY,purpose:"curriculum",
@@ -43,12 +46,23 @@ beforeEach(()=>{
 afterEach(()=>{vi.unstubAllEnvs();vi.useRealTimers();});
 
 describe("durable chosen model policy",()=>{
+  it("selects v4 only from its distinct settled JSON-mode proof, with old uncaptured calls still on v2",async()=>{
+    state.query.mockImplementation(async(_sql:string,args:unknown[])=>({rows:args[1]===GEMINI_SCHEMA_V4_POLICY?[]:[proof()]}));
+    expect(await readActiveModelPolicy(tx)).toBe(CANDIDATE_MODEL_POLICY);
+    await expect(assertModelPolicyAvailable(GEMINI_SCHEMA_V4_POLICY,false)).rejects.toThrow("provider.unavailable");
+    state.query.mockResolvedValue({rows:[proof({configuration_digest:runtimeConfigurationDigest("local",GEMINI_SCHEMA_V4_POLICY)})]});
+    expect(await readActiveModelPolicy(tx)).toBe(GEMINI_SCHEMA_V4_POLICY);
+    await expect(assertModelPolicyAvailable(GEMINI_SCHEMA_V4_POLICY,false)).resolves.toBeUndefined();
+    expect(await readActiveModelPolicy(tx,{allowSchemaV3:false})).toBe(GEMINI_SCHEMA_V2_POLICY);
+    const sql=state.query.mock.calls[0]![0] as string;expect(sql).toContain("proof.evidence->>'responseFormat'='json_object'");
+    expect(sql).toContain("proof.evidence->>'responseDigest'=r.response_digest");expect(sql).toContain("o.state='settled'");
+  });
   it("requires a distinct v3 proof while historical uncaptured requests retain v2 selection",async()=>{
     state.query.mockImplementation(async(_sql:string,args:unknown[])=>({rows:args[1]===GEMINI_SCHEMA_V2_POLICY?[proof({configuration_digest:runtimeConfigurationDigest("local",GEMINI_SCHEMA_V2_POLICY)})]:[]}));
     expect(await readActiveModelPolicy(tx)).toBe(GEMINI_SCHEMA_V2_POLICY);
     await expect(assertModelPolicyAvailable(CANDIDATE_MODEL_POLICY,false)).rejects.toThrow("provider.unavailable");
     await expect(assertModelPolicyAvailable(GEMINI_SCHEMA_V2_POLICY,false)).resolves.toBeUndefined();
-    state.query.mockResolvedValue({rows:[proof()]});
+    selectV3(proof());
     expect(await readActiveModelPolicy(tx)).toBe(CANDIDATE_MODEL_POLICY);
     expect(await readActiveModelPolicy(tx,{allowSchemaV3:false})).toBe(GEMINI_SCHEMA_V2_POLICY);
     const sql=state.query.mock.calls[0]![0] as string;expect(sql).toContain("o.rate_card->>'policyVersion'=$2");expect(sql).toContain("evidenceValidated");
@@ -61,7 +75,7 @@ describe("durable chosen model policy",()=>{
   });
   it("keeps the same chosen route and availability across proof expiry without writing or buying a probe",async()=>{
     vi.useFakeTimers();vi.setSystemTime(new Date("2026-01-01T12:00:00Z"));
-    state.query.mockResolvedValue({rows:[proof()]});
+    selectV3(proof());
     expect(await readActiveModelPolicy(tx)).toBe(CANDIDATE_MODEL_POLICY);
     await expect(assertModelPolicyAvailable(CANDIDATE_MODEL_POLICY,false)).resolves.toBeUndefined();
     vi.setSystemTime(new Date("2026-01-03T12:00:00Z"));
@@ -74,7 +88,7 @@ describe("durable chosen model policy",()=>{
     if(reason==="credential")row.credential_digest=jsonDigest({credential:"another-key"});
     if(reason==="configuration")row.configuration_digest="c".repeat(64);
     if(reason==="rejection")row.rejected=true;
-    state.query.mockResolvedValue({rows:[row]});
+    selectV3(row);
     expect(await readActiveModelPolicy(tx)).toBe(CANDIDATE_MODEL_POLICY);
     await expect(assertModelPolicyAvailable(CANDIDATE_MODEL_POLICY,false)).rejects.toThrow("provider.unavailable");
     expect(await readActiveModelPolicy(tx)).toBe(CANDIDATE_MODEL_POLICY);
@@ -86,12 +100,12 @@ describe("durable chosen model policy",()=>{
   });
   it("preserves campaign Gemini selection after hosting changes but requires target authorization",async()=>{
     vi.stubEnv("VERCEL","1");
-    state.query.mockImplementation(async(_sql:string,args:unknown[])=>({rows:args[3]===true?[]:[proof()]}));
+    state.query.mockImplementation(async(_sql:string,args:unknown[])=>({rows:args[3]===true||args[1]===GEMINI_SCHEMA_V4_POLICY?[]:[proof()]}));
     expect(await readActiveModelPolicy(tx)).toBe(CANDIDATE_MODEL_POLICY);
     await expect(assertModelPolicyAvailable(CANDIDATE_MODEL_POLICY,false)).rejects.toThrow("provider.unavailable");
     expect(await readActiveModelPolicy(tx)).toBe(CANDIDATE_MODEL_POLICY);
     const queries=state.query.mock.calls;
-    expect(queries[0]![1][3]).toBe(false);expect(queries[1]![1][3]).toBe(true);
+    expect(queries[0]![1][3]).toBe(false);expect(queries[2]![1][3]).toBe(true);
     expect(queries[0]![0]).toContain("ELSE NOT(proof.evidence ? 'portability')");
   });
   it("anchors candidate rejection to original proof time rather than import time",async()=>{
@@ -108,13 +122,13 @@ describe("durable chosen model policy",()=>{
     expect(h.budget.reserve).not.toHaveBeenCalled();expect(h.fetcher).not.toHaveBeenCalled();expect(state.query).not.toHaveBeenCalled();
   });
   it("still requires fresh price verification before a new paid call even when the selected proof is old",async()=>{
-    state.query.mockResolvedValue({rows:[proof()]});const h=replayHarness(false);
+    selectV3(proof());const h=replayHarness(false);
     await expect(h.model.complete(h.request,new AbortController().signal)).rejects.toThrow("fresh-price-check");
     expect(h.policyCheck).toHaveBeenCalledWith(CANDIDATE_MODEL_POLICY,false);expect(h.gate.assertAvailable).toHaveBeenCalledTimes(1);
     expect(h.rates.current).toHaveBeenCalledTimes(1);expect(h.budget.reserve).not.toHaveBeenCalled();expect(h.fetcher).not.toHaveBeenCalled();
   });
   it("does not bypass budget admission after separating it from durable model selection",async()=>{
-    state.query.mockResolvedValue({rows:[proof()]});const h=replayHarness(false);
+    selectV3(proof());const h=replayHarness(false);
     vi.mocked(h.gate.assertAvailable).mockRejectedValueOnce(new Error("budget-exhausted"));
     await expect(h.model.complete(h.request,new AbortController().signal)).rejects.toThrow("budget-exhausted");
     expect(h.policyCheck).toHaveBeenCalledTimes(1);expect(h.rates.current).not.toHaveBeenCalled();expect(h.fetcher).not.toHaveBeenCalled();
