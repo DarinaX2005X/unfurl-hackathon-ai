@@ -5,7 +5,8 @@ import { IdSchema } from "../../domain/common";
 import { ApproveCurriculumInputSchema, EditCourseMetadataInputSchema, PatchCurriculumInputSchema, RequestCourseLanguageInputSchema } from "../../domain/curriculum-authoring";
 import { requireActor } from "../auth/session";
 import { assertSameOrigin, failure, readInput, success } from "../auth/http";
-import { ServiceFault } from "../auth/errors";
+import { ServiceFault, unavailable } from "../auth/errors";
+import { ProviderFailure, publicProviderFault } from "../ai/failure";
 import { curriculumService } from "./service";
 
 function identity(value: unknown): string {
@@ -36,7 +37,11 @@ export async function approveCurriculumRoute(request: NextRequest, id: string) {
     const receipt = await curriculumService.approve(actor, identity(id), input, key(request));
     dispatchAfterResponse(actor,receipt.data.run.id);
     return success(receipt.data, receipt.status);
-  } catch (error) { return failure(error, request); }
+  } catch (error) {
+    return failure(error instanceof ProviderFailure
+      ? publicProviderFault(error) ?? unavailable("generation.unavailable")
+      : error, request);
+  }
 }
 export async function patchCourseMetadataRoute(request: NextRequest, id: string) {
   try {

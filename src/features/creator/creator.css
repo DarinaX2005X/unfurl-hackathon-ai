@@ -119,8 +119,36 @@
 .creator-conversation__content { width: min(100%, var(--width-chat)); margin-inline: auto; padding: 20px 0; }
 .creator-conversation__earlier { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 40px; margin-bottom: 14px; color: var(--color-muted); font-size: 14px; }
 .creator-message { margin-bottom: 30px; min-width: 0; }
-.creator-message h2 { margin-bottom: 8px; font-size: 14px; font-weight: 700; letter-spacing: 0; }
+.creator-message > h2 { margin-bottom: 8px; font-size: 14px; font-weight: 700; letter-spacing: 0; }
 .creator-message__text { font-size: 16px; line-height: 1.8; overflow-wrap: anywhere; white-space: pre-wrap; }
+.creator-markdown { min-width: 0; max-width: 100%; white-space: normal; }
+.creator-markdown > :first-child { margin-top: 0; }
+.creator-markdown > :last-child { margin-bottom: 0; }
+.creator-markdown p, .creator-markdown ul, .creator-markdown ol, .creator-markdown blockquote, .creator-markdown pre, .creator-markdown__table { margin: 0 0 16px; }
+.creator-markdown h3, .creator-markdown h4, .creator-markdown h5, .creator-markdown h6 { margin: 24px 0 10px; font-weight: 700; line-height: 1.45; letter-spacing: 0; }
+.creator-markdown h3 { font-size: 19px; }
+.creator-markdown h4 { font-size: 17px; }
+.creator-markdown h5, .creator-markdown h6 { font-size: 16px; }
+.creator-markdown strong { font-weight: 700; }
+.creator-markdown ul, .creator-markdown ol { padding-left: 24px; }
+.creator-markdown ul { list-style: disc; }
+.creator-markdown ol { list-style: decimal; }
+.creator-markdown li + li { margin-top: 6px; }
+.creator-markdown li > p { margin-bottom: 6px; }
+.creator-markdown li > ul, .creator-markdown li > ol { margin-top: 6px; margin-bottom: 6px; }
+.creator-markdown blockquote { padding-left: 16px; border-left: 3px solid var(--color-border); color: var(--color-muted); }
+.creator-markdown a { color: var(--color-action); text-decoration: underline; text-underline-offset: 3px; overflow-wrap: anywhere; }
+.creator-markdown a:focus-visible, .creator-markdown pre:focus-visible, .creator-markdown__table:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 3px; }
+.creator-markdown code { padding: 2px 5px; border-radius: 4px; background: var(--color-surface-inset); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .9em; overflow-wrap: anywhere; }
+.creator-markdown pre { max-width: 100%; overflow-x: auto; padding: 14px 16px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-surface-inset); line-height: 1.6; white-space: pre; }
+.creator-markdown pre code { padding: 0; border-radius: 0; background: transparent; overflow-wrap: normal; }
+.creator-markdown__table { max-width: 100%; overflow-x: auto; }
+.creator-markdown table { width: 100%; border-collapse: collapse; font-size: 14px; line-height: 1.6; }
+.creator-markdown th, .creator-markdown td { min-width: 120px; padding: 9px 12px; border: 1px solid var(--color-border); text-align: left; vertical-align: top; }
+.creator-markdown th { font-weight: 700; background: var(--color-surface-inset); }
+.creator-markdown hr { margin: 24px 0; border: 0; border-top: 1px solid var(--color-border); }
+.creator-markdown .contains-task-list { list-style: none; padding-left: 0; }
+.creator-markdown .task-list-item > input { margin-right: 8px; }
 .creator-message--user { width: fit-content; max-width: 90%; margin-left: auto; }
 .creator-message--user h2 { text-align: right; }
 .creator-message--user .creator-message__text { padding: 16px 20px; border-radius: 20px 20px 4px 20px; background: var(--color-surface-inset); }
@@ -133,7 +161,7 @@
 .creator-message__status, .creator-conversation__status { margin-top: 12px; color: var(--color-muted); font-size: 14px; }
 .creator-conversation__status { display: flex; align-items: center; gap: 9px; min-height: 44px; margin: 0 0 12px; }
 .creator-message--assistant:has(+ .creator-actions) { margin-bottom: 8px; }
-.creator-message--streaming .creator-message__text > p::after { content: ""; display: inline-block; width: 3px; height: 1em; margin-left: 4px; vertical-align: -.1em; background: var(--color-action); }
+.creator-message--streaming .creator-markdown::after { content: ""; display: inline-block; width: 3px; height: 1em; margin-left: 4px; vertical-align: -.1em; background: var(--color-action); }
 .creator-conversation__latest { position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%); white-space: nowrap; box-shadow: var(--shadow-card); }
 .creator-panels { width: 100%; min-width: 0; }
 .creator-panels > .uf-tabs__list { margin: 0 20px; }

@@ -45,7 +45,7 @@ export async function readCurriculumParts(context: RunContext, invocationId: str
 /** Each paid part commits independently. The executor yields before a second new effect. */
 export async function runCurriculumPart<T, R>(context: RunContext, model: ModelPort, input: {
   invocationId: string; phase: string; index: number; request: unknown; instructions: string;
-  instructionVersion?: "curriculum-parts-v2:research-links-v1";
+  instructionVersion?: "curriculum-parts-v2:research-links-v1" | "curriculum-parts-v2:outline-identity-v1";
   outputSchema: z.ZodType<T>; resultSchema: z.ZodType<R>;
   saved: ReadonlyMap<string, SavedCurriculumPart>;
   completedSummary: string;

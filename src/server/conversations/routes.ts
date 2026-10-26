@@ -9,7 +9,8 @@ import {
 import { requireActor } from "../auth/session";
 import { assertSameOrigin, failure, readInput, success } from "../auth/http";
 import { privateResponse } from "../auth/client";
-import { ServiceFault } from "../auth/errors";
+import { ServiceFault, unavailable } from "../auth/errors";
+import { ProviderFailure, publicProviderFault } from "../ai/failure";
 import { conversationService } from "./service";
 
 function keyFor(request: Request): string {
@@ -112,5 +113,9 @@ export async function sendMessageRoute(request: NextRequest, id: string) {
     const receipt = await conversationService.sendMessage(actor, body, key);
     dispatchAfterResponse(actor,receipt.data.run.id);
     return success(receipt.data, receipt.status);
-  } catch (error) { return failure(error, request); }
+  } catch (error) {
+    return failure(error instanceof ProviderFailure
+      ? publicProviderFault(error) ?? unavailable("generation.unavailable")
+      : error, request);
+  }
 }

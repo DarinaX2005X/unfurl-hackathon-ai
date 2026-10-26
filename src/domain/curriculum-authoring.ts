@@ -94,6 +94,7 @@ export const CurriculumAuthoringSnapshotSchema = CurriculumMutationResultSchema.
   generationRun: GenerationRunSchema.nullable(),
   languageRun: AgentTurnRunSchema.nullable(),
   authoringRun: AgentTurnRunSchema.nullable().default(null),
+  conversationRun: AgentTurnRunSchema.nullable().optional(),
 }).superRefine((value, ctx) => {
   if (value.generationRun && (value.generationRun.courseId !== value.artifact.courseId
     || value.generationRun.approvalId !== value.artifact.approval?.id
@@ -106,6 +107,9 @@ export const CurriculumAuthoringSnapshotSchema = CurriculumMutationResultSchema.
   }
   if (value.authoringRun && value.authoringRun.conversationId !== value.draft.conversationId) {
     ctx.addIssue({ code: "custom", path: ["authoringRun"], message: "The authoring request must belong to this curriculum's conversation" });
+  }
+  if (value.conversationRun && value.conversationRun.conversationId !== value.draft.conversationId) {
+    ctx.addIssue({ code: "custom", path: ["conversationRun"], message: "The authoring turn must belong to this curriculum's conversation" });
   }
 });
 export type CurriculumAuthoringSnapshot = z.infer<typeof CurriculumAuthoringSnapshotSchema>;

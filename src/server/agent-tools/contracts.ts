@@ -89,6 +89,8 @@ export const AgentDecisionReceiptSchema = z.object({
   kind: z.literal("decision"), index: z.number().int().nonnegative(), invocationId: IdSchema, decision: PersistedAgentDecisionSchema,
   capturedDraft: CurriculumDraftSchema.nullable(), capturedCourseRevision: RevisionSchema.nullable(),
   preparationError: z.string().min(1).max(200).nullable(),
+  // Only newly prepared creation receipts opt in; historical receipts retain their producer.
+  outlineIdentityPolicy: z.literal("server-assigned-v1").optional(),
 }).strict();
 export type AgentDecisionReceipt = z.infer<typeof AgentDecisionReceiptSchema>;
 

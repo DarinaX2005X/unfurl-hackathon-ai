@@ -58,6 +58,9 @@ it.skipIf(process.env.RUN_LIVE_CURRICULUM !== "1")("persists researched courses,
       summary: "Question intent fixture", draft: draftC, evidence: { ...fixture.evidence, contentDigest: await curriculumDigest(draftC) }, facts: fixture.facts });
     await expect(requireDraft(tx, randomUUID(), ids.draftA)).rejects.toMatchObject({ status: 404 });
 
+    await expect(approveInTransaction(tx, { ownerId, draftId: ids.draftA, expectedRevision: 1, contentDigest: createdA.contentDigest }))
+      .rejects.toMatchObject({ status: 409, messageKey: "curriculum.authoringInProgress" });
+    await tx.query("UPDATE unfurl.agent_turn_runs SET status='succeeded' WHERE id=$1", [ids.turn]);
     const approvedA = await approveInTransaction(tx, { ownerId, draftId: ids.draftA, expectedRevision: 1, contentDigest: createdA.contentDigest });
     const repeatedA = await approveInTransaction(tx, { ownerId, draftId: ids.draftA, expectedRevision: 1, contentDigest: createdA.contentDigest });
     expect(repeatedA.run.id).toBe(approvedA.run.id);
@@ -102,7 +105,6 @@ it.skipIf(process.env.RUN_LIVE_CURRICULUM !== "1")("persists researched courses,
     await expect(approveInTransaction(tx, { ownerId, draftId: ids.draftB, expectedRevision: 1, contentDigest: createdB.contentDigest })).rejects.toMatchObject({ status: 409 });
     expect((await tx.query<{ status: string }>("SELECT status FROM unfurl.generation_runs WHERE id=$1", [approvedB.run.id])).rows[0]?.status).toBe("cancelled");
 
-    await tx.query("UPDATE unfurl.agent_turn_runs SET status='succeeded' WHERE id=$1", [ids.turn]);
     const actor = { id: ownerId, sessionId: randomUUID(), email: null };
     const service = createCurriculumService({ transaction: (work) => work(tx), admission: { assertAvailable: async () => undefined } });
     const languageKey = randomUUID();
@@ -130,7 +132,7 @@ it.skipIf(process.env.RUN_LIVE_CURRICULUM !== "1")("persists researched courses,
     expect((await readAuthoringSnapshot(tx, ownerId, ids.draftC)).authoringRun?.id).toBe(pending.data.run.id);
     expect((await tx.query<{ changes: unknown }>("SELECT changes FROM unfurl.curriculum_patch_intents WHERE run_id=$1", [pending.data.run.id])).rows[0]?.changes).toEqual(patchInput.changes);
     await expect(approveInTransaction(tx, { ownerId, draftId: ids.draftC, expectedRevision: 1, contentDigest: await curriculumDigest(draftC) }))
-      .rejects.toMatchObject({ status: 409, messageKey: "curriculum.reviewInProgress" });
+      .rejects.toMatchObject({ status: 409, messageKey: "curriculum.authoringInProgress" });
     await tx.query("SET CONSTRAINTS ALL IMMEDIATE");
     throw rollback;
   })).rejects.toBe(rollback);

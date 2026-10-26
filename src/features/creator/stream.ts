@@ -157,6 +157,7 @@ export function canApproveCurriculum(state: CreatorStreamState, courseId: string
   const draft = artifact?.curriculum;
   const required = state.approvalRequired[courseId];
   return Boolean(draft && draft.id === draftId && draft.revision === revision && required?.id === draftId && required.revision === revision
+    && !["queued", "running"].includes(state.run.status)
     && artifact?.approvalRequestedRevision === revision && !(artifact.approval?.draftId === draftId && artifact.approval.draftRevision === revision)
     && !state.pendingSnapshotCourseIds.includes(courseId) && !draft.unresolvedQuestions.some((question) => question.blocking) && validateCurriculum(draft).length === 0);
 }

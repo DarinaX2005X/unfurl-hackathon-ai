@@ -9,11 +9,12 @@ import type { CurriculumPort } from "@/application/curriculum-port";
 import { httpCurriculum } from "@/application/http-curriculum";
 import type { CourseArtifactRef, EditCourseMetadata } from "@/domain/chat";
 import type { CurriculumApproval } from "@/domain/course";
+import type { AgentTurnRun } from "@/domain/generation";
 import type { CurriculumAuthoringSnapshot } from "@/domain/curriculum-authoring";
 import type { CourseDetailResult } from "@/domain/catalog";
 import { accountScope } from "@/features/account/account-scope";
 import { routes } from "@/lib/routes";
-import { CurriculumPanel, type ApproveCurriculum } from "./CurriculumPanel";
+import { CurriculumApprovalFailure, CurriculumPanel, type ApproveCurriculum } from "./CurriculumPanel";
 import { CurriculumEditor } from "./CurriculumEditor";
 import { createCurriculumEditBuffer, curriculumPatchForBuffer, rebaseCurriculumPatch, type CurriculumEditBuffer } from "./curriculum-editor";
 import { editExistingCourseMetadata } from "./artifact-mutations";
@@ -36,6 +37,7 @@ interface Props {
   curriculumPort?: CurriculumPort;
   catalog?: CatalogPort;
   awaitingSnapshotCourseIds?: string[];
+  conversationRun?: AgentTurnRun | null;
 }
 
 interface AuthoringEntry { status: "loading" | "ready" | "error"; snapshot: CurriculumAuthoringSnapshot | null }
@@ -48,7 +50,7 @@ function errorMessage(code?: string): string {
   return "The change could not be confirmed. Your edits are still here.";
 }
 
-export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onSelect, getCurrentArtifact, onArtifactChange, onApproval, onApprove, onEditMetadata, curriculumPort = httpCurriculum, catalog = httpCatalog, awaitingSnapshotCourseIds = [] }: Props) {
+export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onSelect, getCurrentArtifact, onArtifactChange, onApproval, onApprove, onEditMetadata, curriculumPort = httpCurriculum, catalog = httpCatalog, awaitingSnapshotCourseIds = [], conversationRun = null }: Props) {
   const selected = artifacts.find((artifact) => artifact.courseId === selectedCourseId) ?? artifacts[0];
   const [authoring, setAuthoring] = useState<Record<string, AuthoringEntry>>({});
   const [programCourseId, setProgramCourseId] = useState<string | null>(null);
@@ -105,7 +107,8 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
   useEffect(() => {
     if (!actorId || !selected || !selectedDraftId) return;
     const snapshot = authoring[selected.courseId]?.snapshot;
-    if (snapshot?.draft.id === selectedDraftId && snapshot.draft.revision === selectedDraftRevision) return;
+    const runChanged = conversationRun && (snapshot?.conversationRun?.id !== conversationRun.id || snapshot.conversationRun?.status !== conversationRun.status);
+    if (snapshot?.draft.id === selectedDraftId && snapshot.draft.revision === selectedDraftRevision && !runChanged) return;
     const courseId = selected.courseId;
     const request = accountScope.request(actorId);
     void curriculumPort.getCurriculum(selectedDraftId, request.signal).then(async (result) => {
@@ -118,9 +121,9 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
       await onArtifactChange(result.data.artifact);
     }).catch(() => { if (request.isCurrent()) setAuthoring((current) => ({ ...current, [courseId]: { status: "error", snapshot: current[courseId]?.snapshot ?? null } })); }).finally(request.release);
     return request.abort;
-    // The selected draft identity/revision is the fetch boundary; authoring updates are deliberately excluded.
+    // Refresh when the selected draft or conversation run changes; local snapshot writes do not retrigger the fetch.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [actorId, selected?.courseId, selectedDraftId, selectedDraftRevision, curriculumPort]);
+  }, [actorId, selected?.courseId, selectedDraftId, selectedDraftRevision, curriculumPort, conversationRun?.id, conversationRun?.status]);
 
   const readyVersionId = selected?.readyVersionId;
   async function fetchReady(courseId: string, versionId: string) {
@@ -304,6 +307,12 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
   const snapshot = snapshotCandidate && selected.curriculum && snapshotCandidate.draft.id === selected.curriculum.id
     && snapshotCandidate.draft.revision === selected.curriculum.revision ? snapshotCandidate : null;
   const curriculum = snapshot?.draft ?? selected.curriculum;
+  const liveConversationRun = conversationRun?.conversationId === curriculum?.conversationId ? conversationRun : null;
+  const savedConversationRun = snapshot?.conversationRun;
+  const snapshotAuthoringActive = Boolean(savedConversationRun && ["queued", "running"].includes(savedConversationRun.status)
+    && !(liveConversationRun?.id === savedConversationRun.id && liveConversationRun.lastSeq >= savedConversationRun.lastSeq
+      && !["queued", "running"].includes(liveConversationRun.status)));
+  const conversationAuthoringActive = snapshotAuthoringActive || Boolean(liveConversationRun && ["queued", "running"].includes(liveConversationRun.status));
   const programEdit = programCourseId ? edits[programCourseId] : undefined;
   const metadataArtifact = metadataCourseId ? artifacts.find((item) => item.courseId === metadataCourseId) : undefined;
   const languageArtifact = languageCourseId ? artifacts.find((item) => item.courseId === languageCourseId) : undefined;
@@ -409,7 +418,14 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
     const request = accountScope.request(actorId);
     try {
       const result = await curriculumPort.approveCurriculum(input.draftId, { expectedRevision: input.revision, contentDigest: input.contentDigest }, { idempotencyKey: key, signal: request.signal });
-      if (!request.isCurrent() || !result.ok) throw new Error(result.ok ? "stale account" : result.error.error.code);
+      if (!request.isCurrent()) throw new Error("stale account");
+      if (!result.ok) {
+          const messageKey = result.error.error.messageKey;
+          if (["curriculum.authoringInProgress", "curriculum.reviewInProgress", "curriculum.changed", "curriculum.researchRequired"].includes(messageKey)) {
+          await fetchAuthoring(input.courseId, input.draftId, true);
+        }
+          throw new CurriculumApprovalFailure(messageKey);
+      }
       if (!await onArtifactChange(result.data.artifact)) throw new Error("artifact changed");
       setAuthoring((current) => current[input.courseId]?.snapshot ? { ...current, [input.courseId]: { status: "ready", snapshot: { ...current[input.courseId]!.snapshot!, artifact: result.data.artifact, generationRun: result.data.run } } } : current);
       setApprovalKeys((current) => { const next = { ...current }; delete next[keyId]; return next; });
@@ -417,6 +433,7 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
     } finally { request.release(); }
   } : undefined);
   const approveAndRetain: ApproveCurriculum | undefined = approve ? async (input) => {
+      if (conversationAuthoringActive) throw new CurriculumApprovalFailure("curriculum.authoringInProgress");
     const receipt = await approve(input);
     if (onApprove && !await onApproval(input.courseId, receipt)) throw new Error("This program changed before approval was confirmed");
     return receipt;
@@ -518,7 +535,8 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
     </header>
     {selectedAuthoring?.status === "error" && <Notice tone="warning" action={<Button variant="quiet" size="compact" onClick={() => curriculum && void fetchAuthoring(selected.courseId, curriculum.id, true)}>Try again</Button>}>Live research and build status could not be loaded. The saved program is still shown.</Notice>}
     {curriculum ? <CurriculumPanel key={selected.courseId} draft={curriculum} currentRevision={curriculum.revision}
-      awaitingApproval={selected.approvalRequestedRevision === curriculum.revision && !awaitingSnapshotCourseIds.includes(selected.courseId)} approval={snapshot?.artifact.approval ?? selected.approval} showTitle={false}
+      awaitingApproval={selected.approvalRequestedRevision === curriculum.revision && !awaitingSnapshotCourseIds.includes(selected.courseId) && (!actorId || snapshot !== null)} approval={snapshot?.artifact.approval ?? selected.approval} showTitle={false}
+      conversationAuthoringActive={conversationAuthoringActive}
       {...(snapshot ? { evidence: snapshot.evidence, generationRun: generation?.run ?? snapshot.generationRun, languageRun: snapshot.languageRun } : {})}
       {...(generation ? { generation } : {})}
       generationConnectionError={Boolean(generationError[selected.courseId])} cancelPending={cancelPending}

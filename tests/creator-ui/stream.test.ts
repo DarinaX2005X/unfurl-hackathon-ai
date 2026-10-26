@@ -195,10 +195,11 @@ describe("conversation turns and independently versioned course artifacts", () =
     const state = hydrate(waiting, [artifact(), artifact(courseB)]);
     const workingB = apply(state, event(2, { type: "outline.updated", courseId: courseB, draftId: ids.missing, revision: 2 }));
     expect(workingB.pending).toBe(true);
-    expect(canApproveCurriculum(workingB, ids.course, ids.draft, 1)).toBe(true);
+    expect(canApproveCurriculum(workingB, ids.course, ids.draft, 1)).toBe(false);
     const completed = apply(workingB, event(3, { type: "run.completed" }));
     expect(completed.artifacts.every((item) => item.readyVersionId === null)).toBe(true);
     expect(completed.pending).toBe(false);
+    expect(canApproveCurriculum(completed, ids.course, ids.draft, 1)).toBe(true);
   });
 
   it("pauses the turn only on an explicit awaiting-user event", () => {
@@ -211,13 +212,14 @@ describe("conversation turns and independently versioned course artifacts", () =
     const awaiting = apply(initial(), event(1, { type: "approval.required", courseId: ids.course, draftId: ids.draft, revision: 1 }));
     expect(canApproveCurriculum(awaiting, ids.course, ids.draft, 1)).toBe(false);
     const v1 = hydrate(awaiting, [artifact()]);
-    expect(canApproveCurriculum(v1, ids.course, ids.draft, 1)).toBe(true);
+    expect(canApproveCurriculum(v1, ids.course, ids.draft, 1)).toBe(false);
     const change = apply(v1, event(2, { type: "outline.updated", courseId: ids.course, draftId: ids.draft, revision: 2 }));
     const stale = hydrate(change, [artifact()]);
     expect(stale.needsSnapshot).toBe(true);
     expect(canApproveCurriculum(stale, ids.course, ids.draft, 1)).toBe(false);
     const v2 = hydrate(stale, [artifact(ids.course, 2)]);
-    expect(canApproveCurriculum(v2, ids.course, ids.draft, 2)).toBe(true);
+    expect(canApproveCurriculum(v2, ids.course, ids.draft, 2)).toBe(false);
+    expect(canApproveCurriculum(apply(v2, event(3, { type: "run.completed" })), ids.course, ids.draft, 2)).toBe(true);
     expect(hydrate(v2, [artifact()]).artifacts[0]?.revision).toBe(2);
     const acknowledged = hydrate(v2, [{ ...artifact(ids.course, 2), approvalRequestedRevision: null }]);
     expect(canApproveCurriculum(acknowledged, ids.course, ids.draft, 2)).toBe(false);

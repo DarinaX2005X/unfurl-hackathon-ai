@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { renderToStaticMarkup } from "react-dom/server";
-import { approveDisplayedCurriculum, CurriculumPanel } from "../../src/features/creator/CurriculumPanel";
+import { approveDisplayedCurriculum, CurriculumApprovalFailure, curriculumApprovalErrorMessage, CurriculumPanel } from "../../src/features/creator/CurriculumPanel";
 import { curriculum, ids, timestamp } from "../domain/fixtures";
 import { curriculumDigest, type CurriculumApproval } from "../../src/domain/course";
 import type { CurriculumEvidencePublic } from "../../src/domain/curriculum-authoring";
@@ -8,6 +8,54 @@ import type { GenerationRun } from "../../src/domain/generation";
 import { createGenerationStreamState } from "../../src/features/creator/generation-stream";
 
 describe("program review", () => {
+  it.each([
+    ["generation.rateLimited", "Generation is busy", "budget"],
+    ["generation.budgetExhausted", "available generation budget", "Generation is busy"],
+    ["curriculum.authoringInProgress", "still finishing", "budget"],
+    ["curriculum.reviewInProgress", "edits are still being checked", "budget"],
+    ["curriculum.changed", "Review the latest version", "budget"],
+    ["curriculum.researchRequired", "research check is not complete", "budget"],
+    ["generation.timeout", "request timed out", "budget"],
+    ["generation.unavailable", "temporarily unavailable", "budget"],
+    ["curriculum.unavailable", "temporarily unavailable", "budget"],
+  ])("preserves actionable approval failure %s without conflating the cause", async (messageKey, expected, absent) => {
+    const failure = new CurriculumApprovalFailure(messageKey);
+    let caught: unknown;
+    try { await approveDisplayedCurriculum(curriculum(), () => ({ id: ids.draft, revision: 1 }), async () => { throw failure; }); }
+    catch (error) { caught = error; }
+    expect(caught).toBe(failure);
+    expect(failure.messageKey).toBe(messageKey);
+    const message = curriculumApprovalErrorMessage(caught);
+    expect(message).toContain(expected);
+    expect(message).not.toContain(absent);
+    expect(message).not.toContain(messageKey);
+  });
+  it("keeps unknown failures generic and never exposes arbitrary upstream text", () => {
+    for (const error of [new Error("upstream-private-response"), new CurriculumApprovalFailure("unknown.private.key"), { message: "untrusted failure" }]) {
+      expect(curriculumApprovalErrorMessage(error)).toBe("Approval could not be confirmed. Review the current program and try again.");
+    }
+  });
+  it("blocks approval while the conversation agent can still revise any course", () => {
+    const html = renderToStaticMarkup(<CurriculumPanel draft={curriculum()} currentRevision={1} awaitingApproval onApprove={vi.fn()} conversationAuthoringActive />);
+    expect(html).toContain("still finishing the course program");
+    const approval = html.indexOf("Approve version");
+    expect(html.slice(html.lastIndexOf("<button", approval), approval)).toContain("disabled");
+  });
+  it("rejects submission while authoring and after authoring starts during digest calculation", async () => {
+    const approve = vi.fn();
+    await expect(approveDisplayedCurriculum(curriculum(), () => ({ id: ids.draft, revision: 1, authoringActive: true }), approve)).rejects.toThrow("still finishing");
+    let reads = 0;
+    await expect(approveDisplayedCurriculum(curriculum(), () => ({ id: ids.draft, revision: 1, authoringActive: ++reads >= 3 }), approve)).rejects.toThrow("still finishing");
+    expect(approve).not.toHaveBeenCalled();
+  });
+  it("describes a queued build as preparation instead of claiming research has started", () => {
+    const run: GenerationRun = { id: ids.request, ownerId: ids.actor, courseId: ids.course, conversationId: ids.conversation,
+      branchId: ids.sample, inputMessageId: ids.task, sourceDraftRevision: 1, approvalId: ids.approval, phase: "module_research",
+      status: "queued", lastSeq: 1, outputVersionId: null, error: null, createdAt: timestamp, updatedAt: timestamp };
+    const html = renderToStaticMarkup(<CurriculumPanel draft={curriculum()} currentRevision={1} generationRun={run} />);
+    expect(html).toContain("Preparing to build your course");
+    expect(html).not.toContain("Researching each section");
+  });
   it("renders actual prerequisites, sequence, and the displayed revision for approval", () => {
     const html = renderToStaticMarkup(<CurriculumPanel draft={curriculum()} currentRevision={1} awaitingApproval onApprove={vi.fn()} />);
     expect(html).toContain("Basic algebra");

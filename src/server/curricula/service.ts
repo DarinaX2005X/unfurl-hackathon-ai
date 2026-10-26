@@ -159,6 +159,7 @@ export function createCurriculumService(options: CurriculumServiceOptions = {}) 
         data: await repository.approveInTransaction(tx, { ownerId: actor.id, draftId, ...input }) }));
       if (receipt.replayed) await transaction(async (tx) => {
         const { draft } = await repository.requireDraft(tx, actor.id, draftId, true);
+        await repository.requireIdleAuthoringConversation(tx, actor.id, draft);
         await repository.assertNoPendingPatch(tx, actor.id, draftId);
         if (draft.revision !== input.expectedRevision || await curriculumDigest(draft) !== input.contentDigest) throw repository.curriculumConflict(draft.revision);
       });

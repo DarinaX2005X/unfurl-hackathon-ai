@@ -5,6 +5,7 @@ import { ArrowDown, Check, ChevronRight, Copy, Pencil, RotateCcw, CircleAlert } 
 import { Button, IconButton } from "@/components/ui";
 import type { ActionEvent } from "@/domain/generation";
 import type { LocalMessage } from "@/domain/chat";
+import { AssistantMarkdown } from "./AssistantMarkdown";
 import { actionFactLines, actionLabel, actionResultSummary, collectActions, conversationTimeline, isCourseProgramAction, sourceLink, type ConversationAction } from "./conversation-timeline";
 
 export interface ConversationProps {
@@ -61,7 +62,7 @@ export function Conversation({ messages, actionEvents = [], currentRunId = null,
         const message = item.message;
         return <article className={`creator-message creator-message--${message.role}${message.status === "streaming" ? " creator-message--streaming" : ""}`} key={message.id}>
         <h2>{message.role === "user" ? "You" : "Unfurl"}</h2>
-        <div className="creator-message__text"><p>{message.text}</p></div>
+        <div className="creator-message__text">{message.role === "assistant" ? <AssistantMarkdown text={message.text} /> : <p>{message.text}</p>}</div>
         {message.role === "user" && message.delivery !== "accepted" && <div className="creator-message__delivery">
           <p>{message.delivery === "sending" ? "Sending…" : message.error?.messageKey === "chat.deliveryUnknown" ? "Delivery wasn’t confirmed" : "Not sent"}</p>
           {(message.delivery === "failed" || message.delivery === "not_sent") && <>

@@ -81,11 +81,11 @@ export async function requireCourseDraft(tx: DbTransaction, ownerId: string, cou
   if (!row) throw missingCurriculum();
   return requireDraft(tx, ownerId, row.id, lock);
 }
-export async function requireAuthoringConversation(tx: DbTransaction, ownerId: string, draft: CurriculumDraft, lock: "share" | "update" = "share"): Promise<{ branchId: string; inputMessageId: string }> {
+export async function requireAuthoringConversation(tx: DbTransaction, ownerId: string, draft: CurriculumDraft, lock: "share" | "update" | "approval" = "share"): Promise<{ branchId: string; inputMessageId: string }> {
   const row = (await tx.query<{ active_branch_id: string; input_message_id: string | null }>(`SELECT c.active_branch_id,
     (SELECT m.id FROM unfurl.messages m WHERE m.conversation_id=c.id AND m.branch_id=c.active_branch_id AND m.role='user' AND m.status='complete'
       ORDER BY m.created_at DESC,m.id DESC LIMIT 1) AS input_message_id
-    FROM unfurl.conversations c WHERE c.id=$1 AND c.owner_id=$2 AND c.deleted_at IS NULL ${lock === "update" ? "FOR UPDATE" : "FOR SHARE"} OF c`, [draft.conversationId, ownerId])).rows[0];
+    FROM unfurl.conversations c WHERE c.id=$1 AND c.owner_id=$2 AND c.deleted_at IS NULL ${lock === "update" ? "FOR UPDATE OF c" : lock === "approval" ? "FOR SHARE OF c NOWAIT" : "FOR SHARE OF c"}`, [draft.conversationId, ownerId])).rows[0];
   if (!row?.input_message_id) throw missingCurriculum();
   return { branchId: row.active_branch_id, inputMessageId: row.input_message_id };
 }
@@ -99,7 +99,7 @@ export async function readArtifact(tx: DbTransaction, ownerId: string, courseId:
     revision: course.revision, curriculum: draft, approval: row ? approvalFromRow(row) : null, approvalRequestedRevision: request?.approval_requested_revision ?? null,
     readyVersionId: course.currentReadyVersionId, updatedAt: course.updatedAt > draft.updatedAt ? course.updatedAt : draft.updatedAt });
 }
-export async function readCurrentRuns(tx: DbTransaction, ownerId: string, artifact: CourseArtifactRef): Promise<{ generationRun: GenerationRun | null; languageRun: AgentTurnRun | null; authoringRun: AgentTurnRun | null }> {
+export async function readCurrentRuns(tx: DbTransaction, ownerId: string, artifact: CourseArtifactRef): Promise<{ generationRun: GenerationRun | null; languageRun: AgentTurnRun | null; authoringRun: AgentTurnRun | null; conversationRun: AgentTurnRun | null }> {
   const draft = artifact.curriculum;
   let generationRun: GenerationRun | null = null;
   if (draft && artifact.approval) {
@@ -114,7 +114,11 @@ export async function readCurrentRuns(tx: DbTransaction, ownerId: string, artifa
   const authoring = (await tx.query<TurnRow>(`SELECT r.* FROM unfurl.curriculum_patch_intents intent
     JOIN unfurl.agent_turn_runs r ON r.id=intent.run_id AND r.owner_id=intent.owner_id
     WHERE intent.owner_id=$1 AND intent.draft_id=$2 ORDER BY intent.created_at DESC,intent.run_id DESC LIMIT 1`, [ownerId, draft?.id ?? null])).rows[0];
-  return { generationRun, languageRun: language ? turnFromRow(language) : null, authoringRun: authoring ? turnFromRow(authoring) : null };
+  const conversation = draft ? (await tx.query<TurnRow>(`SELECT * FROM unfurl.agent_turn_runs
+    WHERE owner_id=$1 AND conversation_id=$2
+    ORDER BY (status IN ('queued','running')) DESC,created_at DESC,id DESC LIMIT 1`, [ownerId, draft.conversationId])).rows[0] : null;
+  return { generationRun, languageRun: language ? turnFromRow(language) : null, authoringRun: authoring ? turnFromRow(authoring) : null,
+    conversationRun: conversation ? turnFromRow(conversation) : null };
 }
 
 export async function mutationResult(tx: DbTransaction, ownerId: string, courseId: string): Promise<CurriculumMutationResult> {
@@ -184,15 +188,30 @@ export async function assertNoPendingPatch(tx: DbTransaction, ownerId: string, d
     WHERE intent.owner_id=$1 AND intent.draft_id=$2 AND r.status IN ('queued','running') LIMIT 1`, [ownerId, draftId])).rows[0];
   if (pending) throw new ServiceFault(409, "revision_conflict", "curriculum.reviewInProgress");
 }
+/** Course/draft locks precede this gate. NOWAIT avoids a cycle with an intent retry holding the conversation before its draft.
+ * Every new turn and retry takes conversation FOR UPDATE, so no authoring acceptance can cross the held share gate. */
+export async function requireIdleAuthoringConversation(tx: DbTransaction, ownerId: string, draft: CurriculumDraft) {
+  let conversation: Awaited<ReturnType<typeof requireAuthoringConversation>>;
+  try { conversation = await requireAuthoringConversation(tx, ownerId, draft, "approval"); }
+  catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "55P03")
+      throw new ServiceFault(409, "revision_conflict", "curriculum.authoringInProgress");
+    throw error;
+  }
+  const active = (await tx.query(`SELECT id FROM unfurl.agent_turn_runs
+    WHERE owner_id=$1 AND conversation_id=$2 AND status IN ('queued','running') LIMIT 1`, [ownerId, draft.conversationId])).rows[0];
+  if (active) throw new ServiceFault(409, "revision_conflict", "curriculum.authoringInProgress");
+  return conversation;
+}
 export async function approveInTransaction(tx: DbTransaction, input: { ownerId: string; draftId: string; expectedRevision: number; contentDigest: string }) {
   const { course, draft } = await requireDraft(tx, input.ownerId, input.draftId, true);
+  const conversation = await requireIdleAuthoringConversation(tx, input.ownerId, draft);
   await assertNoPendingPatch(tx, input.ownerId, draft.id);
   const digest = await curriculumDigest(draft);
   if (draft.revision !== input.expectedRevision || digest !== input.contentDigest) throw curriculumConflict(draft.revision);
   if (validateCurriculumOrder(draft).length) throw invalidCurriculum();
   const research = await new PostgresCurriculumResearchRepository().loadEvidence(tx, { draft, ownerId: input.ownerId });
   if ((await validateCurriculumEvidence(draft, research.evidence, research.facts)).length) throw researchRequired(draft.revision);
-  const conversation = await requireAuthoringConversation(tx, input.ownerId, draft);
   let approvalRow = (await tx.query<ApprovalRow>(`SELECT * FROM unfurl.curriculum_approvals
     WHERE draft_id=$1 AND draft_revision=$2 AND content_digest=$3 AND approved_by=$4`, [draft.id, draft.revision, digest, input.ownerId])).rows[0];
   if (!approvalRow) approvalRow = (await tx.query<ApprovalRow>(`INSERT INTO unfurl.curriculum_approvals(id,draft_id,draft_revision,content_digest,approved_by)

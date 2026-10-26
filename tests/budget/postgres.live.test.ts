@@ -73,7 +73,7 @@ describe.skipIf(!live)("actual migrated budget ledger (rollback fixtures)", () =
     await expect(ledger.releaseUnsent(one)).rejects.toThrow("provider.unavailable");
     const request = input(); const two = await ledger.reserve(request); await ledger.claimDispatch(two);
     const receipt = response(); await ledger.recordResponse(two, receipt, null);
-    await expect(ledger.reserve(input())).rejects.toThrow("provider.budget_exhausted");
+    await expect(ledger.reserve(input())).rejects.toThrow("provider.rate_limited");
     expect(await counters()).toEqual({ spent: "0", held: "20000", halted: false });
     const evidence = { providerRequestId: receipt.providerRequestId!, digest: "d".repeat(64), finalCostMicroUsd: "1200" };
     await ledger.reconcile(two, evidence); await ledger.reconcile(two, evidence);

@@ -81,7 +81,8 @@ export class PostgresBudget implements BudgetPort {
   async assertAvailable(options: { probe: boolean }): Promise<void> {
     await this.transaction(async (tx) => {
       const state = await this.state(tx, await this.lock(tx));
-      if (!canReserve(state, 1n, options.probe).allowed) throw new ProviderFailure("budget_exhausted");
+      const admission = canReserve(state, 1n, options.probe);
+      if (!admission.allowed) throw new ProviderFailure(admission.reason === "concurrency" ? "rate_limited" : "budget_exhausted");
     });
   }
   /** Resolve an already allocated operation before rebuilding its exact request bytes. */
@@ -125,7 +126,8 @@ export class PostgresBudget implements BudgetPort {
           canonicalJson(prior.rate_card) !== canonicalJson(request.rateCard)) throw unavailable();
         return reservation(prior);
       }
-      if (!canReserve(await this.state(tx, campaign), amount, request.probe).allowed) throw new ProviderFailure("budget_exhausted");
+      const admission = canReserve(await this.state(tx, campaign), amount, request.probe);
+      if (!admission.allowed) throw new ProviderFailure(admission.reason === "concurrency" ? "rate_limited" : "budget_exhausted");
       const row = (await tx.query<OperationRow>(`INSERT INTO unfurl.ai_provider_operations
         (id,budget_id,logical_operation_id,attempt,run_step_id,request_digest,purpose,state,reserved_micro_usd,model_id,provider_tag,rate_card_digest,rate_card)
         VALUES ($1,$2,$3,$4,$5,$6,$7,'reserved',$8,$9,$10,$11,$12) RETURNING *`,

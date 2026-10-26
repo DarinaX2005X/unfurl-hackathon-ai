@@ -26,6 +26,17 @@ const render = (messages: LocalMessage[], events: ActionEvent[], pending = false
 );
 
 describe("natural conversation presentation", () => {
+  it("renders assistant responses and streaming commentary as Markdown while keeping user text literal", () => {
+    const messages = [message("user", "### Keep **my input** literal", "user"),
+      message("answer", "### Curriculum\n\n**A complete learning route.**"),
+      { ...message("commentary", "I’m checking **primary sources**."), status: "streaming" as const }];
+    const html = render(messages, [], true);
+    expect(html).toContain("### Keep **my input** literal");
+    expect(html).toContain("<h3>Curriculum</h3>");
+    expect(html).toContain("<strong>A complete learning route.</strong>");
+    expect(html).toContain("<strong>primary sources</strong>");
+    expect(html).toContain("creator-message--streaming");
+  });
   it("interleaves commentary and anchored action groups even with identical timestamps and replayed events", () => {
     const messages = [message("user", "Teach me", "user"), message("intro", "I’ll find sources."), message("finding", "Here is what I found.")];
     const events = [completed(2, "search"), started(1, "search", "intro"), started(3, "read", "finding")];

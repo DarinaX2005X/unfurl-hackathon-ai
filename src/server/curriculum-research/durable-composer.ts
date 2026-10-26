@@ -14,6 +14,7 @@ import { briefEvidenceDigest, moduleEvidenceDigest, outcomeEvidenceDigest, valid
 import { persistPartFacts, readCurriculumParts, runCurriculumPart } from "./part-runtime";
 import { CurriculumValidationFailure } from "./validation-feedback";
 import { STRICT_RESEARCH_LINK_INSTRUCTIONS, type CurriculumInstructionPolicy } from "./instruction-policy";
+import { materializeOutlineProposal, OUTLINE_PROPOSAL_INSTRUCTIONS, OutlineProposalSchema } from "./outline-proposal";
 import { ContentPageSchema, CourseHeaderSchema, QuestionBatchSchema, QuestionPartSchema, ResearchBatchSchema, ResearchPartSchema,
   RoadmapPageSchema, TranslatedAssumptionsSchema, TranslatedHeaderSchema, TranslatedModulesSchema, TranslatedOutcomesSchema,
   TranslatedQuestionsSchema, type QuestionPart, type ResearchPart, type RoadmapSection } from "./part-contracts";
@@ -22,6 +23,7 @@ type CurriculumDecision = Extract<AgentDecision, { tool: "create_course" | "revi
 export interface DurableCompositionInput {
   invocationId: string; decision: CurriculumDecision; capturedDraft: CurriculumDraft | null; now: string; sources: SelectedSource[];
   researchInstructionPolicy?: CurriculumInstructionPolicy;
+  outlineIdentityPolicy?: "server-assigned-v1";
 }
 interface ResearchScope { title: string; outcomes: Outcome[]; modules: ModuleOutline[]; sources: SelectedSource[] }
 const invalid = (): never => { throw new ProviderFailure("invalid_output"); };
@@ -107,10 +109,26 @@ export async function composeDurableCurriculum(context: RunContext, model: Model
           outcomes: scope.outcomes.filter((outcome) => exits.has(outcome.id)).map(({ id, title }) => ({ id, title })) };
       });
       for (;;) {
-        const page: z.infer<typeof ContentPageSchema> = await simplePart("outline", contentPage++, { header, section, prerequisites, continuation,
+        const pageIndex = contentPage++;
+        const outlineRequest = { header, section, prerequisites, continuation,
           priorOutcomes: sectionOutcomes.slice(-12).map(({ id, title }) => ({ id, title })),
           priorModules: sectionModules.slice(-6).map(({ id, title, outcomeIds }) => ({ id, title, outcomeIds })),
-          sources: sourceInput(sources) }, ContentPageSchema,
+          sources: sourceInput(sources) };
+        const page: z.infer<typeof ContentPageSchema> = input.outlineIdentityPolicy === "server-assigned-v1"
+          ? await runCurriculumPart(context, model, { invocationId: input.invocationId, phase: "outline", index: pageIndex,
+            request: outlineRequest, saved, outputSchema: OutlineProposalSchema, resultSchema: ContentPageSchema,
+            instructions: OUTLINE_PROPOSAL_INSTRUCTIONS, instructionVersion: "curriculum-parts-v2:outline-identity-v1",
+            completedSummary: `Outlined the next part of “${section.title}”.`,
+            commit: async (_tx, proposal) => materializeOutlineProposal({ invocationId: input.invocationId, sectionKey: section.key,
+              pageIndex, proposal,
+              existingOutcomeIds: [...outlineRequest.priorOutcomes.map(item => item.id),
+                ...outlineRequest.priorModules.flatMap(item => item.outcomeIds), ...prerequisites.flatMap(scope => scope.outcomes.map(item => item.id)),
+                ...prerequisites.flatMap(scope => scope.modules.flatMap(item => item.outcomeIds))],
+              existingModuleIds: [...outlineRequest.priorModules.map(item => item.id), ...prerequisites.flatMap(scope => scope.modules.map(item => item.id))],
+              occupiedIds: [...outcomes.map(item => item.id), ...modules.map(item => item.id)],
+            }),
+          })
+          : await simplePart("outline", pageIndex, outlineRequest, ContentPageSchema,
         `Develop the full scope of this section into concrete outcomes and prerequisite-first modules. Return only the next bounded portion, using new distinct UUIDs for every new outcome and module. Keep each field within its schema. Reference existing prerequisite IDs only from the supplied saved context, or new IDs declared on this page. Preserve depth, prerequisite practice and every requested capability; do not compress the scope into a survey because this response is finite. If more modules or outcomes are needed for this section, return complete=false and describe the remaining work in nextFocus, carrying useful IDs needed by the next page. Continue only with new items. Complete the section only when its entire scope is represented. Each outcome must be taught in a module. Use the prerequisite section frontier in the module dependency graph. Lessons themselves are built only after the user's later approval.`,
         `Outlined the next part of “${section.title}”.`);
         const knownOutcomes = new Set(outcomes.map((outcome) => outcome.id));

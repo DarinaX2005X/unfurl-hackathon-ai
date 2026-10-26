@@ -12,19 +12,44 @@ import type { GenerationStreamState } from "./generation-stream";
 export interface ApproveCurriculumInput { courseId: string; draftId: string; revision: number; contentDigest: string }
 export type ApproveCurriculum = (input: ApproveCurriculumInput) => Promise<CurriculumApproval>;
 
+const unconfirmedApproval = "Approval could not be confirmed. Review the current program and try again.";
+function approvalMessage(messageKey: string): string {
+  switch (messageKey) {
+    case "generation.rateLimited": return "Generation is busy right now. Your program is saved. Wait a moment, then try approving again.";
+    case "generation.budgetExhausted": return "There isn’t enough available generation budget to start this build. Your program is saved. Try again when budget is available.";
+    case "curriculum.authoringInProgress": return "The agent is still finishing the course program. Wait for the response to finish before approving.";
+    case "curriculum.reviewInProgress": return "Your program edits are still being checked. Wait for the check to finish, then review the program before approving.";
+    case "curriculum.changed": return "The program changed. Review the latest version, then approve it again.";
+    case "curriculum.researchRequired": return "The program’s research check is not complete. Review its research status and resolve any open questions before approving again.";
+    case "generation.timeout": return "The approval request timed out. Your program is saved. Check its current status, then try again if approval is still needed.";
+    case "generation.unavailable":
+    case "curriculum.unavailable": return "The generation service is temporarily unavailable. Your program is saved. Try approving again in a moment.";
+    default: return unconfirmedApproval;
+  }
+}
+export class CurriculumApprovalFailure extends Error {
+  constructor(readonly messageKey: string) { super(approvalMessage(messageKey)); this.name = "CurriculumApprovalFailure"; }
+}
+export function curriculumApprovalErrorMessage(error: unknown): string {
+  return error instanceof CurriculumApprovalFailure ? approvalMessage(error.messageKey) : unconfirmedApproval;
+}
+
 export async function approveDisplayedCurriculum(
   draft: CurriculumDraft,
-  current: () => { id: string; revision: number } | null,
+  current: () => { id: string; revision: number; authoringActive?: boolean } | null,
   approve: ApproveCurriculum,
 ): Promise<CurriculumApproval> {
   const matches = () => { const latest = current(); return latest?.id === draft.id && latest.revision === draft.revision; };
+  const assertAuthoringFinished = () => { if (current()?.authoringActive) throw new CurriculumApprovalFailure("curriculum.authoringInProgress"); };
+  assertAuthoringFinished();
   if (!matches() || draft.unresolvedQuestions.some((question) => question.blocking) || validateCurriculum(draft).length > 0) {
     throw new Error("This program needs an up-to-date review before approval.");
   }
   const contentDigest = await curriculumDigest(draft);
-  if (!matches()) throw new Error("The program changed. Review the latest version.");
+  assertAuthoringFinished();
+  if (!matches()) throw new CurriculumApprovalFailure("curriculum.changed");
   const receipt = await approve({ courseId: draft.courseId, draftId: draft.id, revision: draft.revision, contentDigest });
-  if (!matches()) throw new Error("The program changed. Review the latest version.");
+  if (!matches()) throw new CurriculumApprovalFailure("curriculum.changed");
   await assertCurrentApproval(draft, receipt);
   return receipt;
 }
@@ -47,6 +72,7 @@ export interface CurriculumPanelProps {
   retryError?: boolean;
   onRetryBuild?: () => void;
   authoringRun?: AgentTurnRun | null;
+  conversationAuthoringActive?: boolean;
   authoringConnectionError?: boolean;
   authoringCommandPending?: boolean;
   authoringCommandError?: boolean;
@@ -55,30 +81,32 @@ export interface CurriculumPanelProps {
   onEdit?: () => void;
 }
 
-export function CurriculumPanel({ draft, currentRevision, onApprove, approval = null, awaitingApproval = false, showTitle = true, evidence, generationRun = null, languageRun = null, generation, generationConnectionError = false, cancelPending = false, onCancelBuild, retryPending = false, retryError = false, onRetryBuild, authoringRun = null, authoringConnectionError = false, authoringCommandPending = false, authoringCommandError = false, onCancelAuthoring, onRetryAuthoring, onEdit }: CurriculumPanelProps) {
+export function CurriculumPanel({ draft, currentRevision, onApprove, approval = null, awaitingApproval = false, showTitle = true, evidence, generationRun = null, languageRun = null, generation, generationConnectionError = false, cancelPending = false, onCancelBuild, retryPending = false, retryError = false, onRetryBuild, authoringRun = null, conversationAuthoringActive = false, authoringConnectionError = false, authoringCommandPending = false, authoringCommandError = false, onCancelAuthoring, onRetryAuthoring, onEdit }: CurriculumPanelProps) {
   const [pending, setPending] = useState(false);
   const [receipt, setReceipt] = useState<CurriculumApproval | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const currentRef = useRef({ id: draft.id, revision: currentRevision });
-  useEffect(() => { currentRef.current = { id: draft.id, revision: currentRevision }; }, [draft.id, currentRevision]);
+  const authoringActive = Boolean(authoringRun && !["succeeded", "failed", "cancelled"].includes(authoringRun.status));
+  const finishingProgram = conversationAuthoringActive || Boolean(languageRun && ["queued", "running"].includes(languageRun.status));
+  const approvalBlockedByAuthoring = authoringActive || finishingProgram;
+  const currentRef = useRef({ id: draft.id, revision: currentRevision, authoringActive: approvalBlockedByAuthoring });
+  useEffect(() => { currentRef.current = { id: draft.id, revision: currentRevision, authoringActive: approvalBlockedByAuthoring }; }, [draft.id, currentRevision, approvalBlockedByAuthoring]);
   const approved = [approval, receipt].some((value) => value?.draftId === draft.id && value.draftRevision === draft.revision);
   const isCurrent = draft.revision === currentRevision;
   const blockers = draft.unresolvedQuestions.some((question) => question.blocking);
   const valid = validateCurriculum(draft).length === 0;
   const researchReady = evidence === undefined || evidence.status === "verified";
-  const authoringActive = Boolean(authoringRun && !["succeeded", "failed", "cancelled"].includes(authoringRun.status));
   const minutes = draft.modules.reduce((total, module) => total + module.estimatedStudyMinutes, 0);
   const moduleNames = new Map(draft.modules.map((module) => [module.id, module.title]));
 
   async function handleApprove() {
-    if (!onApprove || pending || !isCurrent) return;
+    if (!onApprove || pending || !isCurrent || approvalBlockedByAuthoring) return;
     setPending(true);
     setError(null);
     try {
       const result = await approveDisplayedCurriculum(draft, () => currentRef.current, onApprove);
       setReceipt(result);
-    } catch {
-      setError("Approval could not be confirmed. Review the current program and try again.");
+    } catch (failure) {
+      setError(curriculumApprovalErrorMessage(failure));
     } finally { setPending(false); }
   }
 
@@ -114,6 +142,7 @@ export function CurriculumPanel({ draft, currentRevision, onApprove, approval = 
       </section>}
     </div>
     <footer className="creator-program__footer">
+      {finishingProgram && <Notice tone="info">The agent is still finishing the course program. You can approve it when the response is complete.</Notice>}
       {!isCurrent && <Notice tone="warning">A newer program is being loaded. Review it before approving.</Notice>}
       {evidence?.status === "needs_research" && <Notice tone="info">Your changes are saved. Research support is being refreshed before this version can be approved.</Notice>}
       {evidence?.status === "blocked" && <Notice tone="warning">Research could not verify this program yet. Keep the saved draft and try again when the source issue is resolved.</Notice>}
@@ -136,7 +165,7 @@ export function CurriculumPanel({ draft, currentRevision, onApprove, approval = 
       {error && <Notice tone="error">{error}</Notice>}
       {approved && isCurrent ? <p className="creator-program__approved" role="status"><Check size={18} aria-hidden="true" /> Version {draft.revision} approved</p> : <>
         <p>{blockers ? "Answer the open questions in the conversation before approving." : "Check the scope and sequence before lessons are created."}</p>
-        {onApprove && awaitingApproval && <Button onClick={() => void handleApprove()} pending={pending} disabled={!isCurrent || blockers || !valid || !researchReady || authoringActive}>Approve version {draft.revision}</Button>}
+        {onApprove && awaitingApproval && <Button onClick={() => void handleApprove()} pending={pending} disabled={!isCurrent || blockers || !valid || !researchReady || approvalBlockedByAuthoring}>Approve version {draft.revision}</Button>}
       </>}
     </footer>
   </section>;
@@ -151,6 +180,7 @@ function GenerationFacts({ generation }: { generation: GenerationStreamState }) 
 }
 
 function generationStatus(run: GenerationRun): string {
+  if (run.status === "queued") return "Preparing to build your course…";
   if (run.status === "succeeded") return "Course build complete. The ready course link will appear here shortly.";
   if (run.status === "failed") return "The course build stopped before completion. Your approved program is still saved.";
   if (run.status === "cancelled") return "The course build was cancelled. Your approved program is still saved.";

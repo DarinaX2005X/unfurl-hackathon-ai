@@ -49,7 +49,8 @@ const notInScope = () => new ServiceFault(404, "not_found", "curriculum.notFound
 export async function prepareAgentDecision(tx: DbTransaction, authority: AgentToolAuthority, decision: AgentDecision, index: number,
   intent: ContextSnapshot["languageIntent"] = null): Promise<AgentDecisionReceipt> {
   const receipt: AgentDecisionReceipt = { kind: "decision", index, invocationId: stableExecutionId(authority.runId, `tool:${index}`),
-    decision, capturedDraft: null, capturedCourseRevision: null, preparationError: null };
+    decision, capturedDraft: null, capturedCourseRevision: null, preparationError: null,
+    ...(decision.tool === "create_course" ? { outlineIdentityPolicy: "server-assigned-v1" as const } : {}) };
   try {
     if (intent) {
       if (!["search", "read_source", "read_artifact", "revise_language", "respond"].includes(decision.tool)) throw notInScope();
@@ -97,7 +98,8 @@ function blockOverview(blocks: Array<{ id: string; text: string }>) { return blo
 export function agentToolStepInput(receipt: AgentDecisionReceipt) {
   return jsonValue({ invocationId: receipt.invocationId, index: receipt.index,
     decisionDigest: jsonDigest(receipt.decision, 2 * 1024 * 1024), capturedDraftDigest: receipt.capturedDraft ? jsonDigest(receipt.capturedDraft, 2 * 1024 * 1024) : null,
-    capturedCourseRevision: receipt.capturedCourseRevision, preparationError: receipt.preparationError });
+    capturedCourseRevision: receipt.capturedCourseRevision, preparationError: receipt.preparationError,
+    ...(receipt.outlineIdentityPolicy ? { outlineIdentityPolicy: receipt.outlineIdentityPolicy } : {}) });
 }
 export function curriculumObservationData(snapshot: z.infer<typeof CurriculumAuthoringSnapshotSchema>, page?: Extract<AgentDecision, { tool: "read_artifact" }>["input"]["page"]) {
   const { draft, artifact, evidence } = snapshot;
@@ -124,7 +126,8 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
       if (decision.tool === "create_course" || decision.tool === "revise_curriculum" || decision.tool === "revise_language") {
         const researchInstructionPolicy = await resolveCurriculumInstructionPolicy(context, receipt.invocationId);
         composed = await composeDurableCurriculum(context, dependencies.model, { invocationId: receipt.invocationId,
-          decision, capturedDraft: receipt.capturedDraft, now: snapshot.now, sources, researchInstructionPolicy });
+          decision, capturedDraft: receipt.capturedDraft, now: snapshot.now, sources, researchInstructionPolicy,
+          ...(receipt.outlineIdentityPolicy ? { outlineIdentityPolicy: receipt.outlineIdentityPolicy } : {}) });
       }
     } catch (error) {
       if (error instanceof ProviderFailure && error.code === "invalid_output") compositionFailure = { kind: "failure", code: error.code,
