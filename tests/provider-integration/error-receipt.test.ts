@@ -2,13 +2,27 @@ import { describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { mkdir, writeFile } from "node:fs/promises";
 vi.mock("server-only", () => ({}));
-import { httpFailureReceipt } from "../../src/server/ai/error-receipt";
+import { httpFailureReceipt,sanitizeTechnicalError } from "../../src/server/ai/error-receipt";
 import { RubricJudgementSchema } from "../../src/server/evaluation/contracts";
 import { providerWireSchema } from "../../src/server/ai/wire-schema";
 import { sanitizeProbeError } from "./diagnostic-fetch";
 import type { JsonObject } from "../../src/domain/common";
 
 describe("bounded private error diagnostics", () => {
+  it("retains a useful bounded technical diagnostic without persisting credentials or arbitrary user prose",async()=>{
+    const onDiagnostic=vi.fn(async()=>{}),secret="credential-for-test";
+    const message=`Unable to submit request because the schema has too many states for serving. maxItems 256. private raspberries user@example.com Bearer ${secret}`;
+    const receipt=await httpFailureReceipt(Response.json({error:{code:400,message:"Provider error",metadata:{raw:JSON.stringify({error:{message,status:"INVALID_ARGUMENT"}})}}},{status:400}),undefined,{secrets:[secret],onDiagnostic});
+    expect(receipt.result).toMatchObject({category:"schema"});
+    expect(onDiagnostic).toHaveBeenCalledWith(expect.objectContaining({messages:expect.arrayContaining([expect.stringContaining("too many states for serving")])}));
+    expect(JSON.stringify(onDiagnostic.mock.calls)).not.toMatch(/credential-for-test|raspberries|user@example/);
+    expect(JSON.stringify(receipt)).not.toContain("too many states");
+    expect(sanitizeTechnicalError("x".repeat(20000))).toHaveLength(10);
+  });
+  it("does not lose the accounting receipt if private diagnostic storage fails",async()=>{
+    const receipt=await httpFailureReceipt(Response.json({error:{code:400,message:"Invalid schema"}},{status:400}),undefined,{onDiagnostic:async()=>{throw new Error("private file unavailable");}});
+    expect(receipt.result).toMatchObject({kind:"http_error",httpStatus:400,category:"schema"});
+  });
   it.each([
     [400,{message:"Invalid JSON schema",param:"response_format.json_schema.schema"},"schema"],
     [400,{message:"Provider error",metadata:{raw:JSON.stringify({error:{message:"Parameter max_tokens is not supported",param:"max_tokens"}})}},"unsupported_parameter"],
