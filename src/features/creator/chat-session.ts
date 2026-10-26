@@ -65,6 +65,7 @@ export class ChatSession {
   private createCommand: ChatRecoveryBuffer["createCommand"] = null;
   private saveCommand: ChatRecoveryBuffer["saveCommand"] = null;
   private sendCommand: SendMessageInput | null = null;
+  private provisionalRecovery: ChatRecoveryBuffer | null = null;
   private actionHistoryPagingStarted = false;
   private deliveryErrors = new Map<string, ApiError["error"]>();
   private readonly createId: () => string;
@@ -109,6 +110,7 @@ export class ChatSession {
     this.detail = null;
     this.actionHistoryPagingStarted = false;
     this.createCommand = this.saveCommand = this.sendCommand = null;
+    this.provisionalRecovery = null;
     this.deliveryErrors.clear();
     this.state = { ...this.state, conversation: null, composerText: "", pendingMessages: [], run: null, stream: null, composerConflict: null, storageError: null, transmittingId: null, editingMessageId: null, loadStatus: "loading", saveStatus: "idle",
       actionEvents: [], actionHistoryNextCursor: null, actionHistoryStatus: "idle" };
@@ -118,9 +120,11 @@ export class ChatSession {
 
   private recovery() {
     if (!this.current()) return;
-    this.options.recovery?.write({ actorId: this.options.actorId, conversationId: this.detail?.conversation.id ?? this.requestedId,
+    const conversationId = this.detail?.conversation.id ?? this.requestedId;
+    this.options.recovery?.write({ actorId: this.options.actorId, conversationId,
       text: this.state.composerText, pendingMessages: this.state.pendingMessages, baseComposerRevision: this.detail?.composerDraft.revision ?? null,
       conflicted: this.state.composerConflict !== null, createCommand: this.createCommand, saveCommand: this.saveCommand, sendCommand: this.sendCommand, updatedAt: this.now() });
+    if (conversationId === null) this.provisionalRecovery = this.options.recovery?.read(this.options.actorId, null) ?? null;
   }
   private input() { return { text: this.state.composerText, pendingMessages: this.state.pendingMessages }; }
   private isSaved() { return this.detail !== null && sameInput(this.input(), this.detail.composerDraft); }
@@ -231,7 +235,11 @@ export class ChatSession {
           if (!result.ok) return this.writeFailure(result.error.error);
           this.adopt(result.data, true);
           this.createCommand = null;
-          this.options.recovery?.clear(this.options.actorId, null);
+          // Only migrate this session's last buffer; a later new-chat session may own the slot now.
+          if (this.provisionalRecovery && this.options.recovery?.read(this.options.actorId, null) === this.provisionalRecovery) {
+            this.options.recovery.clear(this.options.actorId, null);
+          }
+          this.provisionalRecovery = null;
           this.recovery();
           continue;
         }

@@ -77,6 +77,25 @@ function action(run: string, seq: number, invocation: string, at = timestamp): A
 }
 
 describe("account-owned chat input", () => {
+  it("keeps a newer new-chat recovery buffer when an older session finishes creating its chat", async () => {
+    const { port } = cloud();
+    const saved = new Map<string, string>();
+    const storage = () => ({ getItem: (key: string) => saved.get(key) ?? null, setItem: (key: string, value: string) => { saved.set(key, value); }, removeItem: (key: string) => { saved.delete(key); } });
+    const recovery = createChatRecovery(storage);
+    const create = port.create; const gate = deferred<void>();
+    port.create = vi.fn<ConversationPort["create"]>(async (...args) => { await gate.promise; return create(...args); });
+    const original = sessionFor(port, localApplication, null, recovery);
+    original.setComposer("Submit this first question"); const sending = original.send();
+    const newer = sessionFor(port, localApplication, null, recovery);
+    await newer.open(); newer.setComposer("Keep this newer unsent draft");
+    gate.resolve(); await sending;
+    // A fresh recovery adapter reads persisted input, without a clean pagehide/unmount flush.
+    const restored = sessionFor(port, localApplication, null, createChatRecovery(storage));
+    await restored.open();
+    expect(restored.getSnapshot()).toMatchObject({ composerText: "Keep this newer unsent draft", conversation: null });
+    expect(port.create).toHaveBeenCalledOnce();
+  });
+
   it("restores an unsent new draft locally without assigning a chat title or identity", async () => {
     const { port, records } = cloud();
     const saved = new Map<string, string>(); const recovery = createChatRecovery(() => ({ getItem: (key) => saved.get(key) ?? null, setItem: (key, value) => { saved.set(key, value); }, removeItem: (key) => { saved.delete(key); } }));
