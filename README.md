@@ -63,6 +63,10 @@ Refine the sample goal with a constraint such as “I know basic Python, but nee
 
 *Edit the program's title, learning goal, and audience. Changes are checked against the latest saved version before they are applied.*
 
+[![A published AI Engineering course showing its learning outcomes, prerequisites, and available lessons](docs/images/ready-course.png)](docs/images/ready-course.png)
+
+*A published course brings its learning outcomes, prerequisites, and available content together.*
+
 ## Practice that fits the subject
 
 Unfurl defines **29 activity families**. The generator chooses from their actual capabilities: what the learner can manipulate, construct, observe, explain, or test, and how the result can be assessed. A course does not have to use every family.
@@ -79,7 +83,15 @@ Unfurl defines **29 activity families**. The generator chooses from their actual
 
 Activities share a player, but use different response schemas, controls, and evaluators. Deterministic answers are checked on the server; open responses use criterion-based review; supported Python work runs in an isolated sandbox. Investigation and dialogue tasks save actual actions and observations before evaluating the answer that cites them.
 
+[![The learning workspace with a NumPy activity beside its lesson explanation](docs/images/learning-workspace.png)](docs/images/learning-workspace.png)
+
+*The activity and its lesson explanation stay together in the learning workspace.*
+
 The generator checks its own proposed exercises with valid, alternative-valid, and meaningfully wrong cases, then requests an independent content review. A typed response alone is insufficient: sources, criteria, references, task behavior, and the full approved outcome must agree before release.
+
+[![A completed state-tracing activity with saved intermediate values and feedback for each step](docs/images/activity-state-tracing.png)](docs/images/activity-state-tracing.png)
+
+*Trace intermediate values, save the answer, and receive feedback on each step.*
 
 ## A shared course, personal progress
 
@@ -89,7 +101,15 @@ Feedback distinguishes correct, partial, incorrect, uncertain, and unavailable r
 
 The server awards **25 XP** for an independently correct eligible task or **10 XP** when a hint was used. A revealed worked example does not earn XP. Repeated submissions of the same task do not multiply an award. Each 250 XP advances a level; public publication becomes available at level 3, or **500 XP**.
 
+[![Feedback after completing a procedure-ordering activity, with a saved answer and an XP award](docs/images/activity-procedure.png)](docs/images/activity-procedure.png)
+
+*Feedback after completing a procedure-ordering activity.*
+
 Creators can keep a course private, share a particular version through a revocable link, or publish an eligible ready version. A recipient starts their own enrollment and cannot see the creator's answers. New course versions do not silently rewrite an existing learner's work.
+
+[![Sharing and visibility settings showing private, unlisted, and public access choices](docs/images/course-visibility.png)](docs/images/course-visibility.png)
+
+*Choose course visibility and manage access links. A selection is applied when it is saved.*
 
 [![The library showing a private AI Engineering course with Building status and a View in chat action](docs/images/course-library.png)](docs/images/course-library.png)
 
