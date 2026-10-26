@@ -22,7 +22,7 @@ A course has a shared structure; each learner has their own saved progress, evid
   <img src="docs/images/readme-node.svg" alt="Node.js 22.x" width="132" height="36">
 </p>
 
-https://github.com/user-attachments/assets/c5674574-ad43-47e9-8ba6-cfdac3c3eb70
+https://github.com/user-attachments/assets/062c6489-89b8-4be2-833c-195e346c80cc
 
 ## Contents
 
