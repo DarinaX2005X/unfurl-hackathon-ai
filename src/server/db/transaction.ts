@@ -21,11 +21,14 @@ export function createTransactionRunner(pool: TransactionPool) {
     let begun = false;
     let broken = false;
     try {
-      await client.query("BEGIN");
+      // These statements contain only fixed server-owned SQL. Sending them in one
+      // simple query avoids three network round trips on every transaction.
+      // BEGIN may succeed before a later setup statement fails, so always attempt
+      // rollback after this query starts and discard an incompletely set-up client.
       begun = true;
-      await client.query(actor ? "SET LOCAL ROLE authenticated" : "SET LOCAL ROLE service_role");
-      await client.query("SET LOCAL statement_timeout = '15s'");
-      await client.query("SET LOCAL lock_timeout = '5s'");
+      broken = true;
+      await client.query(`BEGIN; SET LOCAL ROLE ${actor ? "authenticated" : "service_role"}; SET LOCAL statement_timeout = '15s'; SET LOCAL lock_timeout = '5s'`);
+      broken = false;
       if (actor) {
         await client.query("SELECT set_config('request.jwt.claims', $1, true)", [
           JSON.stringify({ sub: actor.id, role: "authenticated", session_id: actor.sessionId }),

@@ -54,6 +54,25 @@ describe("featured course resolution", () => {
     await expect(resolveFeaturedCourse({ env, loadCourse: async () => result })).resolves.toEqual({ kind: "unavailable" });
   });
 
+  it("rejects an unpublished course projection", async () => {
+    const result: CourseDetailResult = { kind: "owned_unready", course: {
+      id: ids.course,
+      slug: "model-evaluation",
+      title: "Model evaluation",
+      summary: "Still being prepared.",
+      contentLanguage: "en",
+      visibility: "private",
+      currentReadyVersionId: null,
+      publishedVersionId: null,
+      cover: null,
+      latestVersion: { id: ids.draft, number: 1, state: "building" },
+      conversationId: ids.conversation,
+      revision: 1,
+      updatedAt: "2026-10-24T12:00:00.000Z",
+    } };
+    await expect(resolveFeaturedCourse({ env, loadCourse: async () => result })).resolves.toEqual({ kind: "unavailable" });
+  });
+
   it("contains an unpublished, missing, or failed catalog lookup", async () => {
     const loadCourse = vi.fn().mockRejectedValue(new Error("catalog detail must not escape"));
     await expect(resolveFeaturedCourse({ env, loadCourse })).resolves.toEqual({ kind: "unavailable" });

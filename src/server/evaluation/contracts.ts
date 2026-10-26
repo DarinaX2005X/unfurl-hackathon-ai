@@ -181,6 +181,14 @@ export interface RubricJudge {
   judge(request: RubricRequest, signal: AbortSignal): Promise<unknown>;
 }
 
+/** A returned judgement failed evidence validation; the provider itself was available. */
+export class InvalidRubricEvidenceError extends Error {
+  constructor() {
+    super("The returned rubric judgement could not be verified");
+    this.name = "InvalidRubricEvidenceError";
+  }
+}
+
 export function resolveResponsePath(response: JsonValue, path: ResponsePath):
   { found: true; value: JsonValue } | { found: false } {
   let current: JsonValue = response;
@@ -243,6 +251,9 @@ export async function evaluateRubric(input: RubricRequest, context: EvaluationCo
   } catch (error) {
     if (context.signal.aborted) throw context.signal.reason;
     if (error instanceof Error && error.name === "AbortError") throw error;
+    if (error instanceof InvalidRubricEvidenceError) {
+      return unresolvedDecision(request, "uncertain", "The assessment evidence could not be verified. This answer needs another review.");
+    }
     return unresolvedDecision(request, "unavailable", "The assessment service could not finish. Your response is retained for retry.");
   }
   let judgement: RubricJudgement;

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Languages, Pencil } from "lucide-react";
+import { ChevronDown, Languages, Pencil } from "lucide-react";
 import { Button, Dialog, LinkButton, Notice, Select, Textarea, TextField } from "@/components/ui";
 import type { CatalogPort } from "@/application/catalog-port";
 import { httpCatalog } from "@/application/http-catalog";
@@ -508,8 +508,14 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
   }
 
   return <section className="creator-artifacts" aria-label="Courses in this chat">
-    <div className="creator-artifacts__selection"><Select id="chat-course" label="Courses in this chat" value={selected.courseId} options={artifacts.map((artifact) => ({ value: artifact.courseId, label: artifact.title }))} onChange={(event) => onSelect(event.target.value)} /></div>
-    <header className="creator-artifacts__heading"><h2>{selected.title}</h2><p>{selected.summary}</p><div className="creator-artifacts__metadata"><span>{languageLabel(selected.contentLanguage)}</span><div>{(actorId || onEditMetadata) && <Button variant="quiet" size="compact" onClick={() => { setMetadataCourseId(selected.courseId); setMetadata({ title: selected.title, summary: selected.summary }); setMetadataKey(crypto.randomUUID()); setMetadataError(null); }}><Pencil size={16} aria-hidden="true" />Edit details</Button>}{actorId && curriculum && <Button variant="quiet" size="compact" onClick={() => { setLanguageCourseId(selected.courseId); setLanguage(selected.contentLanguage); setLanguageKey(crypto.randomUUID()); setLanguageError(null); }}><Languages size={16} aria-hidden="true" />Change language</Button>}</div></div></header>
+    {artifacts.length > 1 && <div className="creator-artifacts__selection"><Select id="chat-course" label="Courses in this chat" value={selected.courseId} options={artifacts.map((artifact) => ({ value: artifact.courseId, label: artifact.title }))} onChange={(event) => onSelect(event.target.value)} /></div>}
+    <header className="creator-artifacts__heading"><h2>{selected.title}</h2>
+      <details key={selected.courseId} className="creator-artifacts__details">
+        <summary>Course details<ChevronDown size={18} aria-hidden="true" /></summary>
+        <p>{selected.summary}</p>
+        <div className="creator-artifacts__metadata"><span>{languageLabel(selected.contentLanguage)}</span><div>{(actorId || onEditMetadata) && <Button variant="quiet" size="compact" onClick={() => { setMetadataCourseId(selected.courseId); setMetadata({ title: selected.title, summary: selected.summary }); setMetadataKey(crypto.randomUUID()); setMetadataError(null); }}><Pencil size={16} aria-hidden="true" />Edit details</Button>}{actorId && curriculum && <Button variant="quiet" size="compact" onClick={() => { setLanguageCourseId(selected.courseId); setLanguage(selected.contentLanguage); setLanguageKey(crypto.randomUUID()); setLanguageError(null); }}><Languages size={16} aria-hidden="true" />Change language</Button>}</div></div>
+      </details>
+    </header>
     {selectedAuthoring?.status === "error" && <Notice tone="warning" action={<Button variant="quiet" size="compact" onClick={() => curriculum && void fetchAuthoring(selected.courseId, curriculum.id, true)}>Try again</Button>}>Live research and build status could not be loaded. The saved program is still shown.</Notice>}
     {curriculum ? <CurriculumPanel key={selected.courseId} draft={curriculum} currentRevision={curriculum.revision}
       awaitingApproval={selected.approvalRequestedRevision === curriculum.revision && !awaitingSnapshotCourseIds.includes(selected.courseId)} approval={snapshot?.artifact.approval ?? selected.approval} showTitle={false}

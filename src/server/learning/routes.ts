@@ -1,5 +1,5 @@
 import "server-only";
-import { dispatchOwnedExecution } from "../runs/dispatcher";
+import { dispatchAfterResponse } from "../runs/dispatch-after-response";
 import { z } from "zod";
 import type { NextRequest } from "next/server";
 import { IdSchema } from "@/domain/common";
@@ -25,7 +25,7 @@ async function mutationInput<T>(request: NextRequest, schema: z.ZodType<T>) {
   return { actor, command: { key, body: parse(schema, raw) } };
 }
 export async function loadSessionRoute(request: NextRequest, enrollmentId: string) {
-  try { const actor=await requireActor();const data=await learningService.loadSession(actor,id(enrollmentId));await dispatchOwnedExecution(actor);return success(data); }
+  try { const actor=await requireActor();const data=await learningService.loadSession(actor,id(enrollmentId));dispatchAfterResponse(actor);return success(data); }
   catch (error) { return failure(error, request); }
 }
 export async function requestFreshAssessmentRoute(request: NextRequest, enrollmentId: string) {
@@ -45,14 +45,14 @@ export async function loadContextRoute(request: NextRequest, enrollmentId: strin
   } catch (error) { return failure(error, request); }
 }
 export async function getEvaluationRoute(request: NextRequest, attemptId: string) {
-  try { const actor=await requireActor();const data=await learningService.getEvaluation(actor,id(attemptId));await dispatchOwnedExecution(actor);return success(data); }
+  try { const actor=await requireActor();const data=await learningService.getEvaluation(actor,id(attemptId));dispatchAfterResponse(actor);return success(data); }
   catch (error) { return failure(error, request); }
 }
 export async function submitAttemptRoute(request: NextRequest, enrollmentId: string) {
   try {
     const { actor, command } = await mutationInput(request, SubmitActivityAttemptSchema);
     const result = await learningService.submitAttempt(actor, id(enrollmentId), command);
-    await dispatchOwnedExecution(actor);
+    dispatchAfterResponse(actor);
     return success(result.data, result.status);
   } catch (error) { return failure(error, request); }
 }
@@ -102,7 +102,7 @@ export async function retryEvaluationRoute(request: NextRequest, attemptId: stri
   try {
     const { actor, command } = await mutationInput(request, EvaluationRevisionInputSchema);
     const result = await learningService.retryEvaluation(actor, id(attemptId), command);
-    await dispatchOwnedExecution(actor);
+    dispatchAfterResponse(actor);
     return success(result.data, result.status);
   } catch (error) { return failure(error, request); }
 }
@@ -110,7 +110,7 @@ export async function requestReviewRoute(request: NextRequest, attemptId: string
   try {
     const { actor, command } = await mutationInput(request, AssessmentReviewInputSchema);
     const result = await learningService.requestReview(actor, id(attemptId), command);
-    await dispatchOwnedExecution(actor);
+    dispatchAfterResponse(actor);
     return success(result.data, result.status);
   } catch (error) { return failure(error, request); }
 }
@@ -118,12 +118,12 @@ export async function retryReviewRoute(request: NextRequest, attemptId: string, 
   try {
     const { actor, command } = await mutationInput(request, EvaluationRevisionInputSchema);
     const result = await learningService.retryReview(actor, id(attemptId), id(reviewId), command);
-    await dispatchOwnedExecution(actor);
+    dispatchAfterResponse(actor);
     return success(result.data, result.status);
   } catch (error) { return failure(error, request); }
 }
 export async function getActivityRoute(request: NextRequest, activityId: string) {
-  try { const actor=await requireActor();const data=await learningService.getActivity(actor,id(activityId));await dispatchOwnedExecution(actor);return success(data); }
+  try { const actor=await requireActor();const data=await learningService.getActivity(actor,id(activityId));dispatchAfterResponse(actor);return success(data); }
   catch (error) { return failure(error, request); }
 }
 export async function startActivityRoute(request: NextRequest, enrollmentId: string) {
@@ -144,7 +144,7 @@ export async function dispatchActionRoute(request: NextRequest, activityId: stri
   try {
     const { actor, command } = await mutationInput(request, ActivityActionRequestSchema);
     const result = await learningService.dispatchAction(actor, id(activityId), command);
-    await dispatchOwnedExecution(actor);
+    dispatchAfterResponse(actor);
     return success(result.data, result.status);
   } catch (error) { return failure(error, request); }
 }
@@ -152,7 +152,7 @@ export async function retryActionRoute(request: NextRequest, activityId: string,
   try {
     const { actor, command } = await mutationInput(request, ActionRetryInputSchema);
     const result = await learningService.retryAction(actor, id(activityId), id(receiptId), command);
-    await dispatchOwnedExecution(actor);
+    dispatchAfterResponse(actor);
     return success(result.data, result.status);
   } catch (error) { return failure(error, request); }
 }

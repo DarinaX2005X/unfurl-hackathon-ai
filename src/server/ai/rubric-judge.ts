@@ -1,7 +1,7 @@
 import "server-only";
 import type { JsonValue } from "../../domain/common";
 import type { BudgetOperationContext } from "../budget/ports";
-import { RubricJudgementSchema, RubricRequestSchema, validateRubricJudgement, type RubricJudge } from "../evaluation/contracts";
+import { InvalidRubricEvidenceError, RubricJudgementSchema, RubricRequestSchema, validateRubricJudgement, type RubricJudge } from "../evaluation/contracts";
 import { MODEL_ID } from "./constants";
 import { canonicalJson } from "./json";
 import type { ModelPort } from "./ports";
@@ -19,7 +19,8 @@ export function createRubricJudge(model: ModelPort, call: { budget: BudgetOperat
         model: MODEL_ID, maxOutputTokens: call.maxOutputTokens ?? 4096, deadlineAt: call.deadlineAt, budget: call.budget,
         schemaId: "rubric_judgement", schemaVersion: 1, schema: RubricJudgementSchema,
       }, signal);
-      return validateRubricJudgement(result.data, request);
+      try { return validateRubricJudgement(result.data, request); }
+      catch { throw new InvalidRubricEvidenceError(); }
     },
   };
 }

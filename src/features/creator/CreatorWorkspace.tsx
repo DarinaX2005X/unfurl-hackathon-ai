@@ -2,10 +2,11 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { useEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, useSyncExternalStore, type KeyboardEvent, type ReactNode } from "react";
 import { ArrowUp, Check, MessageSquare, Square } from "lucide-react";
 import { AppShell } from "@/components/shell/AppShell";
-import { Button, Dialog, IconButton, LinkButton, Menu, Notice, Tabs, Textarea, TextField } from "@/components/ui";
+import { Button, Dialog, IconButton, LinkButton, Menu, Notice, Textarea, TextField } from "@/components/ui";
+import { nextTabId } from "@/components/ui/tabs";
 import type { ApplicationPort } from "@/application/ports";
 import { httpApplication } from "@/application/http-application";
 import { httpConversations } from "@/application/http-conversations";
@@ -60,6 +61,52 @@ function subscribeCompact(listener: () => void) {
   const query = window.matchMedia(compactQuery);
   query.addEventListener("change", listener);
   return () => query.removeEventListener("change", listener);
+}
+
+function CreatorPanels({ compact, value, onValueChange, chat, courses, courseCount }: {
+  compact: boolean; value: string; onValueChange: (value: string) => void;
+  chat: ReactNode; courses: ReactNode; courseCount: number;
+}) {
+  const id = useId();
+  const listRef = useRef<HTMLDivElement>(null);
+  const panelRefs = useRef(new Map<string, HTMLDivElement>());
+  const buttonRefs = useRef(new Map<string, HTMLButtonElement>());
+  const previousCompact = useRef(compact);
+  const items = [{ id: "chat", label: "Conversation", content: chat }, { id: "courses", label: `Courses (${courseCount})`, content: courses }];
+
+  useLayoutEffect(() => {
+    if (previousCompact.current === compact) return;
+    previousCompact.current = compact;
+    const active = document.activeElement;
+    if (compact) {
+      for (const [panelId, panelElement] of panelRefs.current) {
+        if (panelElement.contains(active)) { onValueChange(panelId); break; }
+      }
+    } else if (listRef.current?.contains(active)) {
+      panelRefs.current.get(value)?.focus({ preventScroll: true });
+    }
+  }, [compact, onValueChange, value]);
+
+  function onTabKey(event: KeyboardEvent<HTMLButtonElement>, current: string) {
+    const next = nextTabId(items, current, event.key);
+    if (!next) return;
+    event.preventDefault();
+    onValueChange(next);
+    buttonRefs.current.get(next)?.focus({ preventScroll: true });
+  }
+
+  return <div className="creator-panels uf-tabs">
+    <div ref={listRef} className="uf-tabs__list" role="tablist" aria-label="Chat and courses" hidden={!compact}>
+      {items.map((item) => <button key={item.id} ref={(node) => { if (node) buttonRefs.current.set(item.id, node); else buttonRefs.current.delete(item.id); }}
+        id={`${id}-tab-${item.id}`} aria-controls={`${id}-panel-${item.id}`} className="uf-tabs__tab" role="tab" type="button"
+        aria-selected={item.id === value} tabIndex={item.id === value ? 0 : -1}
+        onClick={() => onValueChange(item.id)} onKeyDown={(event) => onTabKey(event, item.id)}>{item.label}</button>)}
+    </div>
+    {items.map((item) => <div key={item.id} ref={(node) => { if (node) panelRefs.current.set(item.id, node); else panelRefs.current.delete(item.id); }}
+      id={`${id}-panel-${item.id}`} className="uf-tabs__panel" role={compact ? "tabpanel" : "region"}
+      aria-labelledby={compact ? `${id}-tab-${item.id}` : undefined} aria-label={compact ? undefined : item.label}
+      tabIndex={compact ? 0 : -1} hidden={compact && item.id !== value}>{item.content}</div>)}
+  </div>;
 }
 
 export interface CreatorWorkspaceProps {
@@ -350,7 +397,7 @@ function AccountCreator({ actorId, conversationId = null, store = chatStore, con
     <div className={`creator${hasArtifacts ? " creator--with-artifacts" : ""}`}>
       {ready ? <><header className="creator-header"><div className="creator-header__title"><p>{conversation?.title ?? "New chat"}</p><div className={`creator-save-status creator-save-status--${state.saveStatus}`} role="status">{state.saveStatus === "saved" && <Check size={14} aria-hidden="true" />}{state.saveStatus === "saved" ? "Saved to your account" : state.saveStatus === "saving" ? "Saving…" : state.saveStatus === "error" ? "Couldn’t save" : state.saveStatus === "conflict" ? "Review saved input" : ""}</div></div>
         {conversation && <Menu label="Chat options" items={[{ id: "rename", label: "Rename chat", onSelect: () => { setRenamedTitle(conversation.title); setDialog("rename"); setDialogError(null); } }, { id: "delete", label: "Delete chat", danger: true, onSelect: () => { setDialog("delete"); setDialogError(null); } }]} />}
-      </header><div className="creator-workspace">{hasArtifacts ? <Tabs className="creator-panels" label="Chat and courses" value={panel} onValueChange={setPanel} items={[{ id: "chat", label: "Conversation", panel: chat }, { id: "courses", label: `Courses (${artifacts.length})`, panel: courses }]} /> : chat}</div></> : <div className="creator-recovery">
+      </header><div className="creator-workspace">{hasArtifacts ? <CreatorPanels compact={compact} value={panel} onValueChange={setPanel} chat={chat} courses={courses} courseCount={artifacts.length} /> : chat}</div></> : <div className="creator-recovery">
         <h1>{state.loadStatus === "loading" ? "Opening your chat…" : state.loadStatus === "invalid" ? "This chat link isn’t valid" : state.loadStatus === "missing" ? "This chat isn’t available" : "This chat couldn’t be opened"}</h1>
         {state.loadStatus !== "loading" && <><p>{state.loadStatus === "missing" ? "It may have been deleted or belong to another account." : state.loadStatus === "invalid" ? "Open a chat from your history or start a new one." : chatStorageMessage(state.storageError)}</p>
           {(composerText || state.pendingMessages.length > 0) && <div className="creator-recovered-input"><strong>Your recovered input</strong><pre>{[...state.pendingMessages.map((item) => item.text), composerText].filter(Boolean).join("\n\n")}</pre></div>}
