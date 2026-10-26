@@ -26,7 +26,7 @@ export function checkedKnowledgeMaterial(input: { sourceKnowledgeStepId: string;
 export async function advanceKnowledgeCoverage(input: { context: RunContext; binding: ApprovedBuildBinding; index: StageIndex;
   source: LoadedModuleKnowledge; round: number; correction: unknown; model: ModelPort;
   research: (effect: StepEffectContext,searchPolicy?:SearchPolicyId) => ResearchPort; searchPolicy?:SearchPolicyId; priorKnowledge: readonly ModuleKnowledge[];
-  sourceClaimIdentityPolicy?: "server-source-identities-v1";
+  sourceClaimIdentityPolicy?: "server-source-identities-v1" | "server-source-spans-v2";
   sourceSelectionPolicy?:"source-selection-v1"|"source-selection-v2";readerCapabilities?:ReaderCapabilities }): Promise<LoadedModuleKnowledge | null> {
   const { context, binding, index } = input, repository = new GenerationEvidenceRepository();
   if(Boolean(input.sourceSelectionPolicy)!==Boolean(input.readerCapabilities))throw new ProviderFailure("invalid_output");

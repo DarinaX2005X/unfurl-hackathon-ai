@@ -22,9 +22,7 @@ A course has a shared structure; each learner has their own saved progress, evid
   <img src="docs/images/readme-node.svg" alt="Node.js 22.x" width="132" height="36">
 </p>
 
-[![An approved AI Engineering program beside its saved conversation and earlier build activity](docs/images/course-program.png)](docs/images/course-program.png)
-
-*The approved program stays beside the conversation, with earlier build activity available for review.*
+https://github.com/user-attachments/assets/c5674574-ad43-47e9-8ba6-cfdac3c3eb70
 
 ## Contents
 
@@ -43,6 +41,10 @@ A course has a shared structure; each learner has their own saved progress, evid
 
 Start with an outcome: “I want to understand how machine learning works, then build models and AI systems myself.” Include the background you already have, the language you want to study in, and any practical constraints. The interface is English; a course can use another language.
 
+[![A real Unfurl conversation researching and revising an AI curriculum, with the saved course program beside it](docs/images/course-authoring.png)](docs/images/course-authoring.png)
+
+*Research and a saved AI curriculum in an actual authoring conversation.*
+
 1. **Discuss and research.** The agent replies in the conversation, searches for sources, reads web pages and text-based PDFs, and develops the program. Expandable actions show what happened. A conversation can contain several separate course artifacts.
 2. **Review the program.** Inspect the goal, audience, prerequisites, learning outcomes, module order, and estimated study time. Edit the program or ask for a revision. Course details and language belong to the selected artifact.
 3. **Approve that version.** Approval applies to the exact saved program. It appears in the conversation as **Plan approved**, and the artifact shows **Approved**. Approval waits until the authoring agent has finished.
@@ -50,6 +52,10 @@ Start with an outcome: “I want to understand how machine learning works, then 
 5. **Begin when the course is ready.** The ready course offers study and course-detail actions. The library keeps created courses and enrollments; chat history stays in the chat.
 
 A new conversation is created on the first send, not while an unsent first message is being typed. Returning to an existing chat restores its saved messages and writing. Stop, retry, and revision operations preserve the identity of the work they affect.
+
+[![An approved AI Engineering program beside its saved conversation and earlier build activity](docs/images/course-program.png)](docs/images/course-program.png)
+
+*The approved program stays beside the conversation, with earlier build activity available for review.*
 
 Refine the sample goal with a constraint such as “I know basic Python, but need the mathematics explained through experiments.” Inspect the resulting prerequisites and section order, then ask for a targeted change before approval. The same flow applies to another subject or learning language.
 

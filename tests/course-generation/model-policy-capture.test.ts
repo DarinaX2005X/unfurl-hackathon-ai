@@ -43,7 +43,7 @@ describe("generation model capture and fresh retries",()=>{
   it("captures certified v4 for a fresh run after a failed v2 ancestor without rewriting its capture",async()=>{
     const h=harness(false),before=structuredClone(h.old);
     await expect(h.handler.advance(h.context)).resolves.toEqual({status:"continue"});
-    expect(h.writes).toHaveLength(1);expect(h.writes[0]).toMatchObject({modelPolicy:GEMINI_SCHEMA_V4_POLICY,sourceSelectionPolicy:"source-selection-v2",readerCapabilities:currentReaderCapabilities(),taskAuthoringContractPolicy:"complete-task-contract-v1",planPagePolicy:"server-plan-identities-v2",sourceClaimIdentityPolicy:"server-source-identities-v1"});expect(h.old).toEqual(before);
+    expect(h.writes).toHaveLength(1);expect(h.writes[0]).toMatchObject({modelPolicy:GEMINI_SCHEMA_V4_POLICY,sourceSelectionPolicy:"source-selection-v2",readerCapabilities:currentReaderCapabilities(),taskAuthoringContractPolicy:"complete-task-contract-v1",planPagePolicy:"server-plan-identities-v2",sourceClaimIdentityPolicy:"server-source-spans-v2"});expect(h.old).toEqual(before);
     expect(h.selections()).toBe(1);expect(h.runtime).not.toHaveBeenCalled();
   });
   it.each([GEMINI_SCHEMA_V2_POLICY,CANDIDATE_MODEL_POLICY])("keeps an already-started %s capture even when v4 becomes available",async policy=>{

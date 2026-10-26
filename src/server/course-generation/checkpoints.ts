@@ -25,7 +25,7 @@ export const CourseGenerationPolicyCheckpointSchema = z.object({ kind: z.literal
   knowledgeCoveragePolicy: z.literal("approved-scope-v1").optional(),
   taskAuthoringContractPolicy: z.literal("complete-task-contract-v1").optional(),
   taskIdentityPolicy: z.literal("task-private-identities-v1").optional(),
-  sourceClaimIdentityPolicy: z.literal("server-source-identities-v1").optional(),
+  sourceClaimIdentityPolicy: z.enum(["server-source-identities-v1", "server-source-spans-v2"]).optional(),
   modelPolicy: ModelPolicySchema.optional(),
   searchPolicy: SearchPolicySchema.optional(),
   readerCapabilities: ReaderCapabilitiesSchema.optional(),
@@ -140,4 +140,13 @@ export const ServerIdentitySourceClaimsCheckpointSchema = SourceClaimsCheckpoint
   rawProposal: ServerIdentitySourceClaimsProposalSchema,
   passageProjection: z.literal("exact-quote-v1"),
 });
-export const AnySourceClaimsCheckpointSchema = z.union([SourceClaimsCheckpointSchema, ServerIdentitySourceClaimsCheckpointSchema]);
+/** The model selects server-owned source text; it cannot author quote coordinates. */
+export const SourceSpanClaimsProposalSchema = z.object({
+  passages: z.array(z.object({ id: SourceLocalIdSchema, sourceSpanId: z.string().min(1).max(80) }).strict()).min(1),
+  claims: ServerIdentitySourceClaimsProposalSchema.shape.claims,
+}).strict();
+export const SourceSpanClaimsCheckpointSchema = SourceClaimsCheckpointSchema.extend({
+  kind: z.literal("course.source.claims.v3"), rawProposal: SourceSpanClaimsProposalSchema,
+  passageProjection: z.literal("exact-quote-v1"),
+});
+export const AnySourceClaimsCheckpointSchema = z.union([SourceClaimsCheckpointSchema, ServerIdentitySourceClaimsCheckpointSchema, SourceSpanClaimsCheckpointSchema]);

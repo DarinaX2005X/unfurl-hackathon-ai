@@ -29,6 +29,7 @@ import { ModuleKnowledgeSchema, type ModuleKnowledge } from "./contracts";
 import { approvedResearchFactsDigest, assertBatchItemProjection } from "./batch-provenance";
 import { projectSourcePassages } from "./source-passage-projection";
 import { projectSourceClaimIdentities } from "./source-claim-identities";
+import { sourceSpanDocumentV2, sourceSpanClaimsResponseSchema, projectSourceSpanClaimsV2 } from "./source-spans";
 import { validateCompleteSourceReadChains,type SourceReadEvidence } from "./source-read-chain";
 import { TASK_PRIVATE_IDENTITY_POLICY, TaskIdentityProposalSchema, projectTaskIdentityBatch, usesTaskIdentityProjection } from "./task-authoring-identities";
 
@@ -112,10 +113,11 @@ export async function loadGenerationStep<T>(tx: DbTransaction, binding: Approved
   const narratedApprovedKnowledge = versioned.success && versioned.data.narration !== undefined;
   const sourceRead = versioned.success && versioned.data.kind === "course.source.read";
   const serverIdentitySourceClaims = versioned.success && versioned.data.kind === "course.source.claims.v2";
+  const serverSpanSourceClaims = versioned.success && versioned.data.kind === "course.source.claims.v3";
   const serverIdentityTasks = versioned.success && versioned.data.kind === "course.model.batch.v2" && usesTaskIdentityProjection(versioned.data.material);
   const partsProof = sourceRead && versioned.data.readProof !== undefined;
   const partsAvailability = versioned.success && versioned.data.kind === "course.source.availability.v2";
-  if ((boundedPlan || serverIdentityPlan || serverIdentitySourceClaims || coveredKnowledge || narratedApprovedKnowledge || partsProof || partsAvailability) && !newProtocol) return invalid();
+  if ((boundedPlan || serverIdentityPlan || serverIdentitySourceClaims || serverSpanSourceClaims || coveredKnowledge || narratedApprovedKnowledge || partsProof || partsAvailability) && !newProtocol) return invalid();
   let knowledgeCoveragePolicy: "approved-scope-v1" | undefined;
   if (newProtocol) {
     const policy = z.object({ result: CourseGenerationPolicyCheckpointSchema, schema: z.literal(COURSE_GENERATION_SCHEMA_DIGEST),
@@ -124,6 +126,7 @@ export async function loadGenerationStep<T>(tx: DbTransaction, binding: Approved
     if (boundedPlan && policy.data.result.planPagePolicy !== "bounded-plan-pages-v1" ||
         serverIdentityPlan && policy.data.result.planPagePolicy !== "server-plan-identities-v2" ||
         serverIdentitySourceClaims && policy.data.result.sourceClaimIdentityPolicy !== "server-source-identities-v1" ||
+        serverSpanSourceClaims && policy.data.result.sourceClaimIdentityPolicy !== "server-source-spans-v2" ||
         serverIdentityTasks && policy.data.result.taskIdentityPolicy !== TASK_PRIVATE_IDENTITY_POLICY ||
         (coveredKnowledge || narratedApprovedKnowledge) && policy.data.result.knowledgeCoveragePolicy !== "approved-scope-v1") return invalid();
     if (sourceRead && partsProof !== (policy.data.result.sourceSelectionPolicy === "source-selection-v2") ||
@@ -263,7 +266,15 @@ export class GenerationEvidenceRepository {
         if (!claim.runStepId) return invalid();
         const extraction = await loadGenerationStep(tx, binding, claim.runStepId, AnySourceClaimsCheckpointSchema);
         if (extraction.result.moduleId !== knowledge.moduleId || extraction.result.sourceReadStepIds.some((id) => !readStepIds.includes(id))) return invalid();
-        if (extraction.result.kind === "course.source.claims.v2") {
+        if (extraction.result.kind === "course.source.claims.v3") {
+          const source = sourceMap.get(readSourceIds.get(extraction.result.sourceReadStepIds[0]!) ?? "");
+          if (extraction.result.sourceReadStepIds.length !== 1 || !source) return invalid();
+          const document = sourceSpanDocumentV2(source), section = binding.draft.modules.find(item => item.id === knowledge.moduleId);
+          if (!section || extraction.inputDigest !== jsonDigest({ moduleId: knowledge.moduleId,
+            outcomes: binding.draft.outcomes.filter(item => section.outcomeIds.includes(item.id)), document }) ||
+            taskDigest(projectSourceSpanClaimsV2(extraction.result.rawProposal, source, extraction.id)) !== taskDigest(extraction.result.proposal)) return invalid();
+          await verifyStoredModelData(tx, extraction, extraction.result.operationId, sourceSpanClaimsResponseSchema(document.spans), extraction.result.rawProposal);
+        } else if (extraction.result.kind === "course.source.claims.v2") {
           if (taskDigest(projectSourceClaimIdentities(extraction.result.rawProposal, extraction.id)) !== taskDigest(extraction.result.proposal)) return invalid();
           await verifyStoredModelData(tx, extraction, extraction.result.operationId, ServerIdentitySourceClaimsProposalSchema, extraction.result.rawProposal);
         } else await verifyStoredModelData(tx, extraction, extraction.result.operationId, SourceClaimsProposalSchema, extraction.result.proposal);

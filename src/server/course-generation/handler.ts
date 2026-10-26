@@ -73,7 +73,7 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
             planPagePolicy: "server-plan-identities-v2" as const, knowledgeCoveragePolicy: "approved-scope-v1" as const,searchPolicy:SEARCH_HEADROOM_POLICY,
             taskAuthoringContractPolicy: COMPLETE_TASK_AUTHORING_CONTRACT_POLICY,
             taskIdentityPolicy: TASK_PRIVATE_IDENTITY_POLICY,
-            sourceClaimIdentityPolicy: "server-source-identities-v1" as const,
+            sourceClaimIdentityPolicy: "server-source-spans-v2" as const,
             readerCapabilities: currentReaderCapabilities(),sourceSelectionPolicy:"source-selection-v2" as const }; } });
         return { status: "continue" };
       }

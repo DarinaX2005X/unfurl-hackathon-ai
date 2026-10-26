@@ -6,8 +6,9 @@ vi.mock("@/server/runs/enqueue", () => ({ enqueueAcceptedRun: async (_tx: unknow
 vi.mock("@/server/runs/composition", () => ({ getRuntimeAdmission: vi.fn() }));
 import { projectSourcePassages } from "@/server/course-generation/source-passage-projection";
 import { AnySourceClaimsCheckpointSchema, SourceClaimsCheckpointSchema, SourceClaimsProposalSchema, ServerIdentitySourceClaimsCheckpointSchema, ServerIdentitySourceClaimsProposalSchema,
-  COURSE_GENERATION_SCHEMA_DIGEST, COURSE_VALIDATION_POLICY_DIGEST, COURSE_GENERATION_V2_SCHEMA_DIGEST, COURSE_VALIDATION_V2_POLICY_DIGEST } from "@/server/course-generation/checkpoints";
+  SourceSpanClaimsCheckpointSchema, COURSE_GENERATION_SCHEMA_DIGEST, COURSE_VALIDATION_POLICY_DIGEST, COURSE_GENERATION_V2_SCHEMA_DIGEST, COURSE_VALIDATION_V2_POLICY_DIGEST } from "@/server/course-generation/checkpoints";
 import { projectSourceClaimIdentities } from "@/server/course-generation/source-claim-identities";
+import { sourceSpanDocumentV2, createSourceSpansV2, projectSourceSpanClaimsV2 } from "@/server/course-generation/source-spans";
 import { advanceModuleResearch } from "@/server/course-generation/research-stages";
 import * as sourceSelection from "@/server/course-generation/source-selection";
 import { LegacyReaderCapabilitiesSchema } from "@/server/research/reader-capabilities";
@@ -110,14 +111,14 @@ function providerHarness(proposal: ReturnType<typeof extractionFixture>["proposa
   return { model: new OpenRouterModel({ apiKey: () => "synthetic-key", budget, gate, fetcher, rateCards }), fetcher, budget, receipts, saved: () => saved };
 }
 
-function commitHarness(model: ModelPort, legacyFailure = false, retryRunId?: string, options?:{captured:boolean;fixture:ReturnType<typeof extractionFixture>;identities?:boolean}) {
+function commitHarness(model: ModelPort, legacyFailure = false, retryRunId?: string, options?:{captured:boolean;fixture:ReturnType<typeof extractionFixture>;identities?:boolean;spans?:boolean}) {
   const test = options?.fixture??extractionFixture(), { binding, document, moduleId } = test;
   const prefix = `course/${moduleId}/research`, readStepId = id(810), hitId = id(811), searchStepId = id(812);
   const jobId = retryRunId ? stableExecutionId(retryRunId, "synthetic-job") : id(814);
   const stepId = retryRunId ? stableExecutionId(jobId, `${prefix}/claims/${hitId}`) : id(813);
   const operationId = retryRunId ? stableExecutionId(stepId, "model") : id(830);
   if (retryRunId) binding.run.id = retryRunId;
-  const material = { moduleId, outcomes: binding.draft.outcomes, document };
+  const material = { moduleId, outcomes: binding.draft.outcomes, document: options?.spans ? sourceSpanDocumentV2(document) : document };
   if(options?.captured)vi.spyOn(sourceSelection,"advanceReadableSources").mockResolvedValue({moduleId,
     selections:[{searchStepId,hitId,outcomeIds:binding.draft.outcomes.map(item=>item.id),reason:"Primary source"}],limitations:[]});
   vi.spyOn(stages, "loadStage").mockImplementation(async (_context, _binding, _index, key) => {
@@ -156,8 +157,41 @@ function commitHarness(model: ModelPort, legacyFailure = false, retryRunId?: str
   return { ...test, context, readStepId, stepId, savedPassages, savedClaims, checkpoint: () => AnySourceClaimsCheckpointSchema.parse(checkpoint),
     advance: () => advanceModuleResearch({ context, binding, index: new Map(), moduleId, model, research: () => { throw new Error("No source/provider calls here"); }, priorKnowledge: [],
       ...(options?.captured?{sourceSelectionPolicy:"source-selection-v1" as const,readerCapabilities:currentReaderCapabilities()}:{}),
-      ...(options?.identities?{sourceClaimIdentityPolicy:"server-source-identities-v1" as const}:{}) }) };
+      ...(options?.spans ? { sourceClaimIdentityPolicy: "server-source-spans-v2" as const } :
+        options?.identities ? { sourceClaimIdentityPolicy: "server-source-identities-v1" as const } : {}) }) };
 }
+
+function spanProposal(test: ReturnType<typeof extractionFixture>) {
+  const passages = createSourceSpansV2(test.document).map((span, index) => ({ id: `passage-${index}`, sourceSpanId: span.id }));
+  return { passages, claims: test.proposal.claims.map(claim => ({ ...claim, passageIds: passages.map(passage => passage.id) })) };
+}
+
+it("commits all selected server spans without model-authored quotes or coordinates", async () => {
+  const data = manyPassagesFixture(), raw = spanProposal(data);
+  const generateStructured = vi.fn<(request: unknown) => Promise<{ data: typeof raw }>>(async () => ({ data: raw }));
+  const test = commitHarness({ generateStructured } as unknown as ModelPort, false, undefined, { captured: true, spans: true, fixture: data });
+  await expect(test.advance()).resolves.toBeNull();
+  const checkpoint = SourceSpanClaimsCheckpointSchema.parse(test.checkpoint());
+  expect(checkpoint.rawProposal).toEqual(raw);
+  expect(checkpoint.proposal).toEqual(projectSourceSpanClaimsV2(raw, data.document, test.stepId));
+  expect(checkpoint.passages).toHaveLength(30);
+  expect(checkpoint.claims).toHaveLength(raw.claims.length);
+  expect(checkpoint.claims[0]!.passageIds).toEqual(checkpoint.passages.map(passage => passage.id));
+  checkpoint.passages.forEach(passage => expect(() => verifyPassage(data.document, passage)).not.toThrow());
+  expect(generateStructured.mock.calls[0]![0]).toMatchObject({ instructionVersion: "course-source-spans-v2",
+    untrustedInput: { document: { spans: createSourceSpansV2(data.document) } } });
+  expect((generateStructured.mock.calls[0]![0] as { untrustedInput: { document: unknown } }).untrustedInput.document).not.toHaveProperty("blocks");
+});
+
+it.each(["unknown span", "foreign outcome", "model quote"])("rejects %s in a server-span extraction", async reason => {
+  const data = extractionFixture(), raw = spanProposal(data);
+  if (reason === "unknown span") raw.passages[0]!.sourceSpanId = "span-unknown";
+  if (reason === "foreign outcome") raw.claims[0]!.outcomeIds = [id(999)];
+  if (reason === "model quote") Object.assign(raw.passages[0]!, { quote: "Invented quotation" });
+  const test = commitHarness({ generateStructured: vi.fn(async () => ({ data: raw })) } as unknown as ModelPort, false, undefined,
+    { captured: true, spans: true, fixture: data });
+  await expect(test.advance()).rejects.toThrow(); expect(test.savedClaims).toHaveLength(0);
+});
 
 function localIdentityFixture() {
   const test = extractionFixture();
@@ -345,23 +379,25 @@ it.each(["foreign source", "foreign outcome", "unknown passage reference", "dupl
   expect(test.savedClaims).toHaveLength(0);
 });
 
-function evidenceHarness(marked = true, identities = false) {
-  const test = identities ? localIdentityFixture() : extractionFixture(), { binding, document, data, moduleId } = test;
+function evidenceHarness(marked = true, identities = false, spanSelections = false) {
+  const test = identities || spanSelections ? localIdentityFixture() : extractionFixture(), { binding, document, data, moduleId } = test;
   const readStepId = id(810), extractionStepId = id(813), knowledgeStepId = id(840);
-  const rawProposal = structuredClone(test.proposal);
-  const proposal = identities ? projectSourceClaimIdentities(rawProposal, extractionStepId) : test.proposal;
+  const rawProposal = structuredClone(test.proposal), rawSpans = spanProposal(test);
+  const proposal = spanSelections ? projectSourceSpanClaimsV2(rawSpans, document, extractionStepId) : identities ? projectSourceClaimIdentities(rawProposal, extractionStepId) : test.proposal;
   const passages = projectSourcePassages(document, proposal.passages);
   if (!marked) proposal.passages = structuredClone(passages);
   const claim: SourceClaim = { ...proposal.claims[0]!, ownerId: binding.course.ownerId, runStepId: extractionStepId, createdAt: "2026-10-26T00:00:00.000Z" };
-  const extraction = AnySourceClaimsCheckpointSchema.parse({ kind: identities ? "course.source.claims.v2" : "course.source.claims", moduleId, operationId: id(831), sourceReadStepIds: [readStepId],
-    proposal, claims: [claim], passages, ...(marked ? { passageProjection: "exact-quote-v1" } : {}), ...(identities ? { rawProposal } : {}) });
+  const extraction = AnySourceClaimsCheckpointSchema.parse({ kind: spanSelections ? "course.source.claims.v3" : identities ? "course.source.claims.v2" : "course.source.claims", moduleId, operationId: id(831), sourceReadStepIds: [readStepId],
+    proposal, claims: [claim], passages, ...(marked ? { passageProjection: "exact-quote-v1" } : {}), ...(spanSelections ? { rawProposal: rawSpans } : identities ? { rawProposal } : {}) });
   const knowledge = structuredClone(data.knowledge[0]!);
-  if (identities) for (const outcome of knowledge.outcomes) for (const evidence of [...outcome.concepts, ...outcome.misconceptions]) evidence.claimIds = [claim.id];
+  if (identities || spanSelections) for (const outcome of knowledge.outcomes) for (const evidence of [...outcome.concepts, ...outcome.misconceptions]) evidence.claimIds = [claim.id];
   const records = new Map<string, unknown>([[readStepId, { kind: "course.source.read", moduleId, approvalDigest: digest, sourceId: document.id, contentDigest: document.contentDigest }],
     [extractionStepId, extraction], [knowledgeStepId, { kind: "course.module.knowledge", knowledge, operationId: id(841), sourceReadStepIds: [readStepId] }]]);
-  const providers = new Map([[id(831), { stepId: extractionStepId, data: structuredClone(identities ? rawProposal : proposal) }], [id(841), { stepId: knowledgeStepId, data: knowledge }]]);
+  const providers = new Map([[id(831), { stepId: extractionStepId, data: structuredClone(spanSelections ? rawSpans : identities ? rawProposal : proposal) }], [id(841), { stepId: knowledgeStepId, data: knowledge }]]);
   const capturedPolicy: Record<string, unknown> = { kind: "course.generation.policy", version: "course-generation-batch-v2", batchSize: 5, maxOutputTokens: 16384,
-    approvalDigest: digest, sourceClaimIdentityPolicy: "server-source-identities-v1" };
+    approvalDigest: digest, sourceClaimIdentityPolicy: spanSelections ? "server-source-spans-v2" : "server-source-identities-v1" };
+  const extractionInput = spanSelections ? jsonDigest({ moduleId, outcomes: binding.draft.outcomes, document: sourceSpanDocumentV2(document) }) : digest;
+  const savedInput = { digest: extractionInput };
   const rateCard = { policyVersion: CANDIDATE_MODEL_POLICY, model: candidatePolicy.model, provider: candidatePolicy.provider };
   const tx = { query: vi.fn(async (sql: string, values: unknown[]) => {
     const provider = providers.get(String(values[0])), result = records.get(String(values[0]));
@@ -369,11 +405,11 @@ function evidenceHarness(marked = true, identities = false) {
     if (sql.startsWith("SELECT model_id,provider_tag")) row = provider ? { model_id: candidatePolicy.model, provider_tag: candidatePolicy.provider,
       rate_card: rateCard, rate_card_digest: jsonDigest(rateCard) } : undefined;
     else if (sql.includes("FROM unfurl.ai_provider_operations o JOIN")) row = provider ? { operation_id: values[0], run_step_id: provider.stepId,
-      input_digest: digest, request_digest: digest, response_digest: digest, provider_request_id: "synthetic-only", rate_card_digest: jsonDigest(rateCard),
+      input_digest: provider.stepId === extractionStepId ? savedInput.digest : digest, request_digest: digest, response_digest: digest, provider_request_id: "synthetic-only", rate_card_digest: jsonDigest(rateCard),
       state: "settled", usage: {}, result: { model: candidatePolicy.model, provider: candidatePolicy.providerName, failure: null, finishReason: "stop", content: JSON.stringify(provider.data) } } : undefined;
     else {
-      const newProtocol = identities && result === extraction;
-      row = result ? { id: values[0], input_digest: digest, result_reference: result,
+      const newProtocol = (identities || spanSelections) && result === extraction;
+      row = result ? { id: values[0], input_digest: result === extraction ? savedInput.digest : digest, result_reference: result,
         schema_digest: newProtocol ? COURSE_GENERATION_V2_SCHEMA_DIGEST : COURSE_GENERATION_SCHEMA_DIGEST,
         capability_digest: getCapabilityCatalogDigest(), validation_policy_digest: newProtocol ? COURSE_VALIDATION_V2_POLICY_DIGEST : COURSE_VALIDATION_POLICY_DIGEST,
         approval_digest: digest, generation_policy: newProtocol ? { result: capturedPolicy, schema: COURSE_GENERATION_SCHEMA_DIGEST,
@@ -387,7 +423,7 @@ function evidenceHarness(marked = true, identities = false) {
   });
   vi.spyOn(PostgresCurriculumResearchRepository.prototype, "getClaim").mockImplementation(async (_tx, ownerId, claimId) =>
     ownerId === claim.ownerId && claimId === claim.id ? claim : null);
-  return { ...test, extraction, passages, providers, capturedPolicy, load: () => new GenerationEvidenceRepository().loadKnowledge(tx, binding, knowledgeStepId) };
+  return { ...test, extraction, passages, providers, capturedPolicy, savedInput, load: () => new GenerationEvidenceRepository().loadKnowledge(tx, binding, knowledgeStepId) };
 }
 
 it.each([true, false])("verifies source-bound evidence for marked=%s while retaining the original paid proposal", async marked => {
@@ -429,4 +465,26 @@ it.each(["raw response", "raw and projection", "projected identity", "projection
   if (mutation === "canonical coordinates") test.extraction.passages[0]!.end = 341;
   if (mutation === "missing capture") delete test.capturedPolicy.sourceClaimIdentityPolicy;
   await expect(test.load()).rejects.toThrow("provider.invalid_output");
+});
+
+it("replays a server-span checkpoint against the exact paid selection and saved document", async () => {
+  const test = evidenceHarness(true, false, true), before = JSON.stringify(test.extraction);
+  await expect(test.load()).resolves.toMatchObject({ facts: { passages: test.passages } });
+  expect(JSON.stringify(test.extraction)).toBe(before);
+});
+
+it.each(["paid selection", "unknown span", "canonical quote", "document", "source identity", "capture", "input digest"])("rejects changed %s in span checkpoint replay", async mutation => {
+  const test = evidenceHarness(true, false, true);
+  if (test.extraction.kind !== "course.source.claims.v3") throw new Error("Missing span checkpoint");
+  if (mutation === "paid selection") {
+    test.extraction.rawProposal.passages[0]!.sourceSpanId = test.extraction.rawProposal.passages[1]!.sourceSpanId;
+    test.extraction.proposal = projectSourceSpanClaimsV2(test.extraction.rawProposal, test.document, id(813));
+  }
+  if (mutation === "unknown span") test.extraction.rawProposal.passages[0]!.sourceSpanId = "span-unknown";
+  if (mutation === "canonical quote") test.extraction.proposal.passages[0]!.quote = "Different quotation";
+  if (mutation === "document") { test.document.blocks[0]!.text += "Changed"; test.document.contentDigest = jsonDigest(test.document.blocks, 2 * 1024 * 1024); }
+  if (mutation === "source identity") test.document.id = id(999);
+  if (mutation === "capture") test.capturedPolicy.sourceClaimIdentityPolicy = "server-source-identities-v1";
+  if (mutation === "input digest") test.savedInput.digest = "e".repeat(64);
+  await expect(test.load()).rejects.toThrow();
 });
