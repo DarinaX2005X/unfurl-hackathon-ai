@@ -11,7 +11,7 @@ import { jsonDigest } from "./json";
 export interface ApprovedRateCard { snapshot: JsonObject; digest: string; contextTokens: number; maxOutputTokens: number; observedAt: number }
 const endpointSchema = z.object({
   name: z.string(), model_id: z.string(), provider_name: z.string(), tag: z.string(),
-  context_length: z.number().int().positive().max(2_000_000), max_completion_tokens: z.number().int().positive().max(2_000_000),
+  context_length: z.number().int().positive().safe(), max_completion_tokens: z.number().int().positive().safe(),
   supported_parameters: z.array(z.string()), pricing: z.record(z.string(), z.union([z.string(), z.number()])), status: z.literal(0),
 });
 

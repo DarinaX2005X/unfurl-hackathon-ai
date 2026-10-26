@@ -5,10 +5,11 @@ import { IdSchema } from "../../domain/common";
 import { RunSnapshotSchema } from "../../domain/generation";
 import { GenerationSnapshotSchema } from "../../domain/generation-observer";
 import type { Actor } from "../auth/actor";
-import { ServiceFault } from "../auth/errors";
+import { ServiceFault, unavailable } from "../auth/errors";
 import { withSystemTransaction, type DbTransaction } from "../db";
 import { executeIdempotentInTransaction } from "../idempotency";
 import {PostgresBudget} from "../budget/postgres";
+import {resolveJobFunding} from "../budget/funding";
 import { getRuntimeAdmission } from "./composition";
 import { enqueueAcceptedRun } from "./enqueue";
 import { readRunSnapshot, requireObservedRun, type ObservedRunKind } from "./observer";
@@ -76,7 +77,14 @@ export async function retryRun(actor:Actor,id:string,kind:ObservedRunKind,key:st
     if(owned!==1)throw new ServiceFault(404,"not_found","generation.notFound");
     // Persist only identity; the returned snapshot is always current.
     const result=await executeIdempotentInTransaction(tx,actor,{operation:`run.${kind}.retry`,key,body:{runId:id},parseResult:z.object({runId:IdSchema}).strict()},async()=>{const data=await retryRunInTransaction(tx,actor,id,kind);
-      if(kind==="agent_turn")await new PostgresBudget(z.uuid().parse(process.env.AI_BUDGET_ID),work=>work(tx)).assertAvailable({probe:false});
+      if(kind==="agent_turn"){
+        // Receipt recovery may return the original run. Its immutable job funding,
+        // rather than the actor's current default, remains authoritative.
+        const job=(await tx.query<{id:string}>("SELECT id FROM unfurl.execution_jobs WHERE agent_turn_run_id=$1",[data.runId])).rows[0];
+        if(!job)throw unavailable("generation.unavailable");
+        const funding=await resolveJobFunding(tx,job.id);
+        await new PostgresBudget(funding.budgetId,work=>work(tx)).assertAvailable({probe:false});
+      }
       return{status:202,data};});
     const snapshot=await readRunSnapshot(tx,actor,result.data.runId,kind);
     return {status:result.status,data:kind==="generation"?GenerationSnapshotSchema.parse(snapshot):RunSnapshotSchema.parse(snapshot)};

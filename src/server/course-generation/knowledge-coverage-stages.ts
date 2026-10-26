@@ -5,6 +5,7 @@ import type { ModelPort } from "@/server/ai/ports";
 import type { SearchPolicyId } from "@/server/ai/model-policy";
 import type { ApprovedBuildBinding } from "@/server/curricula/build-binding";
 import type { ResearchPort } from "@/server/research/ports";
+import type { ReaderCapabilities } from "@/server/research/reader-capabilities";
 import type { RunContext, StepEffectContext } from "@/server/runs/ports";
 import { assessKnowledgeCoverageReview, createKnowledgeCoverageInput, KnowledgeCoverageReviewSchema,
   KNOWLEDGE_COVERAGE_INSTRUCTIONS } from "@/server/course-validation/knowledge";
@@ -24,8 +25,10 @@ export function checkedKnowledgeMaterial(input: { sourceKnowledgeStepId: string;
 /** One durable effect per advance; each changed knowledge revision must pass a fresh independent review. */
 export async function advanceKnowledgeCoverage(input: { context: RunContext; binding: ApprovedBuildBinding; index: StageIndex;
   source: LoadedModuleKnowledge; round: number; correction: unknown; model: ModelPort;
-  research: (effect: StepEffectContext,searchPolicy?:SearchPolicyId) => ResearchPort; searchPolicy?:SearchPolicyId; priorKnowledge: readonly ModuleKnowledge[] }): Promise<LoadedModuleKnowledge | null> {
+  research: (effect: StepEffectContext,searchPolicy?:SearchPolicyId) => ResearchPort; searchPolicy?:SearchPolicyId; priorKnowledge: readonly ModuleKnowledge[];
+  sourceSelectionPolicy?:"source-selection-v1"|"source-selection-v2";readerCapabilities?:ReaderCapabilities }): Promise<LoadedModuleKnowledge | null> {
   const { context, binding, index } = input, repository = new GenerationEvidenceRepository();
+  if(Boolean(input.sourceSelectionPolicy)!==Boolean(input.readerCapabilities))throw new ProviderFailure("invalid_output");
   const moduleId = input.source.knowledge.moduleId, prefix = `course/${moduleId}/research/coverage-v1/round/${input.round}`;
   const checkedKey = `${prefix}/checked`, correction = checkpointJson(input.correction);
   const saved = await loadStage(context, binding, index, checkedKey, CheckedModuleKnowledgeCheckpointSchema);
@@ -82,6 +85,7 @@ export async function advanceKnowledgeCoverage(input: { context: RunContext; bin
     if (revision === 2) throw new ProviderFailure("invalid_output");
     const revised = await advanceModuleResearch({ context, binding, index, moduleId, model: input.model,
       research: input.research, priorKnowledge: input.priorKnowledge,...(input.searchPolicy?{searchPolicy:input.searchPolicy}:{}),
+      ...(input.sourceSelectionPolicy?{sourceSelectionPolicy:input.sourceSelectionPolicy,readerCapabilities:input.readerCapabilities!}:{}),
       revision: { prefix: `${prefix}/revision/${revision + 1}`, previous: source,
         reviews: reviews.map(review => ({ stepId: review.step.id, review: review.review })), correction } });
     if (!revised) return null;

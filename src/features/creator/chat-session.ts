@@ -83,6 +83,8 @@ export class ChatSession {
   }
 
   getSnapshot = (): ChatSessionState => this.state;
+  getBuildSeed = (): Pick<ConversationDetail, "conversation" | "builds"> | null => this.current() && this.detail
+    ? { conversation: this.detail.conversation, builds: this.detail.builds } : null;
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
   private current() { return !this.disposed && this.scope.actorId === this.options.actorId; }
   private publish(change: Partial<ChatSessionState>) {

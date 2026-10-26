@@ -26,11 +26,12 @@ export interface ConversationProps {
   onRetry: (messageId: string) => void;
   onEdit: (messageId: string) => void;
   builds?: ConversationBuildView[];
+  buildsLoading?: boolean;
   buildInteraction?: BuildInteraction;
 }
 
 export function Conversation({ messages, actionEvents = [], currentRunId = null, pending, transmittingId, interrupted = false, active = true,
-  hasEarlierActivity = false, earlierActivityPending = false, earlierActivityError = false, onLoadEarlierActivity, onRetry, onEdit, builds = [], buildInteraction }: ConversationProps) {
+  hasEarlierActivity = false, earlierActivityPending = false, earlierActivityError = false, onLoadEarlierActivity, onRetry, onEdit, builds = [], buildsLoading = false, buildInteraction }: ConversationProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const following = useRef(true);
   const [hasNewContent, setHasNewContent] = useState(false);
@@ -44,7 +45,8 @@ export function Conversation({ messages, actionEvents = [], currentRunId = null,
   const lastAction = runActions.at(-1);
   const activeAction = lastAction?.status === "working" ? lastAction : [...runActions].reverse().find((action) => action.status === "working" && isCourseProgramAction(action));
   const activeActionId = pending && !interrupted ? activeAction?.id ?? null : null;
-  const updateKey = `${latest?.id}:${latest?.text.length}:${latest?.delivery}:${actionEvents.length}:${pending}:${builds.map(build => build.runs.map(run => `${run.stream.run.id}:${run.stream.lastAppliedSeq}:${run.events.length}:${run.stream.progress?.updatedAt}:${run.connectionError}`).join(",")).join("|")}`;
+  const showBuildLoading = buildsLoading && builds.length === 0;
+  const updateKey = `${latest?.id}:${latest?.text.length}:${latest?.delivery}:${actionEvents.length}:${pending}:${showBuildLoading}:${builds.map(build => build.runs.map(run => `${run.stream.run.id}:${run.stream.lastAppliedSeq}:${run.events.length}:${run.stream.progress?.updatedAt}:${run.connectionError}`).join(",")).join("|")}`;
   useEffect(() => {
     const area = scrollRef.current;
     if (!area || !active) return;
@@ -82,6 +84,7 @@ export function Conversation({ messages, actionEvents = [], currentRunId = null,
         {message.role === "assistant" && (message.status === "failed" || message.status === "interrupted") && <p className="creator-message__status">{message.status === "interrupted" ? "Stopped. This response is incomplete." : "This response could not be completed."}</p>}
         {message.status !== "streaming" && <div className="creator-message__tools"><IconButton label="Copy message" icon={copyState?.id === message.id && copyState.status === "copied" ? <Check /> : <Copy />} onClick={() => void copyMessage(message)} />{copyState?.id === message.id && <span role="status">{copyState.status === "copied" ? "Copied" : "Select the message text to copy it."}</span>}</div>}
       </article>; })}
+      {showBuildLoading && <div className="creator-conversation__status" role="status">Loading course activity…</div>}
       {pending && !transmittingId && !activeActionId && <div className="creator-conversation__status" role="status"><RespondingMark /><span>Unfurl is responding</span></div>}
     </div></div>
     {hasNewContent && <Button className="creator-conversation__latest" variant="secondary" size="compact" onClick={() => {

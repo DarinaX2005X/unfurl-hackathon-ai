@@ -7,7 +7,7 @@ import { PassageSchema, SearchResultSchema, SourceDocumentSchema, type Passage, 
 type DateValue = Date | string;
 interface SourceRow {
   id: string; requested_url: string; final_url: string; title: string; retrieved_at: DateValue; published_at: DateValue | null;
-  media_type: string; raw_digest: string; extractor_version: string; content_digest: string; blocks: unknown; extraction_state: string;
+  media_type: string; raw_digest: string; extractor_version: string; content_digest: string; blocks: unknown; extraction_state: string; pdf_part?:unknown;
 }
 interface PassageRow { id: string; source_id: string; block_id: string; start_utf16: number; end_utf16: number; quote: string }
 interface SearchRow { id: string; operation_id: string; requested_query: string; executed_query: string | null;
@@ -17,7 +17,7 @@ function source(row: SourceRow): SourceDocument {
   const result = SourceDocumentSchema.parse({ id: row.id, requestedUrl: row.requested_url, finalUrl: row.final_url, title: row.title,
     retrievedAt: new Date(row.retrieved_at).toISOString(), publishedAt: row.published_at ? new Date(row.published_at).toISOString() : null,
     mediaType: row.media_type, rawDigest: row.raw_digest, extractorVersion: row.extractor_version, contentDigest: row.content_digest,
-    blocks: row.blocks, extractionState: row.extraction_state });
+    blocks: row.blocks, extractionState: row.extraction_state,...(row.pdf_part?{pdfPart:row.pdf_part}:{}) });
   if (jsonDigest(result.blocks, 2 * 1024 * 1024) !== result.contentDigest) throw conflict();
   return result;
 }
@@ -64,10 +64,10 @@ export class PostgresResearchRepository {
     const value = SourceDocumentSchema.parse(document);
     if (jsonDigest(value.blocks, 2 * 1024 * 1024) !== value.contentDigest) throw conflict();
     await tx.query(`INSERT INTO unfurl.research_source_documents
-      (id,requested_url,final_url,title,retrieved_at,published_at,media_type,raw_digest,extractor_version,content_digest,blocks,extraction_state)
-      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) ON CONFLICT (id) DO NOTHING`,
+      (id,requested_url,final_url,title,retrieved_at,published_at,media_type,raw_digest,extractor_version,content_digest,blocks,extraction_state,pdf_part)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13) ON CONFLICT (id) DO NOTHING`,
     [value.id, value.requestedUrl, value.finalUrl, value.title, value.retrievedAt, value.publishedAt, value.mediaType,
-      value.rawDigest, value.extractorVersion, value.contentDigest, JSON.stringify(value.blocks), value.extractionState]);
+      value.rawDigest, value.extractorVersion, value.contentDigest, JSON.stringify(value.blocks), value.extractionState,value.pdfPart?JSON.stringify(value.pdfPart):null]);
     const stored = await this.getSource(tx, value.id);
     if (!stored || canonicalJson(stored, 3 * 1024 * 1024) !== canonicalJson(value, 3 * 1024 * 1024)) throw conflict();
     return stored;

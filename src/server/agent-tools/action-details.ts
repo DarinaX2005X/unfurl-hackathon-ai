@@ -24,6 +24,8 @@ export function agentActionDetails(decision: AgentDecision, snapshot: ContextSna
       const url = decision.input.url;
       const source = snapshot.sources.find((item) => item.url === url);
       details = { source: { title: source?.title ?? new URL(url).hostname, url } };
+    } else if (decision.input.kind === "continue") {
+      details = sourceActionDetails(snapshot, decision.input.sourceId);
     } else if (decision.input.kind === "blocks") {
       const sourceId = decision.input.sourceId;
       const known = snapshot.sourceMemory?.sources.find((item) => item.sourceId === sourceId);

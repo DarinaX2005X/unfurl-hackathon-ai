@@ -6,13 +6,17 @@ import {modelPolicy,ModelPolicySchema} from "../ai/model-policy";
 import { canonicalJson, jsonDigest } from "../ai/json";
 import { ProviderFailure, type ProviderFailureCode } from "../ai/failure";
 import { canReserve, type BudgetState } from "./calculations";
+import { worstCaseMicroUsd } from "./calculations";
+import { resolveProviderOutput, verifyProviderOutputEvidence } from "../ai/output-policy";
+import { assertStepOutputPolicy } from "../runs/output-policy";
 import {NATIVE_USAGE_VERSION,normalizeNativeUsage} from "../ai/native-usage";
-import type {JsonObject} from "../../domain/common";
+import { JsonObjectSchema, type JsonObject } from "../../domain/common";
 import { readMicroUsd } from "./money";
-import type { BudgetOperationContext, BudgetPort, BudgetReservation, DispatchDecision, ProviderResponseReceipt, ReserveRequest } from "./ports";
+import { assertOperationFunding, type FundingKind } from "./funding";
+import type { BudgetAllocation, BudgetOperationContext, BudgetPort, BudgetReservation, DispatchDecision, ProviderResponseReceipt, ReserveRequest } from "./ports";
 
 export type BudgetTransactionRunner = <T>(work: (tx: DbTransaction) => Promise<T>) => Promise<T>;
-interface CampaignRow { id: string; settled_micro_usd: string; reserved_micro_usd: string; halted: boolean }
+interface CampaignRow { id: string; settled_micro_usd: string; reserved_micro_usd: string; halted: boolean; kind?: FundingKind }
 interface OperationRow {
   id: string; budget_id: string; logical_operation_id: string; attempt: number; run_step_id: string | null;
   request_digest: string; purpose: string; state: BudgetReservation["state"]; reserved_micro_usd: string;
@@ -20,8 +24,9 @@ interface OperationRow {
 }
 interface ReceiptRow { provider_request_id: string | null; response_digest: string; reported_cost_usd: string | null; usage: ProviderResponseReceipt["usage"]; result: ProviderResponseReceipt["result"] }
 const unavailable = () => new ProviderFailure("unavailable");
-function reservation(row: OperationRow): BudgetReservation {
-  return { id: row.id, budgetId: row.budget_id, requestDigest: row.request_digest, amountMicroUsd: row.reserved_micro_usd, state: row.state };
+function reservation(row: OperationRow, outputPolicy?: BudgetOperationContext["outputPolicy"]): BudgetReservation {
+  return { id: row.id, budgetId: row.budget_id, requestDigest: row.request_digest, amountMicroUsd: row.reserved_micro_usd, state: row.state,
+    ...(outputPolicy ? { outputPolicy } : {}) };
 }
 function receipt(row: ReceiptRow): ProviderResponseReceipt {
   return { providerRequestId: row.provider_request_id, responseDigest: row.response_digest,
@@ -34,7 +39,7 @@ export class PostgresBudget implements BudgetPort {
     (work) => withSystemTransaction("run_execution", work)) {}
 
   private async lock(tx: DbTransaction): Promise<CampaignRow> {
-    const row = (await tx.query<CampaignRow>(`SELECT id, settled_micro_usd::text, reserved_micro_usd::text, halted
+    const row = (await tx.query<CampaignRow>(`SELECT id, settled_micro_usd::text, reserved_micro_usd::text, halted, to_jsonb(ai_budgets)->>'kind' AS kind
       FROM unfurl.ai_budgets WHERE id=$1 FOR UPDATE`, [this.budgetId])).rows[0];
     if (!row) throw unavailable();
     return row;
@@ -46,7 +51,7 @@ export class PostgresBudget implements BudgetPort {
       FROM unfurl.ai_provider_operations WHERE budget_id=$1`, [this.budgetId])).rows[0];
     if (!sums) throw unavailable();
     return { settled: readMicroUsd(row.settled_micro_usd), reserved: readMicroUsd(row.reserved_micro_usd),
-      halted: row.halted, probeSettled: readMicroUsd(sums.probe_settled), probeReserved: readMicroUsd(sums.probe_reserved) };
+      halted: row.halted, ...(row.kind ? {kind: row.kind} : {}), probeSettled: readMicroUsd(sums.probe_settled), probeReserved: readMicroUsd(sums.probe_reserved) };
   }
   private async operation(tx: DbTransaction, value: BudgetReservation): Promise<OperationRow> {
     if (value.budgetId !== this.budgetId) throw unavailable();
@@ -91,15 +96,31 @@ export class PostgresBudget implements BudgetPort {
       return ModelPolicySchema.parse(row.rate_card.policyVersion);
     });
   }
+  async existingAllocation(context: BudgetOperationContext): Promise<BudgetAllocation | null> {
+    return this.transaction(async tx => {
+      if (context.outputPolicy) await assertStepOutputPolicy(tx, context.runStepId, context.outputPolicy);
+      const row = (await tx.query<OperationRow>(`SELECT * FROM unfurl.ai_provider_operations
+        WHERE logical_operation_id=$1 AND attempt=$2`, [context.logicalOperationId, context.attempt])).rows[0];
+      if (!row) return null;
+      if (row.id !== context.reservationId || row.budget_id !== this.budgetId || row.run_step_id !== context.runStepId ||
+          row.logical_operation_id !== context.logicalOperationId || row.attempt !== context.attempt ||
+          (row.purpose === "capability_probe") !== context.probe) throw unavailable();
+      const rateCard = JsonObjectSchema.parse(row.rate_card);
+      if (jsonDigest(rateCard, 64 * 1024) !== row.rate_card_digest) throw unavailable();
+      if (context.outputPolicy) resolveProviderOutput(context.outputPolicy, rateCard, row.rate_card_digest);
+      return { reservation: reservation(row, context.outputPolicy), rateCard, rateCardDigest: row.rate_card_digest };
+    });
+  }
   async recover(context: BudgetOperationContext, requestDigest: string): Promise<{ reservation: BudgetReservation; receipt: ProviderResponseReceipt } | null> {
     return this.transaction(async (tx) => {
       await this.lock(tx);
+      if (context.outputPolicy) await assertStepOutputPolicy(tx, context.runStepId, context.outputPolicy);
       const row = (await tx.query<OperationRow>("SELECT * FROM unfurl.ai_provider_operations WHERE logical_operation_id=$1 AND attempt=$2 FOR UPDATE", [context.logicalOperationId, context.attempt])).rows[0];
       if (!row) return null;
       if (row.id !== context.reservationId || row.budget_id !== this.budgetId || row.request_digest !== requestDigest ||
         row.run_step_id !== context.runStepId || (row.purpose === "capability_probe") !== context.probe) throw unavailable();
       const saved = (await tx.query<ReceiptRow>("SELECT * FROM unfurl.ai_provider_responses WHERE operation_id=$1", [row.id])).rows[0];
-      if (saved) return { reservation: reservation(row), receipt: await this.derivedReceipt(tx,row.id,saved) };
+      if (saved) return { reservation: reservation(row, context.outputPolicy), receipt: await this.derivedReceipt(tx,row.id,saved) };
       if (row.state !== "reserved") throw unavailable();
       return null;
     });
@@ -112,6 +133,15 @@ export class PostgresBudget implements BudgetPort {
       jsonDigest(request.rateCard, 64 * 1024) !== request.rateCardDigest) throw unavailable();
     return this.transaction(async (tx) => {
       const campaign = await this.lock(tx);
+      if (campaign.kind) await assertOperationFunding(tx, request, this.budgetId);
+      if (request.outputPolicy) {
+        await assertStepOutputPolicy(tx, request.runStepId, request.outputPolicy);
+        const output = resolveProviderOutput(request.outputPolicy, request.rateCard, request.rateCardDigest);
+        const search = request.purpose === "web_search";
+        const expected = worstCaseMicroUsd({ contextTokens: output.contextTokens, outputTokens: output.endpointMaxOutputTokens,
+          inferencePasses: search ? 2 : 1, searches: search ? 1 : 0, priceCaps: policy.priceCaps });
+        if (amount !== expected) throw unavailable();
+      }
       const prior = (await tx.query<OperationRow>(`SELECT * FROM unfurl.ai_provider_operations
         WHERE logical_operation_id=$1 AND attempt=$2 FOR UPDATE`, [request.logicalOperationId, request.attempt])).rows[0];
       if (prior) {
@@ -119,7 +149,7 @@ export class PostgresBudget implements BudgetPort {
           prior.purpose !== request.purpose || prior.reserved_micro_usd !== request.amountMicroUsd ||
           prior.run_step_id !== request.runStepId || prior.rate_card_digest !== request.rateCardDigest ||
           canonicalJson(prior.rate_card) !== canonicalJson(request.rateCard)) throw unavailable();
-        return reservation(prior);
+        return reservation(prior, request.outputPolicy);
       }
       const admission = canReserve(await this.state(tx, campaign), amount, request.probe);
       if (!admission.allowed) throw new ProviderFailure("budget_exhausted");
@@ -130,7 +160,7 @@ export class PostgresBudget implements BudgetPort {
         request.purpose, request.amountMicroUsd, policy.model, policy.provider, request.rateCardDigest, JSON.stringify(request.rateCard)])).rows[0];
       if (!row) throw unavailable();
       await this.entry(tx, row.id, "reserve", amount, 0n, request.requestDigest);
-      return reservation(row);
+      return reservation(row, request.outputPolicy);
     });
   }
   async claimDispatch(value: BudgetReservation): Promise<DispatchDecision> {
@@ -157,14 +187,23 @@ export class PostgresBudget implements BudgetPort {
   async recordResponse(value: BudgetReservation, response: ProviderResponseReceipt, cost: string | null): Promise<void> {
     const actual = cost === null ? null : readMicroUsd(cost);
     canonicalJson(response.usage, 64 * 1024);
-    canonicalJson(response.result, 2 * 1024 * 1024);
+    canonicalJson(response.result, value.outputPolicy ? Infinity : 2 * 1024 * 1024);
     await this.transaction(async (tx) => {
       await this.lock(tx);
       const row = await this.operation(tx, value);
+      if (value.outputPolicy) {
+        await assertStepOutputPolicy(tx, row.run_step_id, value.outputPolicy);
+        const result = response.result;
+        if (result !== null && typeof result === "object" && !Array.isArray(result) && typeof result.model === "string") {
+          verifyProviderOutputEvidence({ capture: value.outputPolicy, rateCard: JsonObjectSchema.parse(row.rate_card),
+            rateCardDigest: row.rate_card_digest, requestDigest: row.request_digest, result });
+        }
+      }
       if (!["dispatched", "unknown", "settled"].includes(row.state)) throw unavailable();
       const prior = (await tx.query<ReceiptRow>("SELECT * FROM unfurl.ai_provider_responses WHERE operation_id=$1", [row.id])).rows[0];
       if (prior) {
-        if (canonicalJson(receipt(prior), 3 * 1024 * 1024) !== canonicalJson(response, 3 * 1024 * 1024)) throw unavailable();
+        const receiptLimit = value.outputPolicy ? Infinity : 3 * 1024 * 1024;
+        if (canonicalJson(receipt(prior), receiptLimit) !== canonicalJson(response, receiptLimit)) throw unavailable();
         // Initial accounting is immutable. Later verified costs use reconcile(), with separate evidence.
         if (row.state === "settled" && actual !== null && row.actual_micro_usd !== actual.toString()) throw unavailable();
         return;

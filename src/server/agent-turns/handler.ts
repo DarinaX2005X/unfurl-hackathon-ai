@@ -10,7 +10,7 @@ import { AgentDecisionReceiptSchema, agentDecisionSchemaForCapture, type AgentDe
 import { agentActionDetails, agentActionLabelKey } from "../agent-tools/action-details";
 import { stableExecutionId } from "../runs/identity";
 import { readAgentDecisionRetryPolicy,readAgentDecisionModelRetryPolicy } from "../runs/decision-policy";
-import { READER_CAPABILITY_INSTRUCTIONS } from "../research/reader-capabilities";
+import { readerCapabilityInstructions } from "../research/reader-capabilities";
 import { executeAgentTool, prepareAgentDecision, type AgentToolDependencies } from "../agent-tools/executor";
 import * as repository from "./repository";
 import { ContextSnapshotSchema, type ContextSnapshot } from "./repository";
@@ -33,7 +33,7 @@ const postgresJournal: AgentJournal = {
 export const AGENT_INSTRUCTION_VERSION = "adaptive-course-agent-v1";
 /** Receipt-only resumes keep their original policy/epoch; a new paid epoch may use the expanded allowance. */
 export function plannerOutputTokens(snapshot: Pick<ContextSnapshot, "planningPolicy" | "agentProtocol">, retryEpoch: number, retryPolicy: 32768 | null = null): 4096 | 8192 | 32768 {
-  if (retryPolicy === 32768 || snapshot.agentProtocol === "conversational-v3" || snapshot.planningPolicy?.maxOutputTokens === 32768) return 32768;
+  if (retryPolicy === 32768 || snapshot.agentProtocol === "conversational-v3" || snapshot.agentProtocol === "conversational-pdf-v4" || snapshot.planningPolicy?.maxOutputTokens === 32768) return 32768;
   return snapshot.planningPolicy?.maxOutputTokens === 8192 || retryEpoch > 0 ? 8192 : 4096;
 }
 const instructions = `You are Unfurl's course authoring agent. Select exactly ONE permitted typed tool based on the current user message, saved course artifacts and observed tool results. You are an adaptive agent, not a fixed wizard.
@@ -46,6 +46,7 @@ After a useful saved result, respond with concise, concrete guidance in the conv
 const searchMemoryInstructions = `searchMemory preserves searches from the entire current turn, including exact search and candidate IDs. Use the saved candidate URLs instead of repeating a search just because its result is no longer the latest tool. A null query/title/URL means bounded context overflow, not a missing search: retrieve that original search with read_source {kind:"search_result",searchId,offset,limit}. This retrieval is read-only and makes no new web search. Search candidates/snippets are never read sources or evidence. Read their URL before selecting source blocks. A latest tool payload marked payloadOmitted is an explicit reference; retrieve the saved blocks or artifact with a smaller selection. Do not infer omitted text.`;
 const conversationalInstructions = `sourceMemory preserves exact saved source block identities across this turn. fullyReadBlockIds means those complete blocks were retrieved before; blocks lists available IDs, original character counts, read status and short previews. Use these retained selections across MULTIPLE sources rather than relisting a source just because another tool ran. A preview is not evidence. The curriculum composer loads the complete selected blocks and validates exact quotes. Small character counts or topic headings alone are not substantive support for a detailed course; research relevant explanatory primary-source passages. If blocks or fullyReadBlockIds is null, memory overflow is explicit: use read_source blocks with [] to recover that source's index or select the retained exact IDs. Failed URL reads retain status and attempt counts; avoid repeating an unchanged unavailable URL without a concrete reason. A null failed URL can be recovered with read_source {kind:"saved_read",stepId}. A searchMemory.history or sourceMemory.history field explicitly reports older omitted index entries; page their durable identities with read_source {kind:"history",category:"searches"|"source_reads",offset:0,limit:5}, then follow nextOffset. These pages use saved research, not new searches or URL fetches.
 Each non-final tool decision includes commentary, a concise user-facing message or null. currentTurnCommentary contains your actual recent messages from this accepted user turn; omittedCount explicitly reports older omitted messages. Do not repeat a plan or finding already communicated. If this list is empty, briefly answer the user and explain the immediate next step before substantial work, even when earlier tools already ran. In that case describe the actual present research state, not a fictional earlier message. During work, add commentary only for a meaningful finding, changed approach, limitation or next stage; use null for routine consecutive reads. Write in the conversation's language, with concrete facts from actual observations. Commentary does not end the run and must not claim an action already succeeded. Continue tools after commentary as needed. Use respond only when the work is complete or you genuinely need the user's answer; awaitingUser is an explicit clarification state. Do not narrate private reasoning or the internal tool protocol.`;
+const pdfContinuationInstructions = `A saved PDF source represents only the extracted part shown by its block index. pdfPart.hasMore means later text remains available: use read_source {kind:"continue",sourceId} with that exact saved source ID to read the next part, then use the returned new source ID for further continuation. The server derives the next position and verifies the original document identity. Never invent a cursor or replace the URL. Each part keeps its own source and block IDs for exact citations. Read the parts needed for the full requested scope; a first part, title or contents page does not establish that the rest of the document was read. pdfPart.hasMore=false means no further part follows this saved part; earlier saved parts still hold their own evidence.`;
 
 export function createAgentTurnHandler(dependencies: AgentToolDependencies, options: {
   journal?: AgentJournal;
@@ -107,7 +108,7 @@ export function createAgentTurnHandler(dependencies: AgentToolDependencies, opti
             const decision = decisionSchema.parse(output);
             const authority = await journal.authority(tx, target, context.claim.jobId);
             const receipt = await journal.prepare(tx, authority, decision, position.index, snapshot.languageIntent);
-            let afterMessageId = snapshot.agentProtocol === "conversational-v3" ? snapshot.lastAssistantMessageId ?? target.inputMessageId : undefined;
+            let afterMessageId = snapshot.agentProtocol ? snapshot.lastAssistantMessageId ?? target.inputMessageId : undefined;
             if ("commentary" in decision && decision.commentary) {
               afterMessageId = stableExecutionId(receipt.invocationId, "commentary");
               await repository.saveAssistantMessage(tx, target, afterMessageId, decision.commentary);
@@ -141,12 +142,12 @@ export function buildAgentDecisionRequest(snapshot:ContextSnapshot,budget:Budget
   override:Pick<ContextSnapshot,"modelPolicy"|"readerCapabilities">|null=null){
   const selected=override?{...snapshot,...override}:snapshot;
   const policy=agentDecisionSchemaForCapture(snapshot);
-  const baseInstructions=policy.schemaVersion===3?`${instructions}\n${searchMemoryInstructions}\n${conversationalInstructions}`:
+  const baseInstructions=policy.schemaVersion>=3?`${instructions}\n${searchMemoryInstructions}\n${conversationalInstructions}${policy.schemaVersion===4?`\n${pdfContinuationInstructions}`:""}`:
     policy.schemaVersion===2?`${instructions}\n${searchMemoryInstructions}`:instructions;
   const readerVersion=selected.readerCapabilities?.version;
   const memoryVersion=snapshot.artifactMemory?.version;
   const instructionVersion=readerVersion?`${policy.instructionVersion}:${readerVersion}`:policy.instructionVersion;
-  const trustedInstructions=readerVersion?`${baseInstructions}\n${READER_CAPABILITY_INSTRUCTIONS}`:baseInstructions;
+  const trustedInstructions=selected.readerCapabilities?`${baseInstructions}\n${readerCapabilityInstructions(selected.readerCapabilities)}`:baseInstructions;
   const artifactInstructionVersion=memoryVersion?`${instructionVersion}:${memoryVersion}`:instructionVersion;
   const artifactInstructions=memoryVersion?`${trustedInstructions}\n${ARTIFACT_MEMORY_INSTRUCTIONS}`:trustedInstructions;
   const generationVersion=snapshot.generationMemory?.version;

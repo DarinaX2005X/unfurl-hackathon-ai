@@ -9,6 +9,7 @@ import { claimJob, type RuntimeTransaction } from "../../src/server/runs/store";
 import { enqueueAcceptedRun } from "../../src/server/runs/enqueue";
 import type { RunContext, RunHandler } from "../../src/server/runs/ports";
 import { ServiceFault } from "../../src/server/auth/errors";
+import { effectStepSql } from "../../src/server/runs/output-policy";
 
 describe.skipIf(process.env.RUN_LIVE_RUN_EXECUTOR !== "1")("actual fenced executor (rollback fixtures, no provider calls)", () => {
   let client: Client; let transaction: RuntimeTransaction;
@@ -53,7 +54,7 @@ describe.skipIf(process.env.RUN_LIVE_RUN_EXECUTOR !== "1")("actual fenced execut
     expect(await executor.advance(job)).toEqual({status:"finished"}); expect(effects).toBe(2);
     expect((await client.query("SELECT status FROM unfurl.agent_turn_runs WHERE id=$1",[run])).rows[0].status).toBe("succeeded");
     expect((await client.query("SELECT count(*)::int AS n FROM unfurl.agent_turn_events WHERE run_id=$1 AND type='run.completed'",[run])).rows[0].n).toBe(1);
-    expect((await client.query("SELECT count(*)::int AS n FROM unfurl.run_steps WHERE job_id=$1 AND status='succeeded'",[job])).rows[0].n).toBe(2);
+    expect((await client.query(`SELECT count(*)::int AS n FROM unfurl.run_steps WHERE job_id=$1 AND status='succeeded' AND ${effectStepSql()}`,[job])).rows[0].n).toBe(2);
     await client.query("SET CONSTRAINTS ALL IMMEDIATE");
   },30000);
   it("rejects a duplicate live delivery, and crash recovery retains the paid-operation identity", async () => {
@@ -71,13 +72,13 @@ describe.skipIf(process.env.RUN_LIVE_RUN_EXECUTOR !== "1")("actual fenced execut
     let committed=false;
     const h=handler(async ctx=>{await ctx.step({key:"late",executionProfile:"longform_curriculum",input:null,digests,outputSchema:z.null(),resultSchema:z.null(),
       effect:async effect=>{expect(effect.deadlineAt-Date.now()).toBeGreaterThan(260000);
-        const lease=(await client.query("SELECT extract(epoch FROM j.lease_expires_at-now())::int AS job,extract(epoch FROM s.lease_expires_at-now())::int AS step FROM unfurl.execution_jobs j JOIN unfurl.run_steps s ON s.job_id=j.id WHERE j.id=$1",[job])).rows[0];
+        const lease=(await client.query(`SELECT extract(epoch FROM j.lease_expires_at-now())::int AS job,extract(epoch FROM s.lease_expires_at-now())::int AS step FROM unfurl.execution_jobs j JOIN unfurl.run_steps s ON s.job_id=j.id WHERE j.id=$1 AND ${effectStepSql("s")}`,[job])).rows[0];
         expect(lease.job).toBeGreaterThan(285);expect(lease.job).toBeLessThanOrEqual(295);expect(lease.step).toBeGreaterThan(275);expect(lease.step).toBeLessThanOrEqual(285);
         await client.query("UPDATE unfurl.agent_turn_runs SET status='cancelled' WHERE id=$1",[run]);
         await client.query("UPDATE unfurl.execution_jobs SET status='cancelled',lease_owner=NULL,lease_expires_at=NULL,fencing_token=fencing_token+1 WHERE id=$1",[job]);return null;},
       commit:async()=>{committed=true;return null;}});return{status:"succeeded"};});
     expect(await new DurableRunExecutor(new RunHandlerRegistry([h]),transaction).advance(job)).toEqual({status:"finished"});expect(committed).toBe(false);
-    expect((await client.query("SELECT count(*)::int AS n FROM unfurl.run_steps WHERE job_id=$1 AND status='succeeded'",[job])).rows[0].n).toBe(0);
+    expect((await client.query(`SELECT count(*)::int AS n FROM unfurl.run_steps WHERE job_id=$1 AND status='succeeded' AND ${effectStepSql()}`,[job])).rows[0].n).toBe(0);
   });
   it("persists an authority revision conflict as a safe failed run", async () => {
     const h=handler(async()=>{throw new Error("must not execute stale intent");});

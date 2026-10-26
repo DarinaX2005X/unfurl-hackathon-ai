@@ -65,6 +65,13 @@ describe("migration static guardrails (live PostgreSQL proof still required)", (
     expect(increase).not.toMatch(/drop (table|trigger|index)|delete from|truncate|insert into|ai_provider_operations|ai_provider_responses|ai_budget_entries/i);
   });
 
+  it("removes artificial provider and step result sizes without rewriting historical evidence", () => {
+    const output = readFileSync(`${directory}/202610250027_provider_max_output.sql`, "utf8");
+    expect(output).toContain("alter table unfurl.ai_provider_responses drop constraint ai_provider_responses_result_check");
+    expect(output).toContain("alter table unfurl.run_steps drop constraint run_step_result_bound");
+    expect(output).not.toMatch(/\b(update|delete|truncate|insert)\b|drop (table|trigger)|add constraint/i);
+  });
+
   it("pins publication and learning authority to immutable versions and saved identities", () => {
     expect(sql).toContain("add column published_version_id uuid");
     expect(sql).toContain("rename column key_version to token_key_version");

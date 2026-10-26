@@ -174,7 +174,7 @@ function AccountCreator({ actorId, conversationId = null, store = chatStore, con
   const composerText = state.composerText;
   const observedRunId = state.stream?.run.id ?? null;
   const observedRunStatus = state.stream?.run.status ?? null;
-  const builds = useConversationBuilds(actorId, conversation?.id, conversation?.activeBranchId, conversations, detail => {
+  const builds = useConversationBuilds(actorId, conversation?.id, conversation?.activeBranchId, conversations, session.getBuildSeed, detail => {
     for (const artifact of detail.artifacts) {
       const current = session.getSnapshot().conversation?.artifacts.find(item => item.courseId === artifact.courseId);
       if (current && (artifact.revision < current.revision || (artifact.revision === current.revision
@@ -375,7 +375,7 @@ function AccountCreator({ actorId, conversationId = null, store = chatStore, con
   const chat = <section className={`creator-chat${hasMessages ? " creator-chat--conversation" : ""}`} aria-label="Chat">
     {!hasMessages && <div className="creator-introduction"><h1>What would you like to learn?</h1></div>}
     {hasMessages && <Conversation messages={conversation?.messages ?? []} actionEvents={state.actionEvents} currentRunId={state.stream?.run.id ?? null} pending={pending} transmittingId={state.transmittingId}
-      builds={builds.state.builds} buildInteraction={{ actorId,
+      builds={builds.state.builds} buildsLoading={builds.state.loading && artifacts.some(artifact => artifact.approval)} buildInteraction={{ actorId,
         showCourseLabels: new Set(builds.state.builds.map(build => build.courseId)).size > 1,
         onCommand: (approvalId, kind) => { void builds.controller?.command(approvalId, kind); },
         onEarlier: runId => { void builds.controller?.earlier(runId); },

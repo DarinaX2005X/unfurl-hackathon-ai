@@ -33,7 +33,7 @@ export const ContextSnapshotSchema = z.object({
   sourceMemory: SourceMemorySchema.optional(),
   artifactMemory: ArtifactMemorySchema.optional(),
   generationMemory: GenerationMemorySchema.optional(),
-  agentProtocol: z.literal("conversational-v3").optional(),
+  agentProtocol: z.enum(["conversational-v3", "conversational-pdf-v4"]).optional(),
   readerCapabilities: ReaderCapabilitiesSchema.optional(),
   modelPolicy:ModelPolicySchema.optional(),
   searchPolicy:SearchPolicySchema.optional(),
@@ -47,7 +47,8 @@ export const ContextSnapshotSchema = z.object({
   omittedRecentMessages: z.number().int().positive().optional(),
   languageIntent: z.object({ courseId: IdSchema, expectedCourseRevision: z.number().int(), draftId: IdSchema,
     expectedDraftRevision: z.number().int(), targetLanguage: z.string() }).strict().nullable(),
-}).strict();
+}).strict().refine(value => value.agentProtocol !== "conversational-pdf-v4" || value.readerCapabilities?.version === "text-pdf-parts-v2",
+  "The PDF continuation protocol requires its captured reader capabilities");
 export type ContextSnapshot = z.infer<typeof ContextSnapshotSchema>;
 export const journalKey = (index: number, stage: "capture" | "decision" | "tool") => `agent.v1:${String(index).padStart(6, "0")}:${stage}`;
 export function asAgentTarget(target: ExecutionTarget) {
@@ -217,10 +218,12 @@ export async function captureContext(tx: DbTransaction, target: ExecutionTarget,
   const searches = searchRows.map((row) => CompactSearchSchema.parse(row.search));
   const intent = (await tx.query<{ course_id: string; expected_course_revision: number; draft_id: string; expected_draft_revision: number; target_language: string }>(`SELECT * FROM unfurl.course_language_revision_intents WHERE run_id=$1 AND owner_id=$2`, [agent.runId, agent.ownerId])).rows[0];
   const generationMemory = await readGenerationMemory(tx, agent, artifactRecords.map(record => record.draft));
+  const readerCapabilities = currentReaderCapabilities();
   const snapshot = ContextSnapshotSchema.parse(attachSearchMemory({ kind: "context", index, now, currentMessage, recentMessages, artifacts, sources, recentTools,
     artifactMemory: await compactArtifactMemory(artifactRecords),
     ...(generationMemory.builds.length ? { generationMemory } : {}),
-    modelPolicy:await readActiveModelPolicy(tx),searchPolicy:SEARCH_HEADROOM_POLICY,planningPolicy: { version: "planner-headroom-v1", maxOutputTokens: 32768 }, sourceMemory, agentProtocol: "conversational-v3", readerCapabilities: currentReaderCapabilities(),
+    modelPolicy:await readActiveModelPolicy(tx),searchPolicy:SEARCH_HEADROOM_POLICY,planningPolicy: { version: "planner-headroom-v1", maxOutputTokens: 32768 }, sourceMemory,
+    agentProtocol: readerCapabilities.version === "text-pdf-parts-v2" ? "conversational-pdf-v4" : "conversational-v3", readerCapabilities,
     lastAssistantMessageId: commentaryRows[0]?.id ?? null, currentTurnCommentary,
     languageIntent: intent ? { courseId: intent.course_id, expectedCourseRevision: intent.expected_course_revision, draftId: intent.draft_id,
       expectedDraftRevision: intent.expected_draft_revision, targetLanguage: intent.target_language } : null }, searches));

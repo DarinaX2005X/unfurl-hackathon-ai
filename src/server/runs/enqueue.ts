@@ -5,6 +5,9 @@ import { ChatEventSchema } from "../../domain/generation";
 import { GenerationEventSchema } from "../../domain/generation-observer";
 import type { DbTransaction } from "../db";
 import { ServiceFault, unavailable } from "../auth/errors";
+import { captureNewJobOutputPolicy, effectStepSql } from "./output-policy";
+import { captureNewJobFunding } from "../budget/funding";
+import { PostgresBudget } from "../budget/postgres";
 
 interface EnqueueRunRow { id: string; owner_id: string; conversation_id: string; branch_id: string; status: string; last_seq: number; course_id?: string }
 export async function cancelTurnInTransaction(tx:DbTransaction,input:{runId:string;ownerId:string;reason:"user"|"superseded"}):Promise<{cancelled:boolean}>{
@@ -39,6 +42,8 @@ export async function enqueueLearningJobTx(tx: DbTransaction, input: LearningJob
     if (prior) return { jobId: prior.id };
     const jobId = randomUUID();
     await tx.query("INSERT INTO unfurl.execution_jobs (id,evaluation_id,target_evaluation_revision,status) VALUES ($1,$2,$3,$4)", [jobId, input.evaluationId, input.targetEvaluationRevision, options.dispatch ? "queued" : "waiting"]);
+    await captureNewJobOutputPolicy(tx, jobId, input);
+    await captureNewJobFunding(tx, jobId);
     if (review) await tx.query("UPDATE unfurl.assessment_review_requests SET execution_job_id=$2,updated_at=now() WHERE id=$1", [review.id, jobId]);
     if (options.dispatch) await tx.query("INSERT INTO unfurl.outbox (id,job_id,operation) VALUES ($1,$2,'start')", [randomUUID(), jobId]);
     return { jobId };
@@ -50,6 +55,8 @@ export async function enqueueLearningJobTx(tx: DbTransaction, input: LearningJob
   if (prior) return { jobId: prior.id };
   const jobId = randomUUID();
   await tx.query("INSERT INTO unfurl.execution_jobs (id,activity_action_id,status) VALUES ($1,$2,$3)", [jobId, input.activityActionId, options.dispatch ? "queued" : "waiting"]);
+  await captureNewJobOutputPolicy(tx, jobId, input);
+  await captureNewJobFunding(tx, jobId);
   if (options.dispatch) await tx.query("INSERT INTO unfurl.outbox (id,job_id,operation) VALUES ($1,$2,'start')", [randomUUID(), jobId]);
   return { jobId };
 }
@@ -70,7 +77,7 @@ export async function resumeLearningJobTx(tx: DbTransaction, input: LearningJobT
   const values = input.kind === "evaluation" ? [input.evaluationId, input.targetEvaluationRevision] : [input.activityActionId];
   const job = (await tx.query<{ id: string; status: string; retry_epoch: number }>(`SELECT id,status,retry_epoch FROM unfurl.execution_jobs WHERE ${key} FOR UPDATE`, values)).rows[0];
   if (!job || !["waiting","failed"].includes(job.status) || job.retry_epoch !== options.expectedRetryEpoch) throw new ServiceFault(409,"revision_conflict","evaluation.changed");
-  const previousEffects = (await tx.query<{ exists: boolean }>(`SELECT EXISTS(SELECT 1 FROM unfurl.run_steps WHERE job_id=$1) AS exists`, [job.id])).rows[0]?.exists;
+  const previousEffects = (await tx.query<{ exists: boolean }>(`SELECT EXISTS(SELECT 1 FROM unfurl.run_steps WHERE job_id=$1 AND ${effectStepSql()}) AS exists`, [job.id])).rows[0]?.exists;
   let epoch = job.retry_epoch;
   if (options.explicitPaidRetry) {
     const receiptId = IdSchema.parse(options.retryReceiptId);
@@ -106,6 +113,9 @@ export async function enqueueAcceptedRun(tx: DbTransaction, input: { kind: "agen
   }
   const jobId = randomUUID();
   await tx.query(`INSERT INTO unfurl.execution_jobs (id,${foreignKey}) VALUES ($1,$2)`, [jobId, run.id]);
+  await captureNewJobOutputPolicy(tx, jobId, input);
+  const funding = await captureNewJobFunding(tx, jobId);
+  if (funding) await new PostgresBudget(funding.budgetId, work => work(tx)).assertAvailable({probe: false});
   const identity = { id: randomUUID(), runId: run.id, branchId: run.branch_id, seq: 1, at: new Date().toISOString() };
   const event = generation
     ? GenerationEventSchema.parse({ ...identity, courseId: run.course_id, type: "generation.accepted", status: "queued" })

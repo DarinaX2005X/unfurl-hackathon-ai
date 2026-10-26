@@ -7,7 +7,7 @@ import type { OpenRouterModel } from "../ai/openrouter";
 import type { SearchPolicyId } from "../ai/model-policy";
 import { stableExecutionId } from "../runs/identity";
 import { SafeSourceReader } from "./reader";
-import { SearchInputSchema, SearchResultSchema, SourceUrlSchema, type ResearchPort, type SearchInput, type SearchResult } from "./ports";
+import { SearchInputSchema, SearchResultSchema, SourceUrlSchema, type ResearchPort, type SearchInput, type SearchResult, type SourceReadInput } from "./ports";
 
 /** Bind one instance to one trusted durable step's search operation; it cannot choose a budget. */
 export class OpenRouterResearch implements ResearchPort {
@@ -40,5 +40,5 @@ export class OpenRouterResearch implements ResearchPort {
       requestedQuery: query.query, executedQuery: null, contentLanguage: query.language, retrievedAt: completion.receivedAt,
       hits, limitations, requestDigest: jsonDigest(query) });
   }
-  read(input: { url: string }, signal: AbortSignal) { return this.reader.read(input, signal); }
+  read(input: SourceReadInput, signal: AbortSignal) { return this.reader.read(input, signal); }
 }

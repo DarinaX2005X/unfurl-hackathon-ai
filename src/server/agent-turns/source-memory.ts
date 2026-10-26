@@ -6,6 +6,13 @@ import type { SourceDocument } from "../research/ports";
 
 const blockId = z.string().min(1).max(80);
 const readStatus = z.enum(["unavailable", "unsupported", "blocked", "too_large"]);
+const SourcePdfPartMemorySchema = z.object({ totalPages: z.number().int().positive(), hasMore: z.boolean(),
+  retrieval: z.literal("read_source.continue") }).strict();
+/** Navigation metadata is derived from a saved document, never a model-supplied cursor. */
+export function sourcePdfPartMemory(document: SourceDocument): z.infer<typeof SourcePdfPartMemorySchema> | undefined {
+  return document.pdfPart ? { totalPages: document.pdfPart.totalPages, hasMore: document.pdfPart.next !== null,
+    retrieval: "read_source.continue" } : undefined;
+}
 export const ReadMemoryReceiptSchema = z.object({
   stepId: IdSchema, sourceId: IdSchema.nullable(), fullyReadBlockIds: z.array(blockId),
   failedUrl: z.string().max(4096).nullable(), failureStatus: readStatus.nullable(),
@@ -18,6 +25,7 @@ export const SourceMemorySchema = z.object({
     fullyReadBlockCount: z.number().int().nonnegative(), fullyReadBlockIds: z.array(blockId).nullable(),
     blocks: z.array(z.object({ id: blockId, characters: z.number().int().nonnegative(),
       fullyRead: z.boolean(), preview: z.string().nullable() }).strict()).nullable(),
+    pdfPart: SourcePdfPartMemorySchema.optional(),
   }).strict()),
   failedUrlReads: z.array(z.object({ stepId: IdSchema, url: z.string().nullable(), urlPreview: z.string(),
     status: readStatus, attempts: z.number().int().positive() }).strict()),
@@ -57,6 +65,7 @@ export function compactSourceMemory(documents: readonly SourceDocument[], receip
     sourceId: document.id, contentDigest: document.contentDigest, extractionState: document.extractionState,
     blockCount: document.blocks.length, totalCharacters: document.blocks.reduce((total, block) => total + block.text.length, 0),
     fullyReadBlockCount: read.get(document.id)!.size, fullyReadBlockIds: read.get(document.id)!.size ? null : [], blocks: null,
+    ...(document.pdfPart ? { pdfPart: sourcePdfPartMemory(document) } : {}),
   })), failedUrlReads: failures.map((failure) => ({ ...failure, url: null })), overflow: true,
   blockRetrieval: "read_source.blocks", failedReadRetrieval: "read_source.saved_read", previewsAreEvidence: false };
   while (bytes(result) > maximumBytes && (result.sources.length || result.failedUrlReads.length)) {

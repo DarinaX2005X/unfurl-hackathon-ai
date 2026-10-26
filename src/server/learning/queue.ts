@@ -6,9 +6,10 @@ import { lockLearnerCourseStableTaskTx } from "@/server/progression";
 import { resumeLearningJobTx, type LearningJobTarget } from "@/server/runs/enqueue";
 import * as repository from "./repository";
 import { getServerMechanic } from "@/server/mechanics/registry";
+import { effectStepSql } from "@/server/runs/output-policy";
 
 /** Runtime composition checks actual handler, provider/executor and shared-budget readiness. */
-export interface LearningAdmission { assertAvailable(input: { kind: "evaluation" | "activity_action"; task: TaskPublic }): Promise<void> }
+export interface LearningAdmission { assertAvailable(input: { kind: "evaluation" | "activity_action"; task: TaskPublic; actorId?: string }): Promise<void> }
 
 export function learningCapabilityRequirements(input: { kind: "evaluation" | "activity_action"; task: TaskPublic }) {
   const handle = getServerMechanic(input.task.mechanicId, input.task.mechanicVersion) ?? repository.invariant();
@@ -32,15 +33,15 @@ export async function activateLearningJob(transactions: LearningTransactions, ad
     const task = program.tasks.find(({ task }) => task.id === row.task_id && task.taskVersion === row.task_version)?.task ?? repository.invariant();
     return { enrollment, task };
   });
-  try { await admission.assertAvailable({ kind: target.kind, task: identity.task }); }
+  try { await admission.assertAvailable({ kind: target.kind, task: identity.task, actorId: actor.id }); }
   catch { return false; }
   return transactions.run(async (tx) => {
     await lockLearnerCourseStableTaskTx(tx, { learnerId: actor.id, courseId: identity.enrollment.courseId, taskId: identity.task.id });
     const enrollment = await repository.requireEnrollment(tx, actor, identity.enrollment.id, true);
     if (enrollment.status === "archived") return false;
-    const job = target.kind === "evaluation" ? (await tx.query(`SELECT j.id,j.status,j.retry_epoch,EXISTS(SELECT 1 FROM unfurl.run_steps s WHERE s.job_id=j.id) AS has_steps
+    const job = target.kind === "evaluation" ? (await tx.query(`SELECT j.id,j.status,j.retry_epoch,EXISTS(SELECT 1 FROM unfurl.run_steps s WHERE s.job_id=j.id AND ${effectStepSql("s")}) AS has_steps
       FROM unfurl.execution_jobs j WHERE j.evaluation_id=$1 AND j.target_evaluation_revision=$2`, [target.evaluationId, target.targetEvaluationRevision])).rows[0]
-      : (await tx.query(`SELECT j.id,j.status,j.retry_epoch,EXISTS(SELECT 1 FROM unfurl.run_steps s WHERE s.job_id=j.id) AS has_steps
+      : (await tx.query(`SELECT j.id,j.status,j.retry_epoch,EXISTS(SELECT 1 FROM unfurl.run_steps s WHERE s.job_id=j.id AND ${effectStepSql("s")}) AS has_steps
         FROM unfurl.execution_jobs j WHERE j.activity_action_id=$1`, [target.activityActionId])).rows[0];
     if (!job || !["waiting", "failed"].includes(job.status)) return false;
     if (explicit && explicit.expectedRetryEpoch !== job.retry_epoch) return false;

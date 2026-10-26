@@ -1,6 +1,7 @@
 import "server-only";
 import type { JsonObject, JsonValue } from "../../domain/common";
 import type { ProviderFailureCode } from "../ai/failure";
+import type { CapturedOutputPolicy } from "../ai/output-policy";
 
 export type BillablePurpose = "turn_planning" | "source_extraction" | "curriculum" | "module_knowledge" |
   "task_authoring" | "content_review" | "rubric_grading" | "activity_dialogue" | "web_search" | "capability_probe";
@@ -12,6 +13,7 @@ export interface BudgetOperationContext {
   attempt: number;
   runStepId: string | null;
   probe: boolean;
+  outputPolicy?: CapturedOutputPolicy;
 }
 
 export interface ReserveRequest extends BudgetOperationContext {
@@ -28,6 +30,13 @@ export interface BudgetReservation {
   requestDigest: string;
   amountMicroUsd: string;
   state: "reserved" | "dispatched" | "unknown" | "settled" | "released";
+  outputPolicy?: CapturedOutputPolicy;
+}
+
+export interface BudgetAllocation {
+  reservation: BudgetReservation;
+  rateCard: JsonObject;
+  rateCardDigest: string;
 }
 
 export interface ProviderResponseReceipt {
@@ -46,6 +55,8 @@ export type DispatchDecision = { kind: "dispatch" } | { kind: "replay"; receipt:
 /** Implementations must serialize on the single campaign row and persist every transition. */
 export interface BudgetPort {
   assertAvailable(options: { probe: boolean }): Promise<void>;
+  /** New captured policies resolve their exact allowance from the original immutable allocation. */
+  existingAllocation?(context: BudgetOperationContext): Promise<BudgetAllocation | null>;
   /** Recover before refreshing prices. A dispatched attempt without a receipt must never resend. */
   recover(context: BudgetOperationContext, requestDigest: string): Promise<{ reservation: BudgetReservation; receipt: ProviderResponseReceipt } | null>;
   reserve(request: ReserveRequest): Promise<BudgetReservation>;

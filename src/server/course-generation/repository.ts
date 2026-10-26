@@ -8,6 +8,7 @@ import { PostgresCurriculumResearchRepository } from "@/server/curriculum-resear
 import type { CurriculumEvidenceFacts } from "@/server/curriculum-research/validation";
 import { loadProviderResponseEvidence } from "@/server/ai/receipts";
 import { modelPolicy, ModelPolicySchema } from "@/server/ai/model-policy";
+import { effectStepSql } from "@/server/runs/output-policy";
 import { jsonDigest } from "@/server/ai/json";
 import { ProviderFailure } from "@/server/ai/failure";
 import { taskDigest } from "@/server/mechanics/digest";
@@ -27,6 +28,7 @@ import {
 import { ModuleKnowledgeSchema, type ModuleKnowledge } from "./contracts";
 import { approvedResearchFactsDigest, assertBatchItemProjection } from "./batch-provenance";
 import { projectSourcePassages } from "./source-passage-projection";
+import { validateCompleteSourceReadChains,type SourceReadEvidence } from "./source-read-chain";
 
 const StepRowSchema = z.object({ id: IdSchema, input_digest: DigestSchema, result_reference: z.unknown(),
   schema_digest: DigestSchema, capability_digest: DigestSchema, validation_policy_digest: DigestSchema, approval_digest: DigestSchema,
@@ -49,7 +51,7 @@ export async function resolveGenerationPolicy(tx: DbTransaction, binding: Approv
     COALESCE((SELECT jsonb_agg(jsonb_build_object('key',s.step_key,'status',s.status,'result',
       CASE WHEN s.step_key='course/generation-policy' THEN s.result_reference ELSE NULL END,
       'schema',s.schema_digest,'validationPolicy',s.validation_policy_digest,'capability',s.capability_digest,'approval',s.approval_digest))
-      FROM unfurl.run_steps s JOIN unfurl.execution_jobs j ON j.id=s.job_id WHERE j.generation_run_id=lineage.id),'[]'::jsonb) AS steps
+      FROM unfurl.run_steps s JOIN unfurl.execution_jobs j ON j.id=s.job_id WHERE j.generation_run_id=lineage.id AND ${effectStepSql("s")}), '[]'::jsonb) AS steps
     FROM lineage ORDER BY depth`, [binding.run.id, binding.course.ownerId, binding.course.id, binding.approval.id, binding.approval.draftRevision])).rows;
   const lineage = z.array(z.object({ id: IdSchema, retry_of_run_id: IdSchema.nullable(), depth: z.number().int().nonnegative(),
     steps: z.array(z.object({ key: z.string(), status: z.string(), result: z.unknown(), schema: z.string().nullable(),
@@ -105,7 +107,10 @@ export async function loadGenerationStep<T>(tx: DbTransaction, binding: Approved
   const coveredKnowledge = versioned.success && ["course.module.knowledge.review.v1", "course.module.knowledge.revision.v1",
     "course.module.knowledge.checked.v1"].includes(versioned.data.kind ?? "");
   const narratedApprovedKnowledge = versioned.success && versioned.data.narration !== undefined;
-  if ((boundedPlan || coveredKnowledge || narratedApprovedKnowledge) && !newProtocol) return invalid();
+  const sourceRead = versioned.success && versioned.data.kind === "course.source.read";
+  const partsProof = sourceRead && versioned.data.readProof !== undefined;
+  const partsAvailability = versioned.success && versioned.data.kind === "course.source.availability.v2";
+  if ((boundedPlan || coveredKnowledge || narratedApprovedKnowledge || partsProof || partsAvailability) && !newProtocol) return invalid();
   let knowledgeCoveragePolicy: "approved-scope-v1" | undefined;
   if (newProtocol) {
     const policy = z.object({ result: CourseGenerationPolicyCheckpointSchema, schema: z.literal(COURSE_GENERATION_SCHEMA_DIGEST),
@@ -113,6 +118,8 @@ export async function loadGenerationStep<T>(tx: DbTransaction, binding: Approved
     if (!policy.success || policy.data.result.approvalDigest !== binding.approval.contentDigest) return invalid();
     if (boundedPlan && policy.data.result.planPagePolicy !== "bounded-plan-pages-v1" ||
         (coveredKnowledge || narratedApprovedKnowledge) && policy.data.result.knowledgeCoveragePolicy !== "approved-scope-v1") return invalid();
+    if (sourceRead && partsProof !== (policy.data.result.sourceSelectionPolicy === "source-selection-v2") ||
+        partsAvailability && policy.data.result.sourceSelectionPolicy !== "source-selection-v2") return invalid();
     knowledgeCoveragePolicy = policy.data.result.knowledgeCoveragePolicy;
   }
   return { id: parsed.data.id, inputDigest: parsed.data.input_digest, result: schema.parse(parsed.data.result_reference),
@@ -215,14 +222,17 @@ export class GenerationEvidenceRepository {
     if (new Set(readStepIds).size !== readStepIds.length) return invalid();
     const sourceMap = new Map(binding.facts.sources.map((source) => [source.id, source]));
     const readSourceIds = new Map<string, string>();
+    const readEvidence:SourceReadEvidence[]=[];
     const allowed = new Set(binding.facts.authorizedSourceIds);
     for (const stepId of readStepIds) {
       const read = await loadGenerationStep(tx, binding, stepId, SourceReadCheckpointSchema);
       if (read.result.moduleId !== knowledge.moduleId || read.result.approvalDigest !== binding.approval.contentDigest) return invalid();
       const source = await this.sources.getSource(tx, read.result.sourceId);
       if (!source || source.contentDigest !== read.result.contentDigest) return invalid();
+      readEvidence.push({id:read.id,inputDigest:read.inputDigest,result:read.result,source});
       allowed.add(source.id); sourceMap.set(source.id, source); readSourceIds.set(stepId, source.id);
     }
+    validateCompleteSourceReadChains(readEvidence);
     const approvedClaims = new Set(binding.facts.claims.map((claim) => claim.id));
     const claims = [];
     for (const claimId of knowledgeClaimIds(knowledge)) {

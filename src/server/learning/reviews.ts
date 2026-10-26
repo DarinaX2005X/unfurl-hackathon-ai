@@ -6,6 +6,7 @@ import type { Actor } from "@/server/auth/actor";
 import { lockLearnerCourseStableTaskTx } from "@/server/progression";
 import { executeIdempotentInTransaction } from "@/server/idempotency";
 import { enqueueLearningJobTx } from "@/server/runs/enqueue";
+import { effectStepSql } from "@/server/runs/output-policy";
 import type { DbTransaction } from "@/server/db";
 import type { LearningCommand, LearningTransactions } from "./service";
 import { activateLearningJob, type LearningAdmission } from "./queue";
@@ -37,7 +38,7 @@ async function readReview(tx: DbTransaction, actor: Actor, attemptId: string, re
   return ReviewReceiptSchema.parse({ review, evaluation: { ...evaluation, review } });
 }
 async function retryIdentity(tx: DbTransaction, evaluationId: string, target: number) {
-  const row = (await tx.query<{ retry_epoch: number; has_steps: boolean }>("SELECT retry_epoch,EXISTS(SELECT 1 FROM unfurl.run_steps s WHERE s.job_id=j.id) AS has_steps FROM unfurl.execution_jobs j WHERE evaluation_id=$1 AND target_evaluation_revision=$2", [evaluationId, target])).rows[0] ?? repository.invariant();
+  const row = (await tx.query<{ retry_epoch: number; has_steps: boolean }>(`SELECT retry_epoch,EXISTS(SELECT 1 FROM unfurl.run_steps s WHERE s.job_id=j.id AND ${effectStepSql("s")}) AS has_steps FROM unfurl.execution_jobs j WHERE evaluation_id=$1 AND target_evaluation_revision=$2`, [evaluationId, target])).rows[0] ?? repository.invariant();
   return { retryEpoch: row.retry_epoch, hadEffects: row.has_steps };
 }
 

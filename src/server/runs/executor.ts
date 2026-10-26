@@ -13,6 +13,7 @@ import type { DurableStep, JobClaim, RunContext, RunHandler, StepEffectContext }
 import { claimJob, guardClaim, runtimeTransaction, type RuntimeTransaction } from "./store";
 import type { RunHandlerRegistry } from "./registry";
 import { recordGenerationStepCompleted, recordGenerationStepStarted } from "./generation-timeline";
+import { readJobOutputPolicy } from "./output-policy";
 
 interface StepRow { id: string; input_digest: string; schema_digest: string; capability_digest: string; validation_policy_digest: string;
   approval_digest: string | null; status: string; result_reference: unknown; fencing_token: string; live: boolean }
@@ -24,6 +25,7 @@ export class DurableRunExecutor {
     if (claimed.kind !== "claimed") return { status: claimed.kind };
     const claim = claimed.claim; const handler = this.registry.require(claim.target.kind);
     if(claimed.authorityFailure){await this.fail(claim,handler,claimed.authorityFailure);return{status:"finished"};}
+    const outputPolicy = await this.transaction(async tx => { await guardClaim(tx, claim, handler); return readJobOutputPolicy(tx, claim.jobId); });
     const abort = new AbortController();
     const signal = AbortSignal.any([abort.signal, AbortSignal.timeout(executionTiming().stepMs)]);
     let commitTx: DbTransaction | null = null; let effects = 0;
@@ -37,7 +39,8 @@ export class DurableRunExecutor {
       stepFence:{jobId,jobLeaseOwner:claim.leaseOwner,jobFencingToken:claim.fencingToken,retryEpoch:claim.retryEpoch,stepId,stepLeaseOwner:owner,stepFencingToken:fence},
       budgetOperation(name,attempt=1){if(!/^[a-zA-Z0-9:._/-]{1,160}$/.test(name)||attempt!==1)throw new ProviderFailure("invalid_output");
         const logicalOperationId=claim.target.kind==="agent_turn"?agentOperationId(stepId,name,claim.retryEpoch):stableExecutionId(stepId,name);
-        return{logicalOperationId,reservationId:stableExecutionId(logicalOperationId,"attempt:1"),attempt:1,runStepId:stepId,probe:false};},
+        return{logicalOperationId,reservationId:stableExecutionId(logicalOperationId,"attempt:1"),attempt:1,runStepId:stepId,probe:false,
+          ...(outputPolicy ? { outputPolicy } : {})};},
     });
     const context: RunContext = {
       claim, signal,
@@ -47,9 +50,10 @@ export class DurableRunExecutor {
         const longform=spec.executionProfile==="longform_curriculum"||spec.executionProfile==="longform_content";
         if((spec.executionProfile!==undefined&&!longform)||(spec.executionProfile==="longform_curriculum"&&claim.target.kind!=="agent_turn")||
           (spec.executionProfile==="longform_content"&&claim.target.kind!=="generation"))throw new ProviderFailure("invalid_output");
-        const duration=longform?executionTiming().stepMs:100000,deadlineAt=Date.now()+duration;
+        const extendedRuntime = longform || Boolean(outputPolicy);
+        const duration=extendedRuntime?executionTiming().stepMs:100000,deadlineAt=Date.now()+duration;
         const stepSignal=AbortSignal.any([signal,AbortSignal.timeout(duration)]);
-        const inputDigest = jsonDigest(spec.input);
+        const inputDigest = jsonDigest(spec.input, outputPolicy ? Infinity : 256 * 1024);
         const begun = await this.transaction(async tx => {
           await guardClaim(tx, claim, handler);
           const prior = (await tx.query<StepRow>(`SELECT *,fencing_token::text,lease_expires_at>now() AS live FROM unfurl.run_steps WHERE job_id=$1 AND step_key=$2 FOR UPDATE`, [jobId, spec.key])).rows;
@@ -62,13 +66,13 @@ export class DurableRunExecutor {
           if (row?.status === "cancelled" || row?.status === "failed") throw new ProviderFailure("cancelled");
           const stepId = row?.id ?? stableExecutionId(jobId, spec.key);
           const owner = randomUUID();
-          if(longform)await tx.query("UPDATE unfurl.execution_jobs SET lease_expires_at=now()+make_interval(secs=>$2),updated_at=now() WHERE id=$1",[jobId,executionTiming().jobLeaseSeconds]);
+          if(extendedRuntime)await tx.query("UPDATE unfurl.execution_jobs SET lease_expires_at=now()+make_interval(secs=>$2),updated_at=now() WHERE id=$1",[jobId,executionTiming().jobLeaseSeconds]);
           const saved = (await tx.query<{ fencing_token: string }>(`INSERT INTO unfurl.run_steps
             (id,job_id,step_key,input_digest,approval_digest,schema_digest,capability_digest,validation_policy_digest,status,attempt_count,lease_owner,lease_expires_at,fencing_token)
             VALUES($1,$2,$3,$4,$5,$6,$7,$8,'running',1,$9,now()+make_interval(secs=>$10),1)
             ON CONFLICT(id) DO UPDATE SET status='running',attempt_count=run_steps.attempt_count+1,lease_owner=$9,
             lease_expires_at=now()+make_interval(secs=>$10),fencing_token=run_steps.fencing_token+1,updated_at=now() RETURNING fencing_token::text`,
-          [stepId, jobId, spec.key, inputDigest, spec.digests.approval, spec.digests.schema, spec.digests.capability, spec.digests.validationPolicy, owner,longform?executionTiming().stepLeaseSeconds:110])).rows[0]!;
+          [stepId, jobId, spec.key, inputDigest, spec.digests.approval, spec.digests.schema, spec.digests.capability, spec.digests.validationPolicy, owner,extendedRuntime?executionTiming().stepLeaseSeconds:110])).rows[0]!;
           if(spec.prepare)await spec.prepare(tx,effectContextFor(stepId,owner,saved.fencing_token,stepSignal,deadlineAt),spec.input);
           const prepared=(await tx.query("SELECT id FROM unfurl.run_steps WHERE id=$1 AND status='running' AND lease_owner=$2 AND fencing_token=$3 AND lease_expires_at>now()",[stepId,owner,saved.fencing_token])).rows[0];
           if(!prepared)throw new ProviderFailure("cancelled");
@@ -87,7 +91,7 @@ export class DurableRunExecutor {
           commitTx = tx;
           try {
             const result = spec.resultSchema.parse(await spec.commit(tx, output));
-            canonicalJson(result, 2 * 1024 * 1024);
+            canonicalJson(result, outputPolicy ? Infinity : 2 * 1024 * 1024);
             await tx.query("UPDATE unfurl.run_steps SET status='succeeded',result_reference=$2,error=NULL,lease_owner=NULL,lease_expires_at=NULL,updated_at=now() WHERE id=$1", [begun.stepId, JSON.stringify(result)]);
             await recordGenerationStepCompleted(tx, claim, begun.stepId, result, spec.input, output);
             return result;

@@ -6,7 +6,7 @@ import { readGenerationMemory, GenerationMemorySchema } from "../../src/server/a
 import { captureContext, ContextSnapshotSchema } from "../../src/server/agent-turns/repository";
 import { buildAgentDecisionRequest } from "../../src/server/agent-turns/handler";
 import { compactArtifactMemory } from "../../src/server/agent-turns/artifact-memory";
-import { currentReaderCapabilities } from "../../src/server/research/reader-capabilities";
+import { legacyReaderCapabilities } from "./fixtures";
 import * as curricula from "../../src/server/curricula/repository";
 import { curriculum, ids, timestamp } from "../domain/fixtures";
 
@@ -106,7 +106,7 @@ describe("captured generation status", () => {
   it("changes only marked requests and preserves existing schemas, inputs and instruction prefixes", async () => {
     const old = ContextSnapshotSchema.parse({ kind: "context", index: 0, now: timestamp, currentMessage: "How is the course build going?",
       recentMessages: [], artifacts: [], sources: [], recentTools: [], agentProtocol: "conversational-v3",
-      readerCapabilities: currentReaderCapabilities(), artifactMemory: await compactArtifactMemory([]), languageIntent: null });
+      readerCapabilities: legacyReaderCapabilities(), artifactMemory: await compactArtifactMemory([]), languageIntent: null });
     const before = JSON.stringify(old), budget = { reservationId: ids.request, logicalOperationId: ids.request, attempt: 1, runStepId: ids.task, probe: false };
     const legacy = buildAgentDecisionRequest(old, budget, 1234);
     const generationMemory = await readGenerationMemory(transaction([await buildRow()]).tx, scope, [curriculum()]);

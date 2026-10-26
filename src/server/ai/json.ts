@@ -7,12 +7,14 @@ export function digestBytes(value: string | Uint8Array): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
-/** Bounded canonical JSON is used for request identity, never a token-count estimate. */
+/** Finite limits validate bounded inputs. Infinity preserves provider-sized values
+ * without application byte/node/depth ceilings; JSON validity and cycle checks remain. */
 export function canonicalJson(value: unknown, maxBytes = 256 * 1024): string {
   let nodes = 0;
   const seen = new Set<object>();
   function visit(item: unknown, depth: number): string {
-    if (++nodes > 50_000 || depth > 32) throw new ProviderFailure("invalid_output");
+    nodes++;
+    if (Number.isFinite(maxBytes) && (nodes > 50_000 || depth > 32)) throw new ProviderFailure("invalid_output");
     if (item === null || typeof item === "boolean" || typeof item === "string") return JSON.stringify(item);
     if (typeof item === "number" && Number.isFinite(item)) return JSON.stringify(item);
     if (typeof item !== "object" || item === null || seen.has(item)) throw new ProviderFailure("invalid_output");
@@ -37,7 +39,9 @@ export function canonicalJson(value: unknown, maxBytes = 256 * 1024): string {
 }
 
 export function jsonDigest(value: unknown, maxBytes?: number): string {
-  return digestBytes(canonicalJson(value, maxBytes));
+  // Hashing is not content admission. Explicit validation limits remain available
+  // to callers, and every previously valid value has identical canonical bytes.
+  return digestBytes(canonicalJson(value, maxBytes ?? Infinity));
 }
 
 /** Decode structured content without changing its saved receipt or repairing JSON syntax. */

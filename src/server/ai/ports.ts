@@ -4,6 +4,7 @@ import type { JsonValue } from "../../domain/common";
 import type { BillablePurpose, BudgetOperationContext } from "../budget/ports";
 import type { MODEL_ID, PROVIDER_TAG } from "./constants";
 import type {ModelPolicyId,SearchPolicyId} from "./model-policy";
+import type { ProviderOutputResolution } from "./output-policy";
 
 export type ModelPurpose = Exclude<BillablePurpose, "web_search" | "capability_probe">;
 export type ProviderCapability = "model_structured" | "model_text" | "research_search" | "rubric";
@@ -34,6 +35,8 @@ export interface ModelRequestBase {
   modelPolicy?: ModelPolicyId;
   searchPolicy?: SearchPolicyId;
   maxOutputTokens: number;
+  /** Resolved by the transport from the captured job policy and immutable rate card. */
+  outputResolution?: ProviderOutputResolution;
   executionProfile?: "longform_curriculum" | "longform_content";
   deadlineAt: number;
   budget: BudgetOperationContext;

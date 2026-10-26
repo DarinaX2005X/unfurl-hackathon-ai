@@ -57,8 +57,7 @@ export class PersistedCapabilityGate implements ProviderCapabilityGate {
     return this.transaction(async (tx) => (await tx.query<CapabilityRow>(`SELECT id,observed_at,capability,passed,expires_at>now() AS fresh,evidence,
       CASE WHEN latest.evidence ? 'portability' THEN ${portableReceiptBindingSql("latest")} ELSE false END AS portability_valid,
       EXISTS(SELECT 1 FROM unfurl.ai_provider_operations o JOIN unfurl.ai_provider_responses r ON r.operation_id=o.id
-        WHERE o.budget_id=(SELECT budget_id FROM unfurl.ai_provider_operations WHERE id=NULLIF(latest.evidence->>'operationId','')::uuid)
-        AND o.model_id=$3 AND r.received_at>COALESCE((latest.evidence->'portability'->>'sourceObservedAt')::timestamptz,(latest.evidence->'compatibility'->>'proofObservedAt')::timestamptz,latest.observed_at)
+        WHERE o.model_id=$3 AND r.received_at>COALESCE((latest.evidence->'portability'->>'sourceObservedAt')::timestamptz,(latest.evidence->'compatibility'->>'proofObservedAt')::timestamptz,latest.observed_at)
         AND (r.result->>'category' IN ('auth','schema','unsupported_parameter','privacy_route')
           OR (r.result ? 'model' AND (r.result->>'model'<>$3 OR r.result->>'provider'<>$4)))) AS invalidated FROM (
       SELECT DISTINCT ON (capability) id,observed_at,capability,passed,expires_at,evidence,world,configuration_digest FROM unfurl.execution_capability_receipts

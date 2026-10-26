@@ -20,6 +20,7 @@ export interface BuildRunView {
 }
 export interface ConversationBuildView extends Omit<ConversationBuild, "runs"> { runs: BuildRunView[] }
 export interface ConversationBuildState { builds: ConversationBuildView[]; loading: boolean; error: boolean }
+export type ConversationBuildSeed = Pick<ConversationDetail, "conversation" | "builds">;
 export interface BuildTransport {
   detail(id: string, signal: AbortSignal): ReturnType<ConversationPort["get"]>;
   snapshot: typeof getGenerationSnapshot;
@@ -92,7 +93,9 @@ export class ConversationBuilds {
   private refreshing: Promise<void> | null = null;
   private mutationEpoch = 0;
   constructor(readonly identity: { actorId: string; conversationId: string; branchId: string }, private transport: BuildTransport,
-    private onDetail?: (detail: ConversationDetail) => void) {}
+    private onDetail?: (detail: ConversationDetail) => void, seed?: ConversationBuildSeed | null) {
+    if (seed) this.state = { ...this.state, builds: this.mergeDetail(seed) ?? [] };
+  }
   getSnapshot = () => this.state;
   setDetailHandler(handler: (detail: ConversationDetail) => void) { this.onDetail = handler; }
   subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
@@ -102,6 +105,8 @@ export class ConversationBuilds {
   }
   start() {
     if (this.lifetime.signal.aborted) { this.lifetime = new AbortController(); this.refreshing = null; this.snapshotRequests.clear(); }
+    // Saved activity is immediately available; observe it while the cached chat refreshes.
+    this.observeCurrent();
     return this.refresh();
   }
   stop() { this.lifetime.abort(); this.observers.forEach(observer => observer.abort()); this.observers.clear(); }
@@ -111,6 +116,28 @@ export class ConversationBuilds {
       && run.branchId === this.identity.branchId && run.courseId === build.courseId && run.approvalId === build.approvalId
       && snapshot.approvalDigest === build.approvalDigest && snapshot.approvedDraftRevision === build.draftRevision;
   }
+  private mergeDetail(detail: ConversationBuildSeed): ConversationBuildView[] | null {
+    if (detail.conversation.id !== this.identity.conversationId || detail.conversation.ownerId !== this.identity.actorId
+      || detail.conversation.activeBranchId !== this.identity.branchId) return null;
+    const builds = [...this.state.builds];
+    for (const incoming of detail.builds ?? []) {
+      if (incoming.branchId !== this.identity.branchId || incoming.runs.some(run => !this.matches(run.snapshot, incoming))) continue;
+      const index = builds.findIndex(build => build.approvalId === incoming.approvalId);
+      const previous = builds[index];
+      if (previous && (previous.approvalDigest !== incoming.approvalDigest || previous.courseId !== incoming.courseId)) continue;
+      const runs = previous ? [...previous.runs] : [];
+      for (const item of incoming.runs) {
+        const oldIndex = runs.findIndex(run => run.stream.run.id === item.snapshot.run.id);
+        if (oldIndex >= 0) runs[oldIndex] = mergeSnapshot(runs[oldIndex]!, item.snapshot);
+        else if (runs.length === 0 ? item.retryOfRunId === null : item.retryOfRunId === runs.at(-1)!.stream.run.id)
+          runs.push(runView(item.snapshot, item.retryOfRunId));
+      }
+      if (!runs.length) continue;
+      const next = { ...incoming, runs };
+      if (index < 0) builds.push(next); else builds[index] = next;
+    }
+    return builds.sort((a, b) => a.approvedAt.localeCompare(b.approvedAt));
+  }
   refresh = (): Promise<void> => {
     if (this.refreshing) return this.refreshing;
     const signal = this.lifetime.signal;
@@ -119,26 +146,9 @@ export class ConversationBuilds {
       try {
         const result = await this.transport.detail(this.identity.conversationId, signal);
         if (signal.aborted) return;
-        if (!result.ok || result.data.conversation.id !== this.identity.conversationId
-          || result.data.conversation.ownerId !== this.identity.actorId || result.data.conversation.activeBranchId !== this.identity.branchId) throw new Error("build_scope");
-        const builds = [...this.state.builds];
-        for (const incoming of result.data.builds ?? []) {
-          if (incoming.branchId !== this.identity.branchId || incoming.runs.some(run => !this.matches(run.snapshot, incoming))) continue;
-          const index = builds.findIndex(build => build.approvalId === incoming.approvalId);
-          const previous = builds[index];
-          if (previous && (previous.approvalDigest !== incoming.approvalDigest || previous.courseId !== incoming.courseId)) continue;
-          const runs = previous ? [...previous.runs] : [];
-          for (const item of incoming.runs) {
-            const oldIndex = runs.findIndex(run => run.stream.run.id === item.snapshot.run.id);
-            if (oldIndex >= 0) runs[oldIndex] = mergeSnapshot(runs[oldIndex]!, item.snapshot);
-            else if (runs.length === 0 ? item.retryOfRunId === null : item.retryOfRunId === runs.at(-1)!.stream.run.id)
-              runs.push(runView(item.snapshot, item.retryOfRunId));
-          }
-          if (!runs.length) continue;
-          const next = { ...incoming, runs };
-          if (index < 0) builds.push(next); else builds[index] = next;
-        }
-        this.publish({ builds: builds.sort((a, b) => a.approvedAt.localeCompare(b.approvedAt)), loading: false, error: false });
+        const builds = result.ok ? this.mergeDetail(result.data) : null;
+        if (!result.ok || !builds) throw new Error("build_scope");
+        this.publish({ builds, loading: false, error: false });
         if (mutationEpoch === this.mutationEpoch) this.onDetail?.(result.data);
         this.observeCurrent();
       } catch { if (!signal.aborted) this.publish({ loading: false, error: true }); }

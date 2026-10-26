@@ -5,10 +5,11 @@ import { IdSchema } from "../../src/domain/common";
 import { AgentDecisionReceiptSchema, type AgentDecisionReceipt, type AgentToolAuthority } from "../../src/server/agent-tools/contracts";
 import { agentToolStepInput, prepareAgentDecision } from "../../src/server/agent-tools/executor";
 import { composeDurableCurriculum, type DurableCompositionInput } from "../../src/server/curriculum-research/durable-composer";
+import { sourceInput } from "../../src/server/curriculum-research/composer";
 import { materializeOutlineProposal, OutlineProposalSchema, type OutlineProposal } from "../../src/server/curriculum-research/outline-proposal";
 import { ContentPageSchema } from "../../src/server/curriculum-research/part-contracts";
 import * as parts from "../../src/server/curriculum-research/part-runtime";
-import { jsonDigest } from "../../src/server/ai/json";
+import { canonicalJson, jsonDigest } from "../../src/server/ai/json";
 import type { DbTransaction } from "../../src/server/db";
 import type { RunContext } from "../../src/server/runs/ports";
 import type { ModelPort } from "../../src/server/ai/ports";
@@ -91,11 +92,14 @@ it("opts in only newly prepared creation receipts while preserving the historica
     capturedDraftDigest: null, capturedCourseRevision: null, preparationError: null };
   expect(agentToolStepInput(old)).toEqual(historicalInput);
   expect(jsonDigest(agentToolStepInput(old))).toBe(jsonDigest(historicalInput));
+  const v1 = { ...old, outlineIdentityPolicy: "server-assigned-v1" as const };
+  expect(AgentDecisionReceiptSchema.parse(v1)).toEqual(v1);
+  expect(canonicalJson(agentToolStepInput(v1))).toBe(canonicalJson({ ...historicalInput, outlineIdentityPolicy: "server-assigned-v1" }));
   const authority: AgentToolAuthority = { runId: ids.request, ownerId: ids.actor, conversationId: ids.conversation,
     branchId: ids.sample, inputMessageId: ids.missing, sourceIds: new Set([ids.source]), artifactIds: new Set() };
   const fresh = await prepareAgentDecision({} as DbTransaction, authority, decision, 0);
-  expect(fresh.outlineIdentityPolicy).toBe("server-assigned-v1");
-  expect(agentToolStepInput(fresh)).toMatchObject({ outlineIdentityPolicy: "server-assigned-v1" });
+  expect(fresh.outlineIdentityPolicy).toBe("server-assigned-v2");
+  expect(agentToolStepInput(fresh)).toMatchObject({ outlineIdentityPolicy: "server-assigned-v2" });
   expect(AgentDecisionReceiptSchema.parse(JSON.parse(JSON.stringify(fresh)))).toEqual(fresh);
   const read = await prepareAgentDecision({} as DbTransaction, authority, { tool: "respond", input: { text: "Ready", awaitingUser: false } }, 1);
   expect(read.outlineIdentityPolicy).toBeUndefined();
@@ -148,6 +152,69 @@ it("materializes pages before they become continuation and prerequisite-section 
   const legacyInput = { ...input }; delete legacyInput.outlineIdentityPolicy;
   await expect(composeDurableCurriculum(context, {} as ModelPort, legacyInput)).rejects.toBe(stop);
 });
+
+it.each(["server-assigned-v2", "server-assigned-v1", undefined] as const)(
+  "retains the captured %s continuation contract beyond twelve outcomes and six modules", async (policy) => {
+    const data = await researchFixture(), stop = new Error("Research boundary");
+    const selection = [{ sourceId: data.source.id, blockIds: ["b1"] }];
+    const sources = [{ document: data.source, blockIds: ["b1"] }];
+    const header = { title: data.draft.title, goal: data.draft.goal, audience: data.draft.audience,
+      assumedKnowledge: [], contentLanguage: "en", unresolvedQuestions: [], summary: "A programme", rationale: "Evidence", limitations: [] };
+    const section = { key: "foundation", title: "Foundation", scope: "Independent branches and their later applications",
+      prerequisiteKeys: [], requiredCapabilities: ["Compare"], sources: selection };
+    const context = { claim: { target: { kind: "agent_turn", runId: ids.request, ownerId: ids.actor,
+      conversationId: ids.conversation, branchId: ids.sample, inputMessageId: ids.missing } } } as RunContext;
+    const input: DurableCompositionInput = { invocationId: ids.task, capturedDraft: null, now, sources,
+      ...(policy ? { outlineIdentityPolicy: policy } : {}),
+      decision: { tool: "create_course", input: { goal: data.draft.goal, audience: data.draft.audience,
+        assumedKnowledge: [], contentLanguage: "en", requiredCapabilities: ["Compare"], sources: selection } } };
+    const firstProposal: OutlineProposal = {
+      outcomes: Array.from({ length: 14 }, (_, index) => ({ key: `outcome_${index}`, title: `Branch ${index}`,
+        demonstration: `Demonstrate branch ${index}`, prerequisiteOutcomeRefs: [], requirement: "core" })),
+      modules: Array.from({ length: 8 }, (_, index) => ({ key: `module_${index}`, title: `Module ${index}`, summary: `Teach branch ${index}`,
+        outcomeRefs: [local(`outcome_${index}`), ...(index < 6 ? [local(`outcome_${index + 8}`)] : [])],
+        prerequisiteModuleRefs: [], estimatedStudyMinutes: 30 })),
+      complete: false, nextFocus: "Return to the first branch for its advanced application",
+    };
+    const first = materializeOutlineProposal({ invocationId: ids.task, sectionKey: section.key, pageIndex: 0,
+      proposal: firstProposal, existingOutcomeIds: [], existingModuleIds: [], occupiedIds: [] });
+    let continuationRequests = 0, finalPage: z.infer<typeof ContentPageSchema> | null = null;
+    vi.spyOn(parts, "readCurriculumParts").mockResolvedValue(new Map());
+    vi.spyOn(parts, "runCurriculumPart").mockImplementation(async (_context, _model, part) => {
+      if (part.phase === "roadmap") return { header, sections: [section], complete: true, nextFocus: null } as never;
+      if (part.phase === "research") throw stop;
+      if (part.index === 0) return part.commit({} as DbTransaction,
+        part.outputSchema.parse(policy ? firstProposal : first), { stepId: ids.sample });
+      continuationRequests++;
+      const allPrior = policy === "server-assigned-v2";
+      const expectedRequest = { header, section, prerequisites: [], continuation: first.nextFocus,
+        priorOutcomes: (allPrior ? first.outcomes : first.outcomes.slice(-12)).map(({ id, title }) => ({ id, title })),
+        priorModules: (allPrior ? first.modules : first.modules.slice(-6)).map(({ id, title, outcomeIds }) => ({ id, title, outcomeIds })),
+        sources: sourceInput(sources) };
+      expect(canonicalJson(part.request)).toBe(canonicalJson(expectedRequest));
+      expect(part.outputSchema).toBe(policy ? OutlineProposalSchema : ContentPageSchema);
+      expect(part.instructionVersion).toBe(policy ? `curriculum-parts-v2:outline-identity-${allPrior ? "v2" : "v1"}` : undefined);
+      const next = proposal(); next.outcomes.splice(1); next.modules.splice(1);
+      next.outcomes[0]!.prerequisiteOutcomeRefs = [existing(first.outcomes[0]!.id)];
+      next.modules[0]!.prerequisiteModuleRefs = [existing(first.modules[0]!.id)];
+      next.modules[0]!.outcomeRefs.push(existing(first.outcomes[0]!.id));
+      if (!allPrior) {
+        if (policy) await expect(part.commit({} as DbTransaction, part.outputSchema.parse(next), { stepId: ids.sample }))
+          .rejects.toThrow("provider.invalid_output");
+        throw stop;
+      }
+      const result = await part.commit({} as DbTransaction, part.outputSchema.parse(next), { stepId: ids.sample });
+      finalPage = ContentPageSchema.parse(result);
+      return result;
+    });
+    await expect(composeDurableCurriculum(context, {} as ModelPort, input)).rejects.toBe(stop);
+    expect(continuationRequests).toBe(1);
+    if (policy === "server-assigned-v2") {
+      expect(finalPage).toMatchObject({ complete: true,
+        outcomes: [{ prerequisiteOutcomeIds: [first.outcomes[0]!.id] }],
+        modules: [{ prerequisiteModuleIds: [first.modules[0]!.id], outcomeIds: expect.arrayContaining([first.outcomes[0]!.id]) }] });
+    }
+  });
 
 it("accepts an ancestor outcome exposed through a prerequisite section's frontier module", async () => {
   const data = await researchFixture(), stop = new Error("Research boundary"), canonical: z.infer<typeof ContentPageSchema>[] = [];

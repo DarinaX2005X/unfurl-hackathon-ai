@@ -67,13 +67,23 @@ export const AgentDecisionV3Schema = z.discriminatedUnion("tool", [
   LegacyAgentDecisionSchema.options[6].extend({ commentary }),
   LegacyAgentDecisionSchema.options[7],
 ]);
-export const PersistedAgentDecisionSchema = z.union([AgentDecisionV3Schema, AgentDecisionSchema]);
+/** Only PDF-capable captures can request the next part of an authorized saved source. */
+export const AgentDecisionV4Schema = z.discriminatedUnion("tool", [
+  AgentDecisionV3Schema.options[0],
+  z.object({ tool: z.literal("read_source"), commentary, input: z.discriminatedUnion("kind", [
+    ...AgentDecisionV3Schema.options[1].shape.input.options,
+    z.object({ kind: z.literal("continue"), sourceId: IdSchema }).strict(),
+  ]) }).strict(),
+  ...AgentDecisionV3Schema.options.slice(2),
+]);
+export const PersistedAgentDecisionSchema = z.union([AgentDecisionV4Schema, AgentDecisionV3Schema, AgentDecisionSchema]);
 export type AgentDecision = z.infer<typeof PersistedAgentDecisionSchema>;
 
 /** Captured policy chooses the exact request schema, including when replaying a paid receipt. */
 export function agentDecisionSchemaForCapture(capture: { agentProtocol?: unknown; searchMemory?: unknown }): {
-  schema: z.ZodType<AgentDecision>; schemaVersion: 1 | 2 | 3; instructionVersion: string;
+  schema: z.ZodType<AgentDecision>; schemaVersion: 1 | 2 | 3 | 4; instructionVersion: string;
 } {
+  if (capture.agentProtocol === "conversational-pdf-v4") return { schema: AgentDecisionV4Schema, schemaVersion: 4, instructionVersion: "adaptive-course-agent-v4" };
   if (capture.agentProtocol === "conversational-v3") return { schema: AgentDecisionV3Schema, schemaVersion: 3, instructionVersion: "adaptive-course-agent-v3" };
   return capture.searchMemory !== undefined
     ? { schema: AgentDecisionSchema, schemaVersion: 2, instructionVersion: "adaptive-course-agent-v2" }
@@ -90,7 +100,7 @@ export const AgentDecisionReceiptSchema = z.object({
   capturedDraft: CurriculumDraftSchema.nullable(), capturedCourseRevision: RevisionSchema.nullable(),
   preparationError: z.string().min(1).max(200).nullable(),
   // Only newly prepared creation receipts opt in; historical receipts retain their producer.
-  outlineIdentityPolicy: z.literal("server-assigned-v1").optional(),
+  outlineIdentityPolicy: z.enum(["server-assigned-v1", "server-assigned-v2"]).optional(),
 }).strict();
 export type AgentDecisionReceipt = z.infer<typeof AgentDecisionReceiptSchema>;
 

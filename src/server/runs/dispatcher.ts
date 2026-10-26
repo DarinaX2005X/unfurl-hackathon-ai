@@ -6,6 +6,7 @@ import { WorkflowRunNotFoundError } from "workflow/internal/errors";
 import { withSystemTransaction } from "../db";
 import { CAPABILITY_TEST_VERSION } from "../ai/capabilities";
 import { OpenRouterAccounting } from "../ai/accounting";
+import { configuredFundingIds } from "../budget/funding";
 import { getRuntime } from "./composition";
 import { executeJobWorkflow,executionRecoveryWorkflow } from "./workflow";
 
@@ -75,10 +76,9 @@ export async function dispatchExecutionOutbox(scope:DispatchScope={}){
         safe_error='{"code":"dispatch_unavailable"}'::jsonb,updated_at=now() WHERE id=$1 AND lease_owner=$2 AND fencing_token=$3`,[row.id,lease,row.fencing_token]));
     }
   }
-  const unknown=scope.maintenance===false?[]:await withSystemTransaction("run_execution",async tx=>(await tx.query<{id:string}>(`SELECT o.id FROM unfurl.ai_provider_operations o WHERE o.budget_id=$1
-    AND o.state='unknown' AND o.provider_request_id IS NOT NULL ORDER BY o.updated_at LIMIT 2`,[runtime.budget.budgetId])).rows);
-  const accounting=new OpenRouterAccounting(runtime.budget,()=>process.env.OPENROUTER_API_KEY);
-  let reconciled=0;for(const row of unknown){try{if((await accounting.reconcile(row.id,AbortSignal.timeout(10000))).settled)reconciled++;}catch{/* Unknown cost keeps its hold. */}}
+  const unknown=scope.maintenance===false?[]:await withSystemTransaction("run_execution",async tx=>(await tx.query<{id:string;budget_id:string}>(`SELECT o.id,o.budget_id FROM unfurl.ai_provider_operations o WHERE o.budget_id=ANY($1::uuid[])
+    AND o.state='unknown' AND o.provider_request_id IS NOT NULL ORDER BY o.updated_at LIMIT 2`,[await configuredFundingIds(tx)])).rows);
+  let reconciled=0;for(const row of unknown){try{const accounting=new OpenRouterAccounting(runtime.budgetForId(row.budget_id),()=>process.env.OPENROUTER_API_KEY);if((await accounting.reconcile(row.id,AbortSignal.timeout(10000))).settled)reconciled++;}catch{/* Unknown cost keeps its hold. */}}
   await runtime.gate.observe({capability:"dispatcher",passed:failed===0,testVersion:CAPABILITY_TEST_VERSION,ttlSeconds:90,instanceId:"authenticated-dispatch",
     evidence:{scanned:rows.length,dispatched,failed,recovered,reconciled,local:runtime.gate.world==="local"}});
   return {scanned:rows.length,dispatched,failed,recovered,reconciled};

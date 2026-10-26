@@ -6,6 +6,7 @@ import { jsonDigest } from "../ai/json";
 import { modelPolicy } from "../ai/model-policy";
 import type { BudgetTransactionRunner } from "./postgres";
 import { PostgresBudget } from "./postgres";
+import { readFundingConfiguration, resolveJobFunding } from "./funding";
 import {
   FINAL_VERIFICATION_RESERVE_MICRO_USD,
   PROBE_LIMIT_MICRO_USD,
@@ -29,6 +30,16 @@ export const LEDGER_PROOF_SOURCE_FILES = [
   "src/server/budget/calculations.ts",
   "src/server/budget/money.ts",
   "src/server/budget/ports.ts",
+  "src/server/budget/funding.ts",
+  "src/server/ai/scoped-runtime-model.ts",
+  "supabase/migrations/202610250029_execution_funding.sql",
+  "supabase/configure-ai-funding.mjs",
+  "tests/budget/funding.test.ts",
+  "tests/budget/funding.local.test.ts",
+  "tests/budget/funding.operator.test.ts",
+  "src/server/ai/output-policy.ts",
+  "src/server/ai/json.ts",
+  "src/server/runs/output-policy.ts",
   "tests/budget/ledger-proof.test.ts",
   "tests/budget/ledger-proof.operator.test.ts",
   "scripts/budget-ledger-proof.mjs",
@@ -198,14 +209,14 @@ function savepointRunner(client: LedgerProofClient): BudgetTransactionRunner {
   };
 }
 
-function request(amount: bigint, probe = false): ReserveRequest {
+function request(amount: bigint, probe = false, runStepId: string | null = null): ReserveRequest {
   const policy = modelPolicy("kimi-digitalocean-v1");
   const rateCard = { model: policy.model, provider: policy.provider, policyVersion: policy.id, proof: LEDGER_PROOF_VERSION };
   return {
     reservationId: randomUUID(),
     logicalOperationId: randomUUID(),
     attempt: 1,
-    runStepId: null,
+    runStepId: probe ? null : runStepId,
     probe,
     purpose: probe ? "capability_probe" : "curriculum",
     amountMicroUsd: amount.toString(),
@@ -213,6 +224,26 @@ function request(amount: bigint, probe = false): ReserveRequest {
     rateCardDigest: jsonDigest(rateCard),
     rateCard,
   };
+}
+
+/** Only called inside the case's rollback savepoint. No job or existing step is changed. */
+async function fixtureRequests(client: LedgerProofClient, budgetId: string) {
+  const schema=(await client.query<{present:boolean}>("SELECT to_regclass('unfurl.ai_funding_configuration') IS NOT NULL AS present")).rows[0];
+  if(!schema?.present)return request;
+  const config=await readFundingConfiguration(client);
+  if(!config)return request;
+  assert.equal(config.verification_budget_id,budgetId,"Ledger proof requires verification funding");
+  const job=(await client.query<{id:string}>(`SELECT j.id FROM unfurl.execution_jobs j
+    LEFT JOIN unfurl.agent_turn_runs t ON t.id=j.agent_turn_run_id
+    LEFT JOIN unfurl.generation_runs g ON g.id=j.generation_run_id
+    WHERE COALESCE(t.owner_id,g.owner_id)=$1 ORDER BY (j.funding_version IS NOT NULL) DESC,j.created_at,j.id LIMIT 1`,[config.verification_actor_id])).rows[0];
+  assert.ok(job,"No existing verification job is available for rollback proof");
+  const funding=await resolveJobFunding(client,job.id);
+  assert.equal(funding.kind,"verification");assert.equal(funding.budgetId,budgetId);
+  const stepId=randomUUID(),digest=jsonDigest({fixture:LEDGER_PROOF_VERSION,stepId});
+  await client.query(`INSERT INTO unfurl.run_steps(id,job_id,step_key,input_digest,schema_digest,capability_digest,validation_policy_digest)
+    VALUES($1,$2,$3,$4,$4,$4,$4)`,[stepId,job.id,`ledger_proof:${stepId}`,digest]);
+  return (amount:bigint,probe=false)=>request(amount,probe,stepId);
 }
 
 function response(): ProviderResponseReceipt {
@@ -245,6 +276,7 @@ async function proofState(client: LedgerProofClient, budgetId: string): Promise<
 }
 
 async function reserveReplaySettle(client: LedgerProofClient, budgetId: string): Promise<void> {
+    const request=await fixtureRequests(client,budgetId);
     const ledger = new PostgresBudget(budgetId, savepointRunner(client));
     const before = await campaign(client, budgetId);
     const counts = (await client.query<{ operations: number; responses: number; entries: number }>(`SELECT
@@ -275,6 +307,7 @@ async function reserveReplaySettle(client: LedgerProofClient, budgetId: string):
 }
 
 async function manyUnknownHolds(client: LedgerProofClient, budgetId: string): Promise<void> {
+    const request=await fixtureRequests(client,budgetId);
     const ledger = new PostgresBudget(budgetId, savepointRunner(client));
     const before = await campaign(client, budgetId);
     const fixture = request(1_000n);
@@ -282,15 +315,15 @@ async function manyUnknownHolds(client: LedgerProofClient, budgetId: string): Pr
     // while live accounts use the same campaign. Actual admission/reservation still use PostgresBudget.
     await client.query(`WITH inserted AS (
       INSERT INTO unfurl.ai_provider_operations(id,budget_id,logical_operation_id,attempt,request_digest,purpose,state,
-        reserved_micro_usd,model_id,provider_tag,rate_card_digest,rate_card,dispatched_at,safe_failure_code)
-      SELECT gen_random_uuid(),$1,gen_random_uuid(),1,$2,'curriculum','unknown',1000,$3,$4,$5,$6,now(),'timeout'
+        reserved_micro_usd,model_id,provider_tag,rate_card_digest,rate_card,dispatched_at,safe_failure_code,run_step_id)
+      SELECT gen_random_uuid(),$1,gen_random_uuid(),1,$2,'curriculum','unknown',1000,$3,$4,$5,$6,now(),'timeout',$7
       FROM generate_series(1,100) RETURNING id
     ), entries AS (
       INSERT INTO unfurl.ai_budget_entries(id,budget_id,operation_id,effect_key,kind,reserved_delta_micro_usd,settled_delta_micro_usd,evidence_digest)
       SELECT gen_random_uuid(),$1,id,id::text||':reserve','reserve',1000,0,$2 FROM inserted RETURNING id
     ) UPDATE unfurl.ai_budgets SET reserved_micro_usd=reserved_micro_usd+100000,revision=revision+100,updated_at=now()
       WHERE id=$1 AND (SELECT count(*) FROM entries)=100`,
-    [budgetId,fixture.requestDigest,fixture.rateCard.model,fixture.rateCard.provider,fixture.rateCardDigest,JSON.stringify(fixture.rateCard)]);
+    [budgetId,fixture.requestDigest,fixture.rateCard.model,fixture.rateCard.provider,fixture.rateCardDigest,JSON.stringify(fixture.rateCard),fixture.runStepId]);
     const held = (await client.query<{ count: number }>("SELECT count(*)::int AS count FROM unfurl.ai_provider_operations WHERE budget_id=$1 AND state='unknown'", [budgetId])).rows[0]!;
     assert.ok(held.count >= 100);
     await ledger.assertAvailable({ probe: false });
@@ -303,6 +336,7 @@ async function manyUnknownHolds(client: LedgerProofClient, budgetId: string): Pr
 }
 
 async function dynamicCeilings(client: LedgerProofClient, budgetId: string): Promise<void> {
+    const request=await fixtureRequests(client,budgetId);
     const ledger = new PostgresBudget(budgetId, savepointRunner(client));
     const before = await proofState(client, budgetId);
     const campaignHeadroom = SPENDABLE_LIMIT_MICRO_USD - before.settled - before.reserved;
@@ -321,6 +355,7 @@ async function dynamicCeilings(client: LedgerProofClient, budgetId: string): Pro
 }
 
 async function overrunHalts(client: LedgerProofClient, budgetId: string): Promise<void> {
+    const request=await fixtureRequests(client,budgetId);
     const ledger = new PostgresBudget(budgetId, savepointRunner(client));
     const before = await campaign(client, budgetId);
     const input = request(100n);
@@ -335,6 +370,7 @@ async function overrunHalts(client: LedgerProofClient, budgetId: string): Promis
 }
 
 async function peerLock(client: LedgerProofClient, peer: LedgerProofClient, budgetId: string): Promise<void> {
+  const request=await fixtureRequests(client,budgetId);
   let peerBegun = false;
   try {
     const primary = new PostgresBudget(budgetId, savepointRunner(client));

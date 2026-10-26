@@ -34,7 +34,7 @@ describe("durable decision retry allocation",()=>{
   });
   it("records a Kimi retry override and reader policy even if the original capture selected Gemini",async()=>{
     const h=await harness();
-    expect(await readAgentDecisionModelRetryPolicy(h.tx,h.input)).toMatchObject({modelPolicy:"kimi-digitalocean-v1",readerCapabilities:{version:"text-sources-v1"}});
+    expect(await readAgentDecisionModelRetryPolicy(h.tx,h.input)).toMatchObject({modelPolicy:"kimi-digitalocean-v1",readerCapabilities:{version:"text-pdf-parts-v2"}});
   });
   it("rejects a journal policy that differs from its immutable ambiguous-attempt authorization",async()=>{
     const h=await harness();h.modelRow.authorized_model_policy="gemini-flash-google-v1";

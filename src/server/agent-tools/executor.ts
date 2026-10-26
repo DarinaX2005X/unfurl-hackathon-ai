@@ -11,7 +11,7 @@ import { ServiceFault } from "../auth/errors";
 import type { DbTransaction } from "../db";
 import { PostgresResearchRepository } from "../research/repository";
 import { sourceReadFailureObservation } from "../research/reader-capabilities";
-import { SearchResultSchema, SourceBlockSchema, SourceDocumentSchema, type ResearchPort } from "../research/ports";
+import { continuationFromSource, SearchResultSchema, SourceBlockSchema, SourceDocumentSchema, type ResearchPort } from "../research/ports";
 import { stableExecutionId } from "../runs/identity";
 import type { RunContext, StepEffectContext } from "../runs/ports";
 import { preparedCurriculumOutput, PreparedCurriculumOutputSchema, type SelectedSource } from "../curriculum-research/composer";
@@ -22,6 +22,7 @@ import { commitResearchedRevision } from "../curriculum-research/persistence";
 import { createResearchedCourse, curriculumConflict, readArtifact, requireCourseDraft, requireDraft } from "../curricula/repository";
 import { editMetadataInTransaction, readAuthoringSnapshot } from "../curricula/service";
 import { asAgentTarget, jsonSchema, jsonValue, journalKey, loadToolAuthority, readSavedSearch, readSavedSourceResult, readSourceHistory, ReadHistoryPageSchema, saveAssistantMessage, type ContextSnapshot } from "../agent-turns/repository";
+import { sourcePdfPartMemory } from "../agent-turns/source-memory";
 import { AgentDecisionReceiptSchema, ToolObservationSchema, type AgentDecision, type AgentDecisionReceipt, type AgentToolAuthority, type ToolObservation } from "./contracts";
 import { agentActionDetails, sourceActionDetails } from "./action-details";
 
@@ -50,7 +51,7 @@ export async function prepareAgentDecision(tx: DbTransaction, authority: AgentTo
   intent: ContextSnapshot["languageIntent"] = null): Promise<AgentDecisionReceipt> {
   const receipt: AgentDecisionReceipt = { kind: "decision", index, invocationId: stableExecutionId(authority.runId, `tool:${index}`),
     decision, capturedDraft: null, capturedCourseRevision: null, preparationError: null,
-    ...(decision.tool === "create_course" ? { outlineIdentityPolicy: "server-assigned-v1" as const } : {}) };
+    ...(decision.tool === "create_course" ? { outlineIdentityPolicy: "server-assigned-v2" as const } : {}) };
   try {
     if (intent) {
       if (!["search", "read_source", "read_artifact", "revise_language", "respond"].includes(decision.tool)) throw notInScope();
@@ -72,7 +73,7 @@ export async function prepareAgentDecision(tx: DbTransaction, authority: AgentTo
     }
     const selections = "sources" in decision.input ? decision.input.sources : [];
     if (selections.some((selection) => !authority.sourceIds.has(selection.sourceId))) throw notInScope();
-    if (decision.tool === "read_source" && decision.input.kind === "blocks" && !authority.sourceIds.has(decision.input.sourceId)) throw notInScope();
+    if (decision.tool === "read_source" && (decision.input.kind === "blocks" || decision.input.kind === "continue") && !authority.sourceIds.has(decision.input.sourceId)) throw notInScope();
   } catch (error) {
     if (!(error instanceof ServiceFault)) throw error;
     receipt.preparationError = error.code;
@@ -152,7 +153,22 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
         switch (decision.tool) {
           case "search": output = { kind: "search", result: await dependencies.researchForStep(step,snapshot.searchPolicy).search(decision.input, step.signal) }; break;
           case "read_source": {
-            if (decision.input.kind === "url") output = { kind: "source", result: await dependencies.researchForStep(step).read({ url: decision.input.url }, step.signal) };
+            if (decision.input.kind === "url") output = { kind: "source", result: await dependencies.researchForStep(step).read({ url: decision.input.url,
+              ...(snapshot.agentProtocol === "conversational-pdf-v4" && snapshot.readerCapabilities?.version === "text-pdf-parts-v2"
+                ? { readerPolicy: snapshot.readerCapabilities.version } : {}) }, step.signal) };
+            else if (decision.input.kind === "continue") {
+              if (snapshot.agentProtocol !== "conversational-pdf-v4" || snapshot.readerCapabilities?.version !== "text-pdf-parts-v2") throw new ProviderFailure("invalid_output");
+              const selection = decision.input;
+              const request = await context.read(async (tx, target) => {
+                const currentAuthority = await loadToolAuthority(tx, target, context.claim.jobId);
+                if (!currentAuthority.sourceIds.has(selection.sourceId)) throw notInScope();
+                const source = await new PostgresResearchRepository().getSource(tx, selection.sourceId);
+                if (!source) throw notInScope();
+                return continuationFromSource(source);
+              });
+              output = request ? { kind: "source", result: await dependencies.researchForStep(step).read(request, step.signal) }
+                : { kind: "failure", code: "no_source_continuation", summary: "This saved source has no later PDF part to read." };
+            }
             else if (decision.input.kind === "search_result") {
               const selection = decision.input;
               output = { kind: "saved_search", result: await context.read((tx) => readSavedSearch(tx, context.claim.jobId, selection.searchId)),
@@ -228,8 +244,10 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
           }
           const source = await new PostgresResearchRepository().saveSource(tx, output.result.document);
           details = { source: { title: source.title, url: source.finalUrl }, sectionCount: source.blocks.length };
-          result = observation(decision.tool, true, `Read ${source.title}.`, { sourceId: source.id, title: source.title, url: source.finalUrl,
-            extractionState: source.extractionState, blockIndex: blockOverview(source.blocks), previewOnly: true }, [source.id]); break;
+          result = observation(decision.tool, true, source.pdfPart && source.extractionState !== "complete" ? `Read a part of ${source.title}.` : `Read ${source.title}.`,
+            { sourceId: source.id, title: source.title, url: source.finalUrl,
+              extractionState: source.extractionState, blockIndex: blockOverview(source.blocks), previewOnly: true,
+              ...(source.pdfPart ? { pdfPart: sourcePdfPartMemory(source) } : {}) }, [source.id]); break;
         }
         case "blocks":
           details = { ...sourceActionDetails(snapshot, output.sourceId), sectionCount: output.blocks.length };

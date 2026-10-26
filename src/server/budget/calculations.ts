@@ -28,6 +28,7 @@ export function worstCaseMicroUsd(bounds: ReservationBounds): bigint {
 export interface BudgetState {
   settled: bigint; reserved: bigint; probeSettled: bigint; probeReserved: bigint;
   halted: boolean;
+  kind?: "verification" | "site";
 }
 
 export type AdmissionDecision = { allowed: true } | { allowed: false; reason: "halted" | "campaign_limit" | "probe_limit" };
@@ -36,6 +37,7 @@ export type AdmissionDecision = { allowed: true } | { allowed: false; reason: "h
 export function canReserve(state: BudgetState, amount: bigint, isProbe: boolean): AdmissionDecision {
   if (amount <= 0n || [state.settled, state.reserved, state.probeSettled, state.probeReserved].some((value) => value < 0n)) throw new RangeError("Invalid budget state");
   if (state.halted) return { allowed: false, reason: "halted" };
+  if (state.kind === "site") return isProbe ? { allowed: false, reason: "probe_limit" } : { allowed: true };
   if (state.settled + state.reserved + amount > SPENDABLE_LIMIT_MICRO_USD-(isProbe?FINAL_VERIFICATION_RESERVE_MICRO_USD:0n)) return { allowed: false, reason: "campaign_limit" };
   if (isProbe && state.probeSettled + state.probeReserved + amount > PROBE_LIMIT_MICRO_USD) return { allowed: false, reason: "probe_limit" };
   return { allowed: true };

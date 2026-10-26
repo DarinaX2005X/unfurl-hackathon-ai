@@ -8,6 +8,7 @@ import {getCapabilityCatalogDigest} from "@/server/mechanics/catalog";
 import {withCapturedModelPolicy} from "@/server/ai/captured-policy";
 import {CANDIDATE_MODEL_POLICY,GEMINI_SCHEMA_V2_POLICY,GEMINI_SCHEMA_V4_POLICY,modelPolicy,type ModelPolicyId} from "@/server/ai/model-policy";
 import {jsonDigest} from "@/server/ai/json";
+import {currentReaderCapabilities} from "@/server/research/reader-capabilities";
 import type {ApprovedBuildBinding} from "@/server/curricula/build-binding";
 import type {RunContext} from "@/server/runs/ports";
 import type {ModelPort,StructuredRequest} from "@/server/ai/ports";
@@ -42,12 +43,13 @@ describe("generation model capture and fresh retries",()=>{
   it("captures certified v4 for a fresh run after a failed v2 ancestor without rewriting its capture",async()=>{
     const h=harness(false),before=structuredClone(h.old);
     await expect(h.handler.advance(h.context)).resolves.toEqual({status:"continue"});
-    expect(h.writes).toHaveLength(1);expect(h.writes[0]).toMatchObject({modelPolicy:GEMINI_SCHEMA_V4_POLICY});expect(h.old).toEqual(before);
+    expect(h.writes).toHaveLength(1);expect(h.writes[0]).toMatchObject({modelPolicy:GEMINI_SCHEMA_V4_POLICY,sourceSelectionPolicy:"source-selection-v2",readerCapabilities:currentReaderCapabilities()});expect(h.old).toEqual(before);
     expect(h.selections()).toBe(1);expect(h.runtime).not.toHaveBeenCalled();
   });
   it.each([GEMINI_SCHEMA_V2_POLICY,CANDIDATE_MODEL_POLICY])("keeps an already-started %s capture even when v4 becomes available",async policy=>{
     const h=harness(true,policy);await expect(h.handler.advance(h.context)).rejects.toThrow("stop-after-policy-binding");
     expect(h.writes).toHaveLength(0);expect(h.selections()).toBe(0);expect(h.old.modelPolicy).toBe(policy);
+    expect(h.old).not.toHaveProperty("sourceSelectionPolicy");expect(h.old).not.toHaveProperty("readerCapabilities");
   });
   it("binds only uncaptured non-rubric requests and leaves historical missing captures untouched",async()=>{
     const generateStructured=vi.fn<(request:StructuredRequest<unknown>,signal:AbortSignal)=>Promise<{data:object;evidence:object}>>(async()=>({data:{},evidence:{}})),model={generateStructured,streamText:vi.fn(),capabilities:vi.fn()} as unknown as ModelPort;

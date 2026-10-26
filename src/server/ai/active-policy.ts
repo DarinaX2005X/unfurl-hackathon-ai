@@ -18,7 +18,7 @@ async function selectedProof(tx:DbTransaction,availability=false,policy:ModelPol
       proof.evidence,COALESCE(proof.evidence->'portability'->>'credentialDigest',proof.evidence->>'credentialDigest') AS credential_digest,
       CASE WHEN proof.evidence ? 'portability' THEN ${portableReceiptBindingSql("proof")} ELSE false END AS portability_valid,
       EXISTS(SELECT 1 FROM unfurl.ai_provider_operations newer JOIN unfurl.ai_provider_responses failed ON failed.operation_id=newer.id
-        WHERE newer.budget_id=o.budget_id AND newer.model_id=o.model_id
+        WHERE newer.model_id=o.model_id
           AND failed.received_at>COALESCE((proof.evidence->'portability'->>'sourceObservedAt')::timestamptz,proof.observed_at)
           AND (failed.result->>'category' IN ('auth','schema','unsupported_parameter','privacy_route')
             OR (failed.result ? 'model' AND (failed.result->>'model'<>o.model_id OR failed.result->>'provider'<>'Google AI Studio'))))

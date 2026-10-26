@@ -15,6 +15,7 @@ import { BoundedModulePlanPageSchema, ModulePlanPageSchema } from "@/server/cour
 import { AnyModuleKnowledgeCheckpointSchema } from "@/server/course-generation/checkpoints";
 import { adaptiveFixture, fixture, id, digest } from "./fixtures";
 import { jsonDigest } from "@/server/ai/json";
+import {currentReaderCapabilities} from "@/server/research/reader-capabilities";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -74,8 +75,9 @@ function harness(alwaysFail = false) {
     const next = { step: { id: stepId, inputDigest: digest, result: { ...source.step.result, knowledge: updated } }, knowledge: updated, facts: data.context };
     sources.set(stepId, next); revisions.set(input.revision!.prefix, next); return next;
   });
-  const advance = (round = 0, correction: unknown = null) => advanceKnowledgeCoverage({ context, binding, index: new Map(), source, round,
-    correction, model, research: () => { throw new Error("No live research in contract fixture"); }, priorKnowledge: [] });
+  const advance = (round = 0, correction: unknown = null,captured=false) => advanceKnowledgeCoverage({ context, binding, index: new Map(), source, round,
+    correction, model, research: () => { throw new Error("No live research in contract fixture"); }, priorKnowledge: [],
+    ...(captured?{sourceSelectionPolicy:"source-selection-v2" as const,readerCapabilities:currentReaderCapabilities()}:{}) });
   return { source, context, binding, stored, sources, requests, targeted, advance };
 }
 
@@ -92,6 +94,11 @@ it("a failed scope review performs targeted research and rechecks changed knowle
   expect(result?.knowledge.outcomes[0]!.criteria).toHaveLength(2);
   expect(h.requests).toHaveLength(2);
   expect(h.requests.every(request => request.maxOutputTokens === 16384 && request.instructionVersion === "course-knowledge-coverage-v1")).toBe(true);
+});
+
+it("forwards the captured reader contract to coverage-revision research",async()=>{
+  const h=harness();await h.advance(0,null,true);await h.advance(0,null,true);
+  expect(h.targeted.mock.calls[0]![0]).toMatchObject({sourceSelectionPolicy:"source-selection-v2",readerCapabilities:currentReaderCapabilities()});
 });
 
 it("persistent semantic gaps stop after two targeted revisions and never create checked knowledge", async () => {

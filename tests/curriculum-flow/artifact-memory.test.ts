@@ -3,7 +3,7 @@ vi.mock("server-only", () => ({}));
 import { compactArtifactMemory, ArtifactMemorySchema, ARTIFACT_MEMORY_BYTES } from "../../src/server/agent-turns/artifact-memory";
 import { captureContext, ContextSnapshotSchema } from "../../src/server/agent-turns/repository";
 import { buildAgentDecisionRequest } from "../../src/server/agent-turns/handler";
-import { currentReaderCapabilities } from "../../src/server/research/reader-capabilities";
+import { legacyReaderCapabilities } from "./fixtures";
 import * as curricula from "../../src/server/curricula/repository";
 import { curriculumDigest, type CurriculumDraft } from "../../src/domain/course";
 import type { DbTransaction } from "../../src/server/db";
@@ -96,7 +96,7 @@ describe("saved artifact memory", () => {
   it("adds grounding instructions only to marked captures without changing the decision schema or mutating legacy input", async () => {
     const old = ContextSnapshotSchema.parse({ kind: "context", index: 0, now: timestamp, currentMessage: "Review the course.",
       recentMessages: [], artifacts: [], sources: [], recentTools: [], agentProtocol: "conversational-v3",
-      readerCapabilities: currentReaderCapabilities(), languageIntent: null });
+      readerCapabilities: legacyReaderCapabilities(), languageIntent: null });
     const before = JSON.stringify(old);
     const budget = { reservationId: ids.request, logicalOperationId: ids.request, attempt: 1, runStepId: ids.task, probe: false };
     const legacy = buildAgentDecisionRequest(old, budget, 1234);

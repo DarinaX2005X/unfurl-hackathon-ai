@@ -4,16 +4,16 @@ import { useEffect, useMemo, useSyncExternalStore } from "react";
 import type { ConversationPort } from "@/application/conversation-port";
 import type { ConversationDetail } from "@/domain/conversations";
 import { accountScope } from "@/features/account/account-scope";
-import { buildTransport, ConversationBuilds, type ConversationBuildState } from "./conversation-builds";
+import { buildTransport, ConversationBuilds, type ConversationBuildSeed, type ConversationBuildState } from "./conversation-builds";
 
 const empty: ConversationBuildState = { builds: [], loading: false, error: false };
 const noopSubscribe = () => () => {};
 const emptySnapshot = () => empty;
 export function useConversationBuilds(actorId: string, conversationId: string | undefined, branchId: string | undefined,
-  conversations: ConversationPort, onDetail: (detail: ConversationDetail) => void) {
+  conversations: ConversationPort, getSeed: () => ConversationBuildSeed | null, onDetail: (detail: ConversationDetail) => void) {
   const controller = useMemo(() => conversationId && branchId
-    ? new ConversationBuilds({ actorId, conversationId, branchId }, buildTransport(conversations)) : null,
-  [actorId, conversationId, branchId, conversations]);
+    ? new ConversationBuilds({ actorId, conversationId, branchId }, buildTransport(conversations), undefined, getSeed()) : null,
+  [actorId, conversationId, branchId, conversations, getSeed]);
   const state = useSyncExternalStore(controller?.subscribe ?? noopSubscribe, controller?.getSnapshot ?? emptySnapshot, controller?.getSnapshot ?? emptySnapshot);
   useEffect(() => { controller?.setDetailHandler(onDetail); }, [controller, onDetail]);
   useEffect(() => {

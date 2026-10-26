@@ -7,10 +7,11 @@ import { jsonDigest } from "@/server/ai/json";
 import { ProposedResponseCaseSchema, ResponseCaseSchema } from "@/server/course-validation/case-evaluation";
 import { stableExecutionId } from "@/server/runs/identity";
 import { SourceClaimSchema } from "@/server/curriculum-research/contracts";
-import { PassageSchema } from "@/server/research/ports";
+import { PassageSchema, SourceReadInputSchema } from "@/server/research/ports";
 import { ContentReviewSchema } from "@/server/course-validation/content-review";
 import { KnowledgeCoverageReviewSchema } from "@/server/course-validation/knowledge";
 import { ModelPolicySchema,SearchPolicySchema } from "@/server/ai/model-policy";
+import { ReaderCapabilitiesSchema } from "@/server/research/reader-capabilities";
 
 export const COURSE_GENERATION_SCHEMA_DIGEST = jsonDigest({ courseGeneration: 3, knowledge: 1, candidate: 1, validation: 1, readingPieces: 1, moduleReviewPages: 1, plannedAssessmentRoles: 1, planPages: 1 });
 export const COURSE_VALIDATION_POLICY_DIGEST = jsonDigest({ courseValidation: 2, independentContentReview: 1, requiredOutcomeCoverage: 1, immutableEvidence: 1, adaptiveMaterial: 1 });
@@ -24,7 +25,11 @@ export const CourseGenerationPolicyCheckpointSchema = z.object({ kind: z.literal
   knowledgeCoveragePolicy: z.literal("approved-scope-v1").optional(),
   modelPolicy: ModelPolicySchema.optional(),
   searchPolicy: SearchPolicySchema.optional(),
-}).strict();
+  readerCapabilities: ReaderCapabilitiesSchema.optional(),
+  sourceSelectionPolicy: z.enum(["source-selection-v1", "source-selection-v2"]).optional(),
+}).strict().refine(value => Boolean(value.readerCapabilities) === Boolean(value.sourceSelectionPolicy) &&
+  (!value.readerCapabilities || value.sourceSelectionPolicy === (value.readerCapabilities.version === "text-pdf-parts-v2" ? "source-selection-v2" : "source-selection-v1")),
+"Reader and source-selection policies must be captured together with matching versions");
 export const BatchKindSchema = z.enum(["candidate", "cases", "review"]);
 export type BatchKind = z.infer<typeof BatchKindSchema>;
 export const BatchItemProofSchema = z.object({ kind: z.literal("batch-item-v2"), batchStepId: IdSchema,
@@ -102,6 +107,8 @@ export function prepareTaskCasesCheckpoint(input: { candidateStepId: string; can
 export const SourceReadCheckpointSchema = z.object({
   kind: z.literal("course.source.read"), moduleId: IdSchema, approvalDigest: DigestSchema,
   sourceId: IdSchema, contentDigest: DigestSchema,
+  readProof: z.object({ version: z.literal("source-read-parts-v2"), input: SourceReadInputSchema,
+    previousReadStepId: IdSchema.nullable() }).strict().optional(),
 }).strict();
 export const SourceClaimsProposalSchema = z.object({
   passages: z.array(PassageSchema).min(1),

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogPort } from "../../src/application/catalog-port";
 import type { AccessibleCourseDetail } from "../../src/domain/course";
 import { ConversationBuild, type BuildInteraction } from "../../src/features/creator/ConversationBuild";
+import { Conversation } from "../../src/features/creator/Conversation";
 import { buildTimeline, type BuildTimelineItem } from "../../src/features/creator/build-timeline";
 import { createGenerationStreamState } from "../../src/features/creator/generation-stream";
 import type { ConversationBuildView } from "../../src/features/creator/conversation-builds";
@@ -36,6 +37,14 @@ beforeEach(() => { vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true); accountScope
 afterEach(() => { accountScope.replaceActor(null); vi.unstubAllGlobals(); });
 
 describe("course build chat presentation", () => {
+  it("shows honest loading only while no build projection is available", () => {
+    const render = (builds: ConversationBuildView[], loading: boolean) => renderToStaticMarkup(<Conversation messages={[]} pending={false}
+      transmittingId={null} onRetry={vi.fn()} onEdit={vi.fn()} builds={builds} buildsLoading={loading} buildInteraction={interaction} />);
+    expect(render([], true)).toContain("Loading course activity…");
+    expect(render([], false)).not.toContain("Loading course activity…");
+    const hydrated = render([readyBuild()], true);
+    expect(hydrated).toContain("Plan approved"); expect(hydrated).not.toContain("Loading course activity…");
+  });
   it("shows user-side approval and the genuine model paragraph without internal identities", () => {
     const build = readyBuild();
     build.runs[0]!.events = [{ id: ids.attempt, runId: ids.request, courseId: ids.course, branchId: ids.sample,

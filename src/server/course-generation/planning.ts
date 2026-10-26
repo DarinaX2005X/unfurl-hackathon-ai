@@ -18,6 +18,11 @@ export const SourceSelectionSchema = z.object({
   moduleId: IdSchema, selections: z.array(z.object({ searchStepId: IdSchema, hitId: IdSchema, outcomeIds: ids, reason: text }).strict()).min(1),
   limitations: z.array(text),
 }).strict();
+/** The paid hit set bounds selection; no fixed source count reduces course scope. */
+export function readableSourceSelectionSchema(availableHits:number){
+  if(!Number.isSafeInteger(availableHits)||availableHits<1)throw new RangeError("Source selection requires actual candidates");
+  return SourceSelectionSchema.extend({selections:SourceSelectionSchema.shape.selections.max(availableHits)});
+}
 const ReadingPlanSchema = z.object({ id: IdSchema, kind: z.enum(["explanation", "example"]),
   outcomeIds: ids, claimIds: ids, teachingPurpose: text, title: text.nullable() }).strict();
 export const ModulePlanSchema = z.object({

@@ -2,6 +2,7 @@ import { curriculum, ids, timestamp } from "../domain/fixtures";
 import { curriculumDigest } from "../../src/domain/course";
 import type { CourseArtifactRef } from "../../src/domain/chat";
 import type { SourceDocument, Passage } from "../../src/server/research/ports";
+import type { ReaderCapabilities } from "../../src/server/research/reader-capabilities";
 import type { CurriculumResearchEvidence, SourceClaim } from "../../src/server/curriculum-research/contracts";
 import { briefEvidenceDigest, moduleEvidenceDigest, outcomeEvidenceDigest, type CurriculumEvidenceFacts } from "../../src/server/curriculum-research/validation";
 
@@ -13,6 +14,8 @@ export const moreIds = {
   step: "20000000-0000-4000-8000-000000000004",
 };
 export const now = "2026-10-25T12:00:00.000Z";
+export const legacyReaderCapabilities = (): ReaderCapabilities => ({ version: "text-sources-v1",
+  supportedMediaTypes: ["text/html", "application/xhtml+xml", "text/plain", "text/markdown", "application/json"], pdf: false });
 export function artifact(): CourseArtifactRef {
   const draft = curriculum();
   return { courseId: draft.courseId, title: draft.title, summary: draft.goal, contentLanguage: draft.contentLanguage,

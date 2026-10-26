@@ -13,6 +13,7 @@ import {executeAgentTool} from "../../src/server/agent-tools/executor";
 import {jsonDigest} from "../../src/server/ai/json";
 import type {DbTransaction} from "../../src/server/db";
 import type {ModelPort} from "../../src/server/ai/ports";
+import {legacyReaderCapabilities} from "./fixtures";
 
 const id="00000000-0000-4000-8000-000000000001";
 function snapshot(version:1|2|3):ContextSnapshot{
@@ -52,7 +53,7 @@ describe("captured reader capability policy",()=>{
   });
   it("adds the captured format policy only to new decisions without changing their output schema",async()=>{
     const original=snapshot(3),before=JSON.stringify(original),old=await plannerRequest(original);
-    const next=ContextSnapshotSchema.parse({...original,readerCapabilities:currentReaderCapabilities()});
+    const next=ContextSnapshotSchema.parse({...original,readerCapabilities:legacyReaderCapabilities()});
     const fresh=await plannerRequest(next);
     expect(fresh.digest).not.toBe(old.digest);
     expect(old.request.instructionVersion).toBe("adaptive-course-agent-v3");
@@ -60,7 +61,7 @@ describe("captured reader capability policy",()=>{
     expect(fresh.request.instructionVersion).toBe("adaptive-course-agent-v3:text-sources-v1");
     expect(fresh.request.trustedInstructions).toContain("PDF documents cannot be read");
     expect(fresh.request.trustedInstructions).toContain("Preserve the full course goal and depth");
-    expect(fresh.request.untrustedInput).toMatchObject({readerCapabilities:currentReaderCapabilities()});
+    expect(fresh.request.untrustedInput).toMatchObject({readerCapabilities:legacyReaderCapabilities()});
     expect(fresh.request.schema).toBe(old.request.schema);expect(fresh.request.maxOutputTokens).toBe(32768);
     expect(JSON.stringify(original)).toBe(before);expect(ContextSnapshotSchema.parse(original)).not.toHaveProperty("readerCapabilities");
   });
@@ -68,16 +69,17 @@ describe("captured reader capability policy",()=>{
     const tx={query:async(sql:string)=>({rows:sql.startsWith("SELECT parts FROM unfurl.messages")?[{parts:[{type:"text",text:"Teach the full foundations and both branches."}]}]:[],rowCount:0})} as DbTransaction;
     const fresh=await captureContext(tx,{kind:"agent_turn",runId:id,ownerId:id,conversationId:id,branchId:id,inputMessageId:id},id,1,"2026-01-01T00:00:00.000Z");
     expect(fresh.readerCapabilities).toEqual(currentReaderCapabilities());
-    expect(fresh.agentProtocol).toBe("conversational-v3");expect(fresh.planningPolicy?.maxOutputTokens).toBe(32768);
+    expect(fresh.agentProtocol).toBe("conversational-pdf-v4");expect(fresh.planningPolicy?.maxOutputTokens).toBe(32768);
     expect(fresh.currentMessage).toContain("both branches");
   });
   it("declares exactly the accepted source media types and rejects guessed PDF support or future versions",()=>{
     expect(currentReaderCapabilities().supportedMediaTypes).toEqual(SourceDocumentSchema.shape.mediaType.options);
-    expect(ReaderCapabilitiesSchema.safeParse({...currentReaderCapabilities(),pdf:true}).success).toBe(false);
+    expect(ReaderCapabilitiesSchema.safeParse({...legacyReaderCapabilities(),pdf:true}).success).toBe(false);
+    expect(ReaderCapabilitiesSchema.safeParse({...currentReaderCapabilities(),pdf:false}).success).toBe(false);
     expect(ReaderCapabilitiesSchema.safeParse({...currentReaderCapabilities(),version:"future"}).success).toBe(false);
   });
   it("returns useful unsupported-format guidance to the model without technical payloads in public events",async()=>{
-    const captured=ContextSnapshotSchema.parse({...snapshot(3),readerCapabilities:currentReaderCapabilities()});
+    const captured=ContextSnapshotSchema.parse({...snapshot(3),readerCapabilities:legacyReaderCapabilities()});
     const tx={query:async()=>({rows:[],rowCount:0})} as unknown as DbTransaction;
     const target={kind:"agent_turn" as const,runId:id,ownerId:id,conversationId:id,branchId:id,inputMessageId:id};
     const publicEvents:unknown[]=[];
@@ -89,7 +91,7 @@ describe("captured reader capability policy",()=>{
     const observation=await executeAgentTool(context,{kind:"decision",index:0,invocationId:id,decision:{tool:"read_source",commentary:null,input:{kind:"url",url:failure.requestedUrl}},
       capturedDraft:null,capturedCourseRevision:null,preparationError:null},captured,{model:{} as ModelPort,researchForStep:()=>({read,search:async()=>{throw new Error("No search allowed");}})});
     expect(read).toHaveBeenCalledTimes(1);
-    expect(observation).toMatchObject({ok:false,sourceIds:[],data:{status:"unsupported",requestedUrl:failure.requestedUrl,reason:"unsupported_format_encoding_or_text_extraction",readerCapabilities:currentReaderCapabilities()}});
+    expect(observation).toMatchObject({ok:false,sourceIds:[],data:{status:"unsupported",requestedUrl:failure.requestedUrl,reason:"unsupported_format_encoding_or_text_extraction",readerCapabilities:legacyReaderCapabilities()}});
     expect(observation.summary).not.toContain("text/html");expect(JSON.stringify(publicEvents)).not.toContain("supportedMediaTypes");
     expect(JSON.stringify(publicEvents)).not.toContain("unsupported_format_encoding");
     const legacy=sourceReadFailureObservation(failure,undefined);

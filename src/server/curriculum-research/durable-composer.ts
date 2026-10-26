@@ -1,7 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { CurriculumDraftSchema, curriculumDigest, type CurriculumDraft, type ModuleOutline, type Outcome } from "../../domain/course";
-import type { AgentDecision } from "../agent-tools/contracts";
+import type { AgentDecision, AgentDecisionReceipt } from "../agent-tools/contracts";
 import { ProviderFailure } from "../ai/failure";
 import type { ModelPort } from "../ai/ports";
 import { asAgentTarget } from "../agent-turns/repository";
@@ -23,7 +23,7 @@ type CurriculumDecision = Extract<AgentDecision, { tool: "create_course" | "revi
 export interface DurableCompositionInput {
   invocationId: string; decision: CurriculumDecision; capturedDraft: CurriculumDraft | null; now: string; sources: SelectedSource[];
   researchInstructionPolicy?: CurriculumInstructionPolicy;
-  outlineIdentityPolicy?: "server-assigned-v1";
+  outlineIdentityPolicy?: AgentDecisionReceipt["outlineIdentityPolicy"];
 }
 interface ResearchScope { title: string; outcomes: Outcome[]; modules: ModuleOutline[]; sources: SelectedSource[] }
 const invalid = (): never => { throw new ProviderFailure("invalid_output"); };
@@ -110,14 +110,18 @@ export async function composeDurableCurriculum(context: RunContext, model: Model
       });
       for (;;) {
         const pageIndex = contentPage++;
+        // The captured v2 policy retains earlier branches as addressable prerequisites.
+        // Historical producers keep their exact continuation material and request identity.
+        const allPriorReferences = input.outlineIdentityPolicy === "server-assigned-v2";
         const outlineRequest = { header, section, prerequisites, continuation,
-          priorOutcomes: sectionOutcomes.slice(-12).map(({ id, title }) => ({ id, title })),
-          priorModules: sectionModules.slice(-6).map(({ id, title, outcomeIds }) => ({ id, title, outcomeIds })),
+          priorOutcomes: (allPriorReferences ? sectionOutcomes : sectionOutcomes.slice(-12)).map(({ id, title }) => ({ id, title })),
+          priorModules: (allPriorReferences ? sectionModules : sectionModules.slice(-6)).map(({ id, title, outcomeIds }) => ({ id, title, outcomeIds })),
           sources: sourceInput(sources) };
-        const page: z.infer<typeof ContentPageSchema> = input.outlineIdentityPolicy === "server-assigned-v1"
+        const page: z.infer<typeof ContentPageSchema> = input.outlineIdentityPolicy
           ? await runCurriculumPart(context, model, { invocationId: input.invocationId, phase: "outline", index: pageIndex,
             request: outlineRequest, saved, outputSchema: OutlineProposalSchema, resultSchema: ContentPageSchema,
-            instructions: OUTLINE_PROPOSAL_INSTRUCTIONS, instructionVersion: "curriculum-parts-v2:outline-identity-v1",
+            instructions: OUTLINE_PROPOSAL_INSTRUCTIONS,
+            instructionVersion: allPriorReferences ? "curriculum-parts-v2:outline-identity-v2" : "curriculum-parts-v2:outline-identity-v1",
             completedSummary: `Outlined the next part of “${section.title}”.`,
             commit: async (_tx, proposal) => materializeOutlineProposal({ invocationId: input.invocationId, sectionKey: section.key,
               pageIndex, proposal,

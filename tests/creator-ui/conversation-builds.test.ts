@@ -1,7 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ConversationBuild, ConversationDetail } from "../../src/domain/conversations";
 import type { GenerationSnapshot, GenerationTimelineEvent } from "../../src/domain/generation-observer";
-import { ConversationBuilds, type BuildTransport } from "../../src/features/creator/conversation-builds";
+import { ConversationBuilds, type BuildTransport, type ConversationBuildSeed } from "../../src/features/creator/conversation-builds";
+import { ChatSession } from "../../src/features/creator/chat-session";
+import { AccountScope } from "../../src/features/account/account-scope";
+import type { ConversationPort } from "../../src/application/conversation-port";
+import type { ApplicationPort } from "../../src/application/ports";
 import { buildTimeline } from "../../src/features/creator/build-timeline";
 import type { GenerationEventHandlers } from "../../src/features/creator/generation-observer-client";
 import { ids, timestamp } from "../domain/fixtures";
@@ -35,7 +39,7 @@ function terminal(snapshot: GenerationSnapshot, status: "failed" | "cancelled" =
 }
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>(done => { resolve = done; }); return { promise, resolve }; }
 const controllers: ConversationBuilds[] = [];
-function harness(values = [build()]) {
+function harness(values = [build()], seed?: ConversationBuildSeed | null) {
   let current = detail(values);
   const connections = new Map<string, { signal: AbortSignal; handlers: GenerationEventHandlers }>();
   const transport: BuildTransport = {
@@ -45,7 +49,7 @@ function harness(values = [build()]) {
     cancel: vi.fn(async (id) => terminal(current.builds!.flatMap(build => build.runs).find(run => run.snapshot.run.id === id)!.snapshot, "cancelled")),
     retry: vi.fn(), history: vi.fn(),
   };
-  const controller = new ConversationBuilds({ actorId: ids.actor, conversationId: ids.conversation, branchId: ids.sample }, transport);
+  const controller = new ConversationBuilds({ actorId: ids.actor, conversationId: ids.conversation, branchId: ids.sample }, transport, undefined, seed);
   controllers.push(controller);
   return { controller, transport, connections, get current() { return current; }, set current(value) { current = value; } };
 }
@@ -53,6 +57,52 @@ beforeEach(() => vi.useFakeTimers());
 afterEach(() => { controllers.splice(0).forEach(controller => controller.stop()); vi.useRealTimers(); });
 
 describe("conversation-owned course builds", () => {
+  it("projects the session's first detail before another fetch and clears its seed when the actor changes", async () => {
+    const snapshot = terminal(saved()); snapshot.retainedTimelineEvents = [commentary(2)];
+    const initial = detail([build(snapshot)]), scope = new AccountScope(); scope.replaceActor(ids.actor);
+    const get = vi.fn(async () => ({ ok: true as const, data: initial }));
+    const session = new ChatSession({ get } as unknown as ConversationPort, {} as ApplicationPort, ids.conversation, { actorId: ids.actor, scope });
+    try {
+      expect(session.getBuildSeed()).toBeNull();
+      await session.open();
+      const h = harness(initial.builds, session.getBuildSeed());
+      expect(get).toHaveBeenCalledTimes(1); expect(h.transport.detail).not.toHaveBeenCalled();
+      expect(buildTimeline(h.controller.getSnapshot().builds).map(item => item.kind)).toEqual(["build_approval", "build_commentary", "build_status"]);
+      scope.replaceActor(ids.missing);
+      expect(session.getBuildSeed()).toBeNull();
+    } finally { session.dispose(); }
+  });
+  it("observes seeded runs while background detail is pending and rejects its stale snapshot", async () => {
+    const initial = detail([build()]), h = harness(initial.builds, initial);
+    const pending = deferred<Awaited<ReturnType<BuildTransport["detail"]>>>();
+    vi.mocked(h.transport.detail).mockImplementationOnce(() => pending.promise);
+    const opening = h.controller.start();
+    expect(h.transport.detail).toHaveBeenCalledTimes(1);
+    expect(h.connections.has(ids.request)).toBe(true);
+    h.connections.get(ids.request)!.handlers.onEvent(commentary(2));
+    pending.resolve({ ok: true, data: initial }); await opening;
+    const run = h.controller.getSnapshot().builds[0]!.runs[0]!;
+    expect(run.stream.lastAppliedSeq).toBe(2); expect(run.events.map(event => event.seq)).toEqual([2]);
+  });
+  it("refreshes a cached seed to discover a retry started since the chat was last open", async () => {
+    const first = build(terminal(saved())), h = harness([first], detail([first]));
+    const next = saved(ids.evaluation); next.run.createdAt = later(10); next.run.updatedAt = later(10);
+    h.current = detail([{ ...first, runs: [...first.runs, { retryOfRunId: ids.request, snapshot: next }] }]);
+    expect(h.controller.getSnapshot().builds[0]!.runs).toHaveLength(1);
+    await h.controller.start();
+    expect(h.transport.detail).toHaveBeenCalledTimes(1);
+    expect(h.controller.getSnapshot().builds[0]!.runs.map(run => run.stream.run.id)).toEqual([ids.request, ids.evaluation]);
+    expect(h.connections.has(ids.evaluation)).toBe(true);
+  });
+  it.each(["ownerId", "id", "activeBranchId"] as const)("rejects a seed with a different conversation %s", field => {
+    const seed = detail([build()]); seed.conversation[field] = ids.missing;
+    expect(harness([], seed).controller.getSnapshot().builds).toEqual([]);
+  });
+  it("applies the same approval and retry-chain guards to initial hydration", () => {
+    const invalidApproval = build(); invalidApproval.runs[0]!.snapshot.approvalDigest = "b".repeat(64);
+    const orphan = build(saved(ids.evaluation)); orphan.runs[0]!.retryOfRunId = ids.request;
+    expect(harness([], detail([invalidApproval, orphan])).controller.getSnapshot().builds).toEqual([]);
+  });
   it("observes two active courses independently and never needs panel selection", async () => {
     const second = saved(ids.evaluation, ids.missing, ids.question);
     const h = harness([build(), build(second)]); await h.controller.start();

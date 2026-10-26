@@ -24,10 +24,12 @@ function record(value: unknown): Record<string, unknown> | null {
 export async function readOpenRouterChatStream(response: Response, options: {
   onIdentity: (id: string) => Promise<void>;
   maxBytes?: number;
+  /** The immutable provider allowance and transport deadline bound new captured calls. SSE framing is not model output. */
+  providerBoundOutput?: boolean;
 }): Promise<{ value: unknown; responseDigest: string }> {
   const requestedLimit = options.maxBytes ?? MAX_PROVIDER_RESPONSE_BYTES;
   if (!Number.isSafeInteger(requestedLimit) || requestedLimit < 1) invalidOutput();
-  const limit = Math.min(requestedLimit, MAX_PROVIDER_RESPONSE_BYTES);
+  const limit = options.providerBoundOutput ? Infinity : Math.min(requestedLimit, MAX_PROVIDER_RESPONSE_BYTES);
   let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
   try {

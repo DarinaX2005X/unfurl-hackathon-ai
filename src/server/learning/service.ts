@@ -13,6 +13,7 @@ import { withSystemTransaction, type DbTransaction } from "@/server/db";
 import { executeIdempotentInTransaction, requestDigest, type MutationReceipt } from "@/server/idempotency";
 import { getServerMechanic } from "@/server/mechanics/registry";
 import { enqueueLearningJobTx } from "@/server/runs/enqueue";
+import { effectStepSql } from "@/server/runs/output-policy";
 import { prepareActivityAction, invalidLearningFields, activityBudgetLimit } from "./actions";
 import { projectLearningSession } from "./projection";
 import { createInitialLearningRoute } from "./initial-route";
@@ -176,7 +177,7 @@ export function createLearningService(dependencies: LearningServiceDependencies 
           const receipt = state.activity.events.find((event) => event.receipt.id === receiptId)?.receipt ?? repository.notFound();
           if (receipt.status === "unavailable") {
             if (state.activity.revision !== body.expectedRevision) repository.revisionConflict(state.activity.revision, "learning.activityChanged");
-            const job = (await tx.query<{ retry_epoch: number; has_steps: boolean }>("SELECT retry_epoch,EXISTS(SELECT 1 FROM unfurl.run_steps s WHERE s.job_id=j.id) AS has_steps FROM unfurl.execution_jobs j WHERE activity_action_id=$1", [receiptId])).rows[0] ?? repository.invariant();
+            const job = (await tx.query<{ retry_epoch: number; has_steps: boolean }>(`SELECT retry_epoch,EXISTS(SELECT 1 FROM unfurl.run_steps s WHERE s.job_id=j.id AND ${effectStepSql("s")}) AS has_steps FROM unfurl.execution_jobs j WHERE activity_action_id=$1`, [receiptId])).rows[0] ?? repository.invariant();
             return { status: 200, data: { activitySessionId: activityId, receiptId, retryEpoch: job.retry_epoch, hadEffects: job.has_steps } };
           }
           return { status: receipt.status === "pending" ? 202 : 200, data: { activitySessionId: activityId, receiptId, retryEpoch: null, hadEffects: false } };
