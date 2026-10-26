@@ -39,12 +39,11 @@ describe("conversation send admission errors", () => {
   });
 
   it.each([
-    { reason: "concurrency", outstanding: "2", settled: "0", status: 429, code: "rate_limited", messageKey: "generation.rateLimited", retryable: true },
-    { reason: "campaign limit", outstanding: "0", settled: "9500000", status: 503, code: "service_unavailable", messageKey: "generation.budgetExhausted", retryable: false },
-  ])("preserves the budget contract for $reason admission failures", async ({ outstanding, settled, status, code, messageKey, retryable }) => {
+    { reason: "campaign limit", settled: "9500000", status: 503, code: "service_unavailable", messageKey: "generation.budgetExhausted", retryable: false },
+  ])("preserves the budget contract for $reason admission failures", async ({ settled, status, code, messageKey, retryable }) => {
     const tx = { query: vi.fn(async (sql: string) => ({ rows: sql.includes("FROM unfurl.ai_budgets")
       ? [{ id: ids.source, settled_micro_usd: settled, reserved_micro_usd: "0", halted: false }]
-      : [{ outstanding, probe_settled: "0", probe_reserved: "0" }] })) } as unknown as DbTransaction;
+      : [{ probe_settled: "0", probe_reserved: "0" }] })) } as unknown as DbTransaction;
     const budget = new PostgresBudget(ids.source, work => work(tx));
     vi.mocked(conversationService.sendMessage).mockImplementationOnce(async () => {
       await budget.assertAvailable({ probe: false });

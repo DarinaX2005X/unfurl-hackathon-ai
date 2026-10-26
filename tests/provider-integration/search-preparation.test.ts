@@ -19,7 +19,7 @@ it.skipIf(process.env.RUN_SEARCH_PREPARE!=="1")("proves one bounded search fits 
     const sum=(items:typeof rows,key:string)=>items.reduce((n,row)=>n+BigInt(row[key]??0),0n);
     expect(held).toHaveLength(4);expect(held.filter(row=>!row.terminal)).toHaveLength(1);
     expect(canReserve({settled:BigInt(campaign.settled_micro_usd),reserved:BigInt(campaign.reserved_micro_usd),halted:campaign.halted,
-      outstandingOperations:held.filter(row=>!row.terminal).length,probeSettled:sum(rows.filter(row=>row.state==="settled"&&row.purpose==="capability_probe"),"actual_micro_usd"),
+      probeSettled:sum(rows.filter(row=>row.state==="settled"&&row.purpose==="capability_probe"),"actual_micro_usd"),
       probeReserved:sum(held.filter(row=>row.purpose==="capability_probe"),"reserved_micro_usd")},330224n,true)).toEqual({allowed:true});
   });
   const gate=new PersistedCapabilityGate("local",new PostgresBudget(budgetId));const available=await gate.refresh();

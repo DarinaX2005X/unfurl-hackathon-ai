@@ -20,7 +20,7 @@ it.skipIf(process.env.RUN_DIAGNOSTIC_PREPARE!=="1")("reads preserved hold and pr
     const active=outstanding.filter(row=>!terminal.includes(row.id));
     const sum=(rows:typeof operations,key:string)=>rows.reduce((total,row)=>total+BigInt(row[key]??0),0n);
     const state={settled:BigInt(campaign.settled_micro_usd),reserved:BigInt(campaign.reserved_micro_usd),halted:campaign.halted,
-      outstandingOperations:active.length,probeSettled:sum(operations.filter(row=>row.purpose==="capability_probe"&&row.state==="settled"),"actual_micro_usd"),
+      probeSettled:sum(operations.filter(row=>row.purpose==="capability_probe"&&row.state==="settled"),"actual_micro_usd"),
       probeReserved:sum(outstanding.filter(row=>row.purpose==="capability_probe"),"reserved_micro_usd")};
     expect(canReserve(state,162612n,true).allowed).toBe(true);
     expect(active.length).toBe(1);expect(outstanding.length).toBe(4);expect(campaign.reserved_micro_usd).toBe("650448");expect(campaign.settled_micro_usd).toBe("0");

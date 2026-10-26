@@ -13,10 +13,10 @@ import {
 } from "./money";
 import type { ProviderResponseReceipt, ReserveRequest } from "./ports";
 
-export const LEDGER_PROOF_VERSION = "state-relative-ledger-proof-v1" as const;
+export const LEDGER_PROOF_VERSION = "state-relative-ledger-proof-v2" as const;
 export const LEDGER_PROOF_TEST_CASES = [
   "reserve_replay_dispatch_settle",
-  "unknown_hold_two_slot_guard",
+  "hundred_unknown_holds_allow_admission",
   "dynamic_campaign_and_probe_ceilings",
   "overrun_halts_inside_rollback",
   "real_peer_campaign_lock",
@@ -55,14 +55,6 @@ export interface LedgerProofSnapshot {
     effectivelyRetired: number;
     active: number;
   };
-  paused: {
-    runningJobs: number;
-    runningSteps: number;
-    activeJobLeases: number;
-    activeStepLeases: number;
-    pendingOutbox: number;
-    activeCodeExecutions: number;
-  };
   probe: {
     settledMicroUsd: string;
     reservedMicroUsd: string;
@@ -80,8 +72,16 @@ export interface StateRelativeLedgerProofReport {
   postProofState: LedgerProofSnapshot;
   snapshotDigest: string;
   rollbackVerified: true;
+  caseRollbacks: LedgerCaseRollback[];
   inferenceCalls: 0;
   providerProofUsed: false;
+}
+
+export type LedgerFinancialSnapshot = LedgerProofSnapshot;
+export interface LedgerCaseRollback {
+  name: (typeof LEDGER_PROOF_TEST_CASES)[number];
+  baseline: LedgerFinancialSnapshot;
+  afterRollback: LedgerFinancialSnapshot;
 }
 
 interface CampaignRow {
@@ -99,7 +99,6 @@ interface ProofBudgetState {
   probeReserved: bigint;
 }
 
-const activeCodeStatuses = "'reserved','creating','running','collecting','ambiguous','cleanup_pending'";
 const heldStates = "'reserved','dispatched','unknown'";
 
 function iso(value: Date | string): string {
@@ -127,21 +126,11 @@ async function readSnapshot(client: LedgerProofClient, budgetId: string): Promis
     count(*) FILTER(WHERE terminal_http_400)::int AS terminal_http_400,
     count(*) FILTER(WHERE effectively_retired)::int AS effectively_retired,
     count(*) FILTER(WHERE NOT terminal_http_400 AND NOT effectively_retired)::int AS active FROM held`, [budgetId])).rows[0];
-  const paused = (await client.query<{
-    running_jobs: number; running_steps: number; active_job_leases: number; active_step_leases: number;
-    pending_outbox: number; active_code_executions: number;
-  }>(`SELECT
-    (SELECT count(*)::int FROM unfurl.execution_jobs WHERE status='running') AS running_jobs,
-    (SELECT count(*)::int FROM unfurl.run_steps WHERE status='running') AS running_steps,
-    (SELECT count(*)::int FROM unfurl.execution_jobs WHERE status='running' AND lease_expires_at>statement_timestamp()) AS active_job_leases,
-    (SELECT count(*)::int FROM unfurl.run_steps WHERE status='running' AND lease_expires_at>statement_timestamp()) AS active_step_leases,
-    (SELECT count(*)::int FROM unfurl.outbox WHERE dispatched_at IS NULL) AS pending_outbox,
-    (SELECT count(*)::int FROM unfurl.code_execution_runs WHERE status IN (${activeCodeStatuses})) AS active_code_executions`)).rows[0];
   const probe = (await client.query<{ settled: string; reserved: string }>(`SELECT
     coalesce(sum(actual_micro_usd) FILTER(WHERE purpose='capability_probe' AND state='settled'),0)::text AS settled,
     coalesce(sum(reserved_micro_usd) FILTER(WHERE purpose='capability_probe' AND state IN (${heldStates})),0)::text AS reserved
     FROM unfurl.ai_provider_operations WHERE budget_id=$1`, [budgetId])).rows[0];
-  if (!rows || !held || !paused || !probe) throw new Error("Ledger snapshot is incomplete");
+  if (!rows || !held || !probe) throw new Error("Ledger snapshot is incomplete");
   return {
     campaign: {
       settledMicroUsd: campaign.settled_micro_usd,
@@ -157,40 +146,38 @@ async function readSnapshot(client: LedgerProofClient, budgetId: string): Promis
       effectivelyRetired: held.effectively_retired,
       active: held.active,
     },
-    paused: {
-      runningJobs: paused.running_jobs,
-      runningSteps: paused.running_steps,
-      activeJobLeases: paused.active_job_leases,
-      activeStepLeases: paused.active_step_leases,
-      pendingOutbox: paused.pending_outbox,
-      activeCodeExecutions: paused.active_code_executions,
-    },
     probe: { settledMicroUsd: probe.settled, reservedMicroUsd: probe.reserved },
   };
 }
 
-function assertPaused(snapshot: LedgerProofSnapshot): void {
-  assert.equal(snapshot.campaign.halted, false, "The campaign is halted");
-  assert.deepEqual(snapshot.paused, {
-    runningJobs: 0,
-    runningSteps: 0,
-    activeJobLeases: 0,
-    activeStepLeases: 0,
-    pendingOutbox: 0,
-    activeCodeExecutions: 0,
-  });
-  assert.equal(snapshot.held.active, 0, "An unretired paid operation is still active");
-  assert.ok(snapshot.held.total > 0, "Expected historical financial holds are missing");
-  assert.ok(snapshot.held.terminalHttp400 + snapshot.held.effectivelyRetired >= snapshot.held.total,
-    "Every historical hold must have terminal or retirement evidence");
-}
-
-async function begin(client: LedgerProofClient, lockTimeout = "5s"): Promise<void> {
+async function begin(client: LedgerProofClient, lockTimeout = "150ms"): Promise<void> {
   await client.query(`BEGIN; SET LOCAL ROLE service_role; SET LOCAL statement_timeout='15s'; SET LOCAL lock_timeout='${lockTimeout}'`);
 }
 
 async function rollback(client: LedgerProofClient): Promise<void> {
   await client.query("ROLLBACK");
+}
+
+function financial(snapshot: LedgerProofSnapshot): LedgerFinancialSnapshot {
+  return { campaign: snapshot.campaign, rows: snapshot.rows, held: snapshot.held, probe: snapshot.probe };
+}
+
+/** Each short proof owns only the campaign accounting lock. Other users' jobs need not pause.
+ * Roll back its fixtures before comparing under that same lock; normal work may change between cases. */
+async function isolatedCase(client: LedgerProofClient, budgetId: string, name: LedgerCaseRollback["name"], work: () => Promise<void>): Promise<LedgerCaseRollback> {
+  await begin(client);
+  try {
+    const locked = await client.query("SELECT id FROM unfurl.ai_budgets WHERE id=$1 FOR UPDATE", [budgetId]);
+    assert.equal(locked.rows.length, 1, "Fixed budget campaign is unavailable");
+    const baseline = financial(await readSnapshot(client, budgetId));
+    assert.equal(baseline.campaign.halted, false, "The campaign is halted");
+    await client.query("SAVEPOINT ledger_case");
+    await work();
+    await client.query("ROLLBACK TO SAVEPOINT ledger_case");
+    const afterRollback = financial(await readSnapshot(client, budgetId));
+    assert.deepEqual(afterRollback, baseline, "Rollback case changed the durable financial ledger");
+    return { name, baseline, afterRollback };
+  } finally { await rollback(client); }
 }
 
 function savepointRunner(client: LedgerProofClient): BudgetTransactionRunner {
@@ -258,8 +245,6 @@ async function proofState(client: LedgerProofClient, budgetId: string): Promise<
 }
 
 async function reserveReplaySettle(client: LedgerProofClient, budgetId: string): Promise<void> {
-  await begin(client);
-  try {
     const ledger = new PostgresBudget(budgetId, savepointRunner(client));
     const before = await campaign(client, budgetId);
     const counts = (await client.query<{ operations: number; responses: number; entries: number }>(`SELECT
@@ -287,33 +272,37 @@ async function reserveReplaySettle(client: LedgerProofClient, budgetId: string):
     assert.equal(afterCounts.operations, counts.operations + 1);
     assert.equal(afterCounts.responses, counts.responses + 1);
     assert.equal(afterCounts.entries, counts.entries + 2);
-  } finally {
-    await rollback(client);
-  }
 }
 
-async function unknownSlotGuard(client: LedgerProofClient, budgetId: string): Promise<void> {
-  await begin(client);
-  try {
+async function manyUnknownHolds(client: LedgerProofClient, budgetId: string): Promise<void> {
     const ledger = new PostgresBudget(budgetId, savepointRunner(client));
     const before = await campaign(client, budgetId);
-    for (let index = 0; index < 2; index += 1) {
-      const held = await ledger.reserve(request(1_000n));
-      assert.deepEqual(await ledger.claimDispatch(held), { kind: "dispatch" });
-      await ledger.markUnknown(held, "timeout");
-    }
-    await assert.rejects(ledger.reserve(request(1n)), /provider\.budget_exhausted/);
+    const fixture = request(1_000n);
+    // Seed only new rollback fixtures in one statement, avoiding 100 network round-trip sequences
+    // while live accounts use the same campaign. Actual admission/reservation still use PostgresBudget.
+    await client.query(`WITH inserted AS (
+      INSERT INTO unfurl.ai_provider_operations(id,budget_id,logical_operation_id,attempt,request_digest,purpose,state,
+        reserved_micro_usd,model_id,provider_tag,rate_card_digest,rate_card,dispatched_at,safe_failure_code)
+      SELECT gen_random_uuid(),$1,gen_random_uuid(),1,$2,'curriculum','unknown',1000,$3,$4,$5,$6,now(),'timeout'
+      FROM generate_series(1,100) RETURNING id
+    ), entries AS (
+      INSERT INTO unfurl.ai_budget_entries(id,budget_id,operation_id,effect_key,kind,reserved_delta_micro_usd,settled_delta_micro_usd,evidence_digest)
+      SELECT gen_random_uuid(),$1,id,id::text||':reserve','reserve',1000,0,$2 FROM inserted RETURNING id
+    ) UPDATE unfurl.ai_budgets SET reserved_micro_usd=reserved_micro_usd+100000,revision=revision+100,updated_at=now()
+      WHERE id=$1 AND (SELECT count(*) FROM entries)=100`,
+    [budgetId,fixture.requestDigest,fixture.rateCard.model,fixture.rateCard.provider,fixture.rateCardDigest,JSON.stringify(fixture.rateCard)]);
+    const held = (await client.query<{ count: number }>("SELECT count(*)::int AS count FROM unfurl.ai_provider_operations WHERE budget_id=$1 AND state='unknown'", [budgetId])).rows[0]!;
+    assert.ok(held.count >= 100);
+    await ledger.assertAvailable({ probe: false });
+    const admitted = await ledger.reserve(request(1n));
+    assert.equal(admitted.state, "reserved");
     const after = await campaign(client, budgetId);
     assert.equal(after.settled, before.settled);
-    assert.equal(after.reserved, before.reserved + 2_000n);
-  } finally {
-    await rollback(client);
-  }
+    assert.equal(after.reserved, before.reserved + 100_001n);
+    await assert.rejects(ledger.reserve(request(SPENDABLE_LIMIT_MICRO_USD - after.settled - after.reserved + 1n)), /provider\.budget_exhausted/);
 }
 
 async function dynamicCeilings(client: LedgerProofClient, budgetId: string): Promise<void> {
-  await begin(client);
-  try {
     const ledger = new PostgresBudget(budgetId, savepointRunner(client));
     const before = await proofState(client, budgetId);
     const campaignHeadroom = SPENDABLE_LIMIT_MICRO_USD - before.settled - before.reserved;
@@ -329,14 +318,9 @@ async function dynamicCeilings(client: LedgerProofClient, budgetId: string): Pro
     await assert.rejects(ledger.reserve(request(1n, true)), /provider\.budget_exhausted/);
     await ledger.releaseUnsent(probeReservation);
     assert.deepEqual(await proofState(client, budgetId), before);
-  } finally {
-    await rollback(client);
-  }
 }
 
 async function overrunHalts(client: LedgerProofClient, budgetId: string): Promise<void> {
-  await begin(client);
-  try {
     const ledger = new PostgresBudget(budgetId, savepointRunner(client));
     const before = await campaign(client, budgetId);
     const input = request(100n);
@@ -348,26 +332,18 @@ async function overrunHalts(client: LedgerProofClient, budgetId: string): Promis
     assert.equal(after.reserved, before.reserved);
     assert.equal(after.halted, true);
     await assert.rejects(ledger.reserve(request(1n)), /provider\.budget_exhausted/);
-  } finally {
-    await rollback(client);
-  }
 }
 
 async function peerLock(client: LedgerProofClient, peer: LedgerProofClient, budgetId: string): Promise<void> {
-  let primaryBegun = false;
   let peerBegun = false;
   try {
-    await begin(client); primaryBegun = true;
     const primary = new PostgresBudget(budgetId, savepointRunner(client));
     await primary.reserve(request(1_000n));
     await begin(peer, "150ms"); peerBegun = true;
     const competing = new PostgresBudget(budgetId, savepointRunner(peer));
     await assert.rejects(competing.reserve(request(1_000n)), (error: unknown) =>
       typeof error === "object" && error !== null && "code" in error && error.code === "55P03");
-    await rollback(client); primaryBegun = false;
-    assert.equal((await competing.reserve(request(1_000n))).state, "reserved");
   } finally {
-    if (primaryBegun) await rollback(client);
     if (peerBegun) await rollback(peer);
   }
 }
@@ -383,14 +359,18 @@ export async function runStateRelativeLedgerProof(input: {
   const clock = input.now ?? (() => new Date());
   const observedAt = clock().toISOString();
   const originalObservedState = await readSnapshot(input.primary, input.budgetId);
-  assertPaused(originalObservedState);
-  await reserveReplaySettle(input.primary, input.budgetId);
-  await unknownSlotGuard(input.primary, input.budgetId);
-  await dynamicCeilings(input.primary, input.budgetId);
-  await overrunHalts(input.primary, input.budgetId);
-  await peerLock(input.primary, input.peer, input.budgetId);
+  const work = [
+    () => reserveReplaySettle(input.primary, input.budgetId),
+    () => manyUnknownHolds(input.primary, input.budgetId),
+    () => dynamicCeilings(input.primary, input.budgetId),
+    () => overrunHalts(input.primary, input.budgetId),
+    () => peerLock(input.primary, input.peer, input.budgetId),
+  ];
+  const caseRollbacks: LedgerCaseRollback[] = [];
+  for (const [index, name] of LEDGER_PROOF_TEST_CASES.entries()) {
+    caseRollbacks.push(await isolatedCase(input.primary, input.budgetId, name, work[index]!));
+  }
   const postProofState = await readSnapshot(input.primary, input.budgetId);
-  assert.deepEqual(postProofState, originalObservedState, "Rollback proof changed the durable ledger");
   return {
     version: LEDGER_PROOF_VERSION,
     budgetId: input.budgetId,
@@ -402,6 +382,7 @@ export async function runStateRelativeLedgerProof(input: {
     postProofState,
     snapshotDigest: jsonDigest(originalObservedState),
     rollbackVerified: true,
+    caseRollbacks,
     inferenceCalls: 0,
     providerProofUsed: false,
   };
@@ -424,9 +405,12 @@ export function assertCertifiableLedgerProof(report: StateRelativeLedgerProofRep
   assert.equal(report.rollbackVerified, true);
   assert.equal(report.inferenceCalls, 0);
   assert.equal(report.providerProofUsed, false);
-  assert.deepEqual(report.postProofState, report.originalObservedState);
   assert.equal(report.snapshotDigest, jsonDigest(report.originalObservedState));
-  assertPaused(report.originalObservedState);
+  assert.deepEqual(report.caseRollbacks.map(proof => proof.name), [...LEDGER_PROOF_TEST_CASES]);
+  for (const proof of report.caseRollbacks) {
+    assert.equal(proof.baseline.campaign.halted, false);
+    assert.deepEqual(proof.afterRollback, proof.baseline, "A proof case changed its financial baseline");
+  }
   const duration = Date.parse(report.completedAt) - Date.parse(report.observedAt);
   assert.ok(Number.isFinite(duration) && duration >= 0, "Ledger proof timestamps are invalid");
   const age = now.getTime() - Date.parse(report.completedAt);

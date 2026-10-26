@@ -83,6 +83,7 @@ async function applyCertification(
   client: LedgerProofClient,
   report: StateRelativeLedgerProofReport,
   reportSha256: string,
+  approvedReportSha256: string,
 ): Promise<void> {
   const policies: readonly ModelPolicyId[] = ["kimi-digitalocean-v1", CANDIDATE_MODEL_POLICY];
   for (const policy of policies) {
@@ -107,10 +108,12 @@ async function applyCertification(
         certifiedAt: new Date().toISOString(),
         sourceHash: report.sourceHash,
         proofReportSha256: reportSha256,
+        approvedReportSha256,
         snapshotDigest: report.snapshotDigest,
         testCases: report.testCases,
         originalObservedState: report.originalObservedState as unknown as JsonObject,
-        exactPostProofSnapshotUnchanged: true,
+        isolatedCaseRollbacksVerified: true,
+        caseRollbacks: report.caseRollbacks as unknown as JsonObject[],
         rollbackVerified: true,
         inferenceCalls: 0,
         providerProofUsed: false,
@@ -153,11 +156,17 @@ describe.skipIf(!enabled)("budget ledger state-relative operator", () => {
       assertCertifiableLedgerProof(saved, { sourceHash: currentSourceHash, reportSha256 });
 
       const fresh = await runStateRelativeLedgerProof({ budgetId, primary, peer, sourceHash: currentSourceHash });
-      assert.deepEqual(fresh.originalObservedState, saved.originalObservedState, "Ledger state changed after approval");
-      assert.equal(fresh.snapshotDigest, saved.snapshotDigest, "Ledger snapshot digest changed after approval");
       assert.equal(await sourceHash(process.cwd()), currentSourceHash, "Proof source changed while the proof ran");
-      await applyCertification(primary, saved, reportSha256);
-      console.info(JSON.stringify({ certified: true, world: "vercel", policies: ["kimi-digitalocean-v1", CANDIDATE_MODEL_POLICY], reportSha256 }));
+      // Live accounting may progress between reviewed proof and apply. Certify only a fresh run
+      // of that exact source-bound protocol, preserving the reviewed report's hash in the receipt.
+      const freshBytes = Buffer.from(`${JSON.stringify(fresh, null, 2)}\n`);
+      const freshReportSha256 = sha256(freshBytes);
+      assertCertifiableLedgerProof(fresh, { sourceHash: currentSourceHash, reportSha256: freshReportSha256 });
+      const freshReportPath = `${reportPath}.fresh.json`;
+      await writeFile(freshReportPath, freshBytes);
+      await applyCertification(primary, fresh, freshReportSha256, reportSha256);
+      console.info(JSON.stringify({ certified: true, world: "vercel", policies: ["kimi-digitalocean-v1", CANDIDATE_MODEL_POLICY],
+        reportSha256: freshReportSha256, approvedReportSha256: reportSha256, freshReportPath }));
     } finally {
       await Promise.allSettled([primaryConnection.end(), peerConnection.end()]);
     }

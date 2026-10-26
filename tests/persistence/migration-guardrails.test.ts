@@ -82,14 +82,17 @@ describe("migration static guardrails (live PostgreSQL proof still required)", (
     expect(sql).not.toContain("unique (content_digest)");
   });
 
-  it("makes Python execution fenced, quota bounded, cleanup proven and retry explicit", () => {
+  it("makes Python execution independently admitted, fenced, cleanup proven and retry explicit", () => {
     expect(sql).toContain("create table unfurl.code_execution_runs");
     expect(sql).toContain("job_fencing_token bigint not null");
     expect(sql).toContain("Live execution job claim does not authorize Python mutation");
-    expect(sql).toContain("reserved_count between 1 and 60");
-    expect(sql).toContain("reserved_count between 1 and 20");
-    expect(sql).toContain("code_execution_one_global_active");
-    expect(sql).toContain("code_execution_one_learner_active");
+    const admission = readFileSync(`${directory}/202610250025_python_independent_admission.sql`, "utf8");
+    expect(admission).toContain("drop index unfurl.code_execution_one_global_active");
+    expect(admission).toContain("drop index unfurl.code_execution_one_learner_active");
+    expect(admission).toContain("drop constraint python_execution_global_daily_quotas_reserved_count_check");
+    expect(admission).toContain("drop constraint python_execution_learner_daily_quotas_reserved_count_check");
+    expect(admission.match(/check \(reserved_count >= 1\)/g)).toHaveLength(2);
+    expect(admission).not.toMatch(/drop (table|trigger)|delete from|truncate|reserved_count\s*(<|between)/i);
     expect(sql).toContain("'ambiguous', 'cleanup_pending', 'completed', 'unavailable'");
     expect(sql).toContain("status = 'completed' and disposition = 'deleted'");
     expect(sql).toContain("prior.status <> 'unavailable' or prior.disposition not in ('not_created', 'deleted')");

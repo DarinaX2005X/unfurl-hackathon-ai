@@ -68,16 +68,18 @@ describe.skipIf(!live)("actual migrated budget ledger (rollback fixtures)", () =
     expect(await counters()).toEqual({ spent: "1000", held: "0", halted: false });
     expect((await client.query("SELECT count(*)::int AS n FROM unfurl.ai_budget_entries WHERE operation_id=$1", [first.id])).rows[0].n).toBe(2);
   });
-  ledgerTest("retains unknown holds/slots, rejects third admission and reconciles with evidence once", async () => {
+  ledgerTest("retains unknown financial holds, admits another request and reconciles with evidence once", async () => {
     const one = await ledger.reserve(input()); await ledger.claimDispatch(one); await ledger.markUnknown(one, "timeout");
     await expect(ledger.releaseUnsent(one)).rejects.toThrow("provider.unavailable");
     const request = input(); const two = await ledger.reserve(request); await ledger.claimDispatch(two);
     const receipt = response(); await ledger.recordResponse(two, receipt, null);
-    await expect(ledger.reserve(input())).rejects.toThrow("provider.rate_limited");
-    expect(await counters()).toEqual({ spent: "0", held: "20000", halted: false });
+    const three = await ledger.reserve(input());
+    await ledger.assertAvailable({ probe: false });
+    expect(await counters()).toEqual({ spent: "0", held: "30000", halted: false });
     const evidence = { providerRequestId: receipt.providerRequestId!, digest: "d".repeat(64), finalCostMicroUsd: "1200" };
     await ledger.reconcile(two, evidence); await ledger.reconcile(two, evidence);
-    expect(await counters()).toEqual({ spent: "1200", held: "10000", halted: false });
+    expect(await counters()).toEqual({ spent: "1200", held: "20000", halted: false });
+    await ledger.releaseUnsent(three);
     expect(await ledger.recover(request, request.requestDigest)).toMatchObject({ receipt });
   });
   ledgerTest("enforces campaign and probe limits inside one fixed campaign", async () => {

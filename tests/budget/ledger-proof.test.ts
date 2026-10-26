@@ -21,14 +21,6 @@ const snapshot: LedgerProofSnapshot = {
   },
   rows: { operations: 8, responses: 2, entries: 14 },
   held: { total: 6, terminalHttp400: 4, effectivelyRetired: 2, active: 0 },
-  paused: {
-    runningJobs: 0,
-    runningSteps: 0,
-    activeJobLeases: 0,
-    activeStepLeases: 0,
-    pendingOutbox: 0,
-    activeCodeExecutions: 0,
-  },
   probe: { settledMicroUsd: "225946", reservedMicroUsd: "802244" },
 };
 
@@ -45,6 +37,7 @@ function report(): StateRelativeLedgerProofReport {
     postProofState: structuredClone(state),
     snapshotDigest: jsonDigest(state),
     rollbackVerified: true,
+    caseRollbacks: LEDGER_PROOF_TEST_CASES.map(name => ({ name, baseline: structuredClone(state), afterRollback: structuredClone(state) })),
     inferenceCalls: 0,
     providerProofUsed: false,
   };
@@ -72,7 +65,7 @@ describe("state-relative ledger proof certification", () => {
     })).toThrow("Ledger proof is stale");
 
     const changed = report();
-    changed.postProofState.campaign.revision = "20";
+    changed.caseRollbacks[0]!.afterRollback.campaign.revision = "20";
     expect(() => assertCertifiableLedgerProof(changed, {
       sourceHash: "a".repeat(64),
       reportSha256: "b".repeat(64),
@@ -80,15 +73,25 @@ describe("state-relative ledger proof certification", () => {
     })).toThrow();
   });
 
-  it("rejects a proof while any paid effect is active", () => {
+  it("accepts live-account progress between independently rolled-back cases", () => {
     const active = report();
     active.originalObservedState.held.active = 1;
     active.postProofState.held.active = 1;
+    active.postProofState.campaign.revision = "20";
+    active.postProofState.campaign.settledMicroUsd = "1226946";
     active.snapshotDigest = jsonDigest(active.originalObservedState);
     expect(() => assertCertifiableLedgerProof(active, {
       sourceHash: "a".repeat(64),
       reportSha256: "b".repeat(64),
       now: new Date("2026-10-26T06:31:00.000Z"),
-    })).toThrow("An unretired paid operation is still active");
+    })).not.toThrow();
+  });
+
+  it("rejects the retired two-slot proof protocol and missing rollback cases", () => {
+    for (const invalid of [{ ...report(), version: "state-relative-ledger-proof-v1" }, { ...report(), caseRollbacks: [] }]) {
+      expect(() => assertCertifiableLedgerProof(invalid as StateRelativeLedgerProofReport, {
+        sourceHash: "a".repeat(64), reportSha256: "b".repeat(64), now: new Date("2026-10-26T06:31:00.000Z"),
+      })).toThrow();
+    }
   });
 });

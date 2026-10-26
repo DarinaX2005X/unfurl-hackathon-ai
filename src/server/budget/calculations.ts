@@ -1,6 +1,6 @@
 import "server-only";
 import { PROVIDER_PRICE_CAP, SEARCH_PRICE_USD } from "../ai/constants";
-import { FINAL_VERIFICATION_RESERVE_MICRO_USD, MAX_CONCURRENT_OPERATIONS, PROBE_LIMIT_MICRO_USD, SPENDABLE_LIMIT_MICRO_USD, tokenCostMicroUsdCeil, usdToMicroUsdCeil } from "./money";
+import { FINAL_VERIFICATION_RESERVE_MICRO_USD, PROBE_LIMIT_MICRO_USD, SPENDABLE_LIMIT_MICRO_USD, tokenCostMicroUsdCeil, usdToMicroUsdCeil } from "./money";
 
 export interface ReservationBounds {
   contextTokens: number;
@@ -27,17 +27,15 @@ export function worstCaseMicroUsd(bounds: ReservationBounds): bigint {
 
 export interface BudgetState {
   settled: bigint; reserved: bigint; probeSettled: bigint; probeReserved: bigint;
-  outstandingOperations: number; halted: boolean;
+  halted: boolean;
 }
 
-export type AdmissionDecision = { allowed: true } | { allowed: false; reason: "halted" | "concurrency" | "campaign_limit" | "probe_limit" };
+export type AdmissionDecision = { allowed: true } | { allowed: false; reason: "halted" | "campaign_limit" | "probe_limit" };
 
 /** Used inside the locked durable transaction; this pure function is not a ledger. */
 export function canReserve(state: BudgetState, amount: bigint, isProbe: boolean): AdmissionDecision {
-  if (amount <= 0n || [state.settled, state.reserved, state.probeSettled, state.probeReserved].some((value) => value < 0n) ||
-      !Number.isSafeInteger(state.outstandingOperations) || state.outstandingOperations < 0) throw new RangeError("Invalid budget state");
+  if (amount <= 0n || [state.settled, state.reserved, state.probeSettled, state.probeReserved].some((value) => value < 0n)) throw new RangeError("Invalid budget state");
   if (state.halted) return { allowed: false, reason: "halted" };
-  if (state.outstandingOperations >= MAX_CONCURRENT_OPERATIONS) return { allowed: false, reason: "concurrency" };
   if (state.settled + state.reserved + amount > SPENDABLE_LIMIT_MICRO_USD-(isProbe?FINAL_VERIFICATION_RESERVE_MICRO_USD:0n)) return { allowed: false, reason: "campaign_limit" };
   if (isProbe && state.probeSettled + state.probeReserved + amount > PROBE_LIMIT_MICRO_USD) return { allowed: false, reason: "probe_limit" };
   return { allowed: true };

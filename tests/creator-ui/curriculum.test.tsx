@@ -9,6 +9,23 @@ import { createGenerationStreamState } from "../../src/features/creator/generati
 
 describe("program review", () => {
   it.each([
+    ["generation.timeout", "generation request timed out"],
+    ["generation.unavailable", "generation service was unavailable"],
+    ["generation.rateLimited", "generation service was busy"],
+    ["generation.budgetExhausted", "generation budget was exhausted"],
+    ["generation.invalidResponse", "response could not be validated"],
+    ["private upstream text", "stopped before completion"],
+  ])("shows the stored build failure reason safely for %s", (messageKey, expected) => {
+    const run: GenerationRun = { id: ids.request, ownerId: ids.actor, courseId: ids.course, conversationId: ids.conversation,
+      branchId: ids.sample, inputMessageId: ids.task, sourceDraftRevision: 1, approvalId: ids.approval, phase: "module_research",
+      status: "failed", lastSeq: 2, outputVersionId: null,
+      error: { code: "generation_failed", messageKey, retryable: true, requestId: ids.request }, createdAt: timestamp, updatedAt: timestamp };
+    const html = renderToStaticMarkup(<CurriculumPanel draft={curriculum()} currentRevision={1} generationRun={run} />);
+    expect(html).toContain(expected);
+    expect(html).toContain("Your approved program is still saved");
+    expect(html).not.toContain(messageKey);
+  });
+  it.each([
     ["generation.rateLimited", "Generation is busy", "budget"],
     ["generation.budgetExhausted", "available generation budget", "Generation is busy"],
     ["curriculum.authoringInProgress", "still finishing", "budget"],

@@ -4,7 +4,6 @@ export const CAMPAIGN_LIMIT_MICRO_USD = 10_000_000n;
 export const SPENDABLE_LIMIT_MICRO_USD = 9_500_000n;
 export const PROBE_LIMIT_MICRO_USD = 2_500_000n;
 export const FINAL_VERIFICATION_RESERVE_MICRO_USD = 750_000n;
-export const MAX_CONCURRENT_OPERATIONS = 2;
 
 export interface DecimalRatio { numerator: bigint; denominator: bigint }
 

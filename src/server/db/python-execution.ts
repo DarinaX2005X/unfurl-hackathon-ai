@@ -26,7 +26,6 @@ interface ExecutionRow {
   safe_error: unknown; result: unknown; audit: unknown;
   capability_evidence: unknown;
 }
-type PgFailure = Error & { code?: string; constraint?: string };
 interface AdmissionRow {
   idempotency_key: string; execution_id: string; job_id: string; job_lease_owner: string;
   job_fencing_token: string; job_retry_epoch: number; step_id: string | null;
@@ -92,7 +91,7 @@ function storedResult(row: ExecutionRow, request?: PythonExecutionRequest): Exec
   return request ? validateExecutionResult(parsed, request) : parsed;
 }
 
-function unavailable(request: PythonExecutionRequest, reason: "quota" | "cleanup_pending" | "deadline_expired", finishedAt = new Date().toISOString()): ExecutionResult {
+function unavailable(request: PythonExecutionRequest, reason: "cleanup_pending" | "deadline_expired", finishedAt = new Date().toISOString()): ExecutionResult {
   const pending = reason === "cleanup_pending";
   return ExecutionResultSchema.parse({ status: "unavailable", executionId: request.executionId, input: request.input,
     purpose: request.purpose, sourceDigest: request.sourceDigest, runtimeProfile: request.runtimeProfile, reason,
@@ -242,19 +241,11 @@ export class PostgresPythonExecutionPersistence implements PythonExecutionPersis
         await tx.query("RELEASE SAVEPOINT python_execution_admission");
         await tx.query("UPDATE unfurl.python_execution_admissions SET state='dispatch',updated_at=now() WHERE idempotency_key=$1", [request.idempotencyKey]);
         return { status: "dispatch", resourceName: row.resource_name };
-      } catch (error) {
+      } catch {
         await tx.query("ROLLBACK TO SAVEPOINT python_execution_admission");
-        const failure = error as PgFailure;
-        const capacityFailure = failure.constraint === "code_execution_one_global_active" ||
-          failure.constraint === "code_execution_one_learner_active" ||
-          failure.constraint === "python_execution_global_daily_quotas_reserved_count_check" ||
-          failure.constraint === "python_execution_learner_daily_quotas_reserved_count_check";
-        if (!capacityFailure) throw new PythonExecutionConflictError();
-        const result = unavailable(request, "quota");
-        await tx.query(`UPDATE unfurl.python_execution_admissions
-          SET state='unavailable',result=$2,updated_at=now() WHERE idempotency_key=$1`,
-        [request.idempotencyKey, JSON.stringify(result)]);
-        return { status: "unavailable", result };
+        // Independent executions do not compete for an application capacity slot.
+        // Any failed insert is an identity/authority failure, never a provider quota receipt.
+        throw new PythonExecutionConflictError();
       }
     });
   }

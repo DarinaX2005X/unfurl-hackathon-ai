@@ -18,7 +18,7 @@ import type {
   PythonSandboxSession,
 } from "../../../src/server/execution/python/sdk";
 import { VercelPythonExecutionPort, pythonExecutionResourceName } from "../../../src/server/execution/python/vercel";
-import { authoringExecutionRequest, executionRequest } from "./fixtures";
+import { authoringExecutionRequest, executionRequest, IDS } from "./fixtures";
 
 class MemoryPersistence implements PythonExecutionPersistence {
   readonly events: string[] = [];
@@ -66,6 +66,8 @@ class MemoryPersistence implements PythonExecutionPersistence {
 }
 
 interface HarnessOptions {
+  executionId?: string;
+  createBarrier?: () => Promise<void>;
   createError?: boolean;
   exactDeleteError?: boolean;
   exactDelete?: "deleted" | "not_found";
@@ -116,7 +118,7 @@ function harness(options: HarnessOptions = {}) {
     },
   };
   const sandbox: PythonSandbox = {
-    name: pythonExecutionResourceName(executionRequest().executionId),
+    name: pythonExecutionResourceName(options.executionId ?? executionRequest().executionId),
     image: PYTHON_SANDBOX_IMAGE,
     persistent: false,
     routes: [],
@@ -131,6 +133,7 @@ function harness(options: HarnessOptions = {}) {
     async create(input) {
       createInput = input;
       events.push("sdk:create");
+      await options.createBarrier?.();
       if (options.createError) throw new Error("unknown create outcome");
       return sandbox;
     },
@@ -180,6 +183,27 @@ function replayResult(): ExecutionResult {
 }
 
 describe("Vercel Python lifecycle", () => {
+  it("executes independent jobs with shared credentials concurrently and cleans up each exact sandbox", async () => {
+    const first = executionRequest();
+    const second = executionRequest({ executionId: IDS.task, logicalExecutionId: IDS.session, idempotencyKey: IDS.enrollment,
+      job: { ...first.job, jobId: IDS.attempt }, target: { kind: "activity_action", activityActionId: IDS.testSet } });
+    let entered = 0;
+    let release!: () => void;
+    const barrier = new Promise<void>((resolve) => { release = resolve; });
+    const createBarrier = async () => { if (++entered === 2) release(); await barrier; };
+    const left = harness({ executionId: first.executionId, createBarrier });
+    const right = harness({ executionId: second.executionId, createBarrier });
+    const results = await Promise.all([left, right].map((h, index) => new VercelPythonExecutionPort(new MemoryPersistence(), h.capability, h.sdk)
+      .execute(index === 0 ? first : second, new AbortController().signal)));
+    expect(entered).toBe(2);
+    expect(results.map((result) => result.status)).toEqual(["completed", "completed"]);
+    expect(results.map((result) => result.audit.sandboxId)).toEqual([pythonExecutionResourceName(first.executionId), pythonExecutionResourceName(second.executionId)]);
+    expect(left.createInput?.token).toBe(right.createInput?.token);
+    for (const h of [left, right]) {
+      expect(h.events.filter((event) => event === "session:stop")).toHaveLength(1);
+      expect(h.events.filter((event) => event === "sandbox:delete")).toHaveLength(1);
+    }
+  });
   it("persists identities before side effects, uses the fixed session and completes only after stop/delete", async () => {
     const h = harness();
     const persistence = new MemoryPersistence(null, h.events);
@@ -284,7 +308,7 @@ describe("Vercel Python lifecycle", () => {
     ]);
   });
 
-  it("holds the slot as cleanup_pending when exact reconciliation is unconfirmed", async () => {
+  it("retains the execution as cleanup_pending when exact reconciliation is unconfirmed", async () => {
     const persistence = new MemoryPersistence();
     const h = harness({ createError: true, exactDeleteError: true });
     const result = await new VercelPythonExecutionPort(persistence, h.capability, h.sdk)
@@ -295,6 +319,16 @@ describe("Vercel Python lifecycle", () => {
       "persist:reserve", "persist:capability:vercel_oidc_signed_claim_v1:hobby",
       "persist:ambiguous", "persist:cleanup_pending",
     ]);
+  });
+
+  it("retains a provider quota refusal without creating or retrying a sandbox", async () => {
+    const persistence = new MemoryPersistence();
+    const h = harness();
+    const capability: PythonSandboxCapabilityGate = { inspect: async () => ({ status: "unavailable", reason: "quota" }) };
+    const result = await new VercelPythonExecutionPort(persistence, capability, h.sdk).execute(executionRequest(), new AbortController().signal);
+    expect(result).toMatchObject({ status: "unavailable", reason: "quota", audit: { cleanup: "not_created" } });
+    expect(h.events).not.toContain("sdk:create");
+    expect(persistence.unavailable).toEqual(result);
   });
 
   it("uses an independent cleanup signal after caller cancellation", async () => {

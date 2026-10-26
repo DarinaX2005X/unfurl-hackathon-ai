@@ -182,7 +182,16 @@ function GenerationFacts({ generation }: { generation: GenerationStreamState }) 
 function generationStatus(run: GenerationRun): string {
   if (run.status === "queued") return "Preparing to build your course…";
   if (run.status === "succeeded") return "Course build complete. The ready course link will appear here shortly.";
-  if (run.status === "failed") return "The course build stopped before completion. Your approved program is still saved.";
+  if (run.status === "failed") {
+    const reasons: Record<string, string> = {
+      "generation.timeout": "The course build stopped because a generation request timed out.",
+      "generation.unavailable": "The course build stopped because the generation service was unavailable.",
+      "generation.rateLimited": "The course build stopped because the generation service was busy.",
+      "generation.budgetExhausted": "The course build stopped because the available generation budget was exhausted.",
+      "generation.invalidResponse": "The course build stopped because a generated response could not be validated.",
+    };
+    return `${reasons[run.error?.messageKey ?? ""] ?? "The course build stopped before completion."} Your approved program is still saved.`;
+  }
   if (run.status === "cancelled") return "The course build was cancelled. Your approved program is still saved.";
   const phases: Record<GenerationRun["phase"], string> = {
     briefing: "Preparing the course build…", researching: "Researching the course…", outlining: "Checking the course outline…",

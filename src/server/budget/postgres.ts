@@ -40,18 +40,13 @@ export class PostgresBudget implements BudgetPort {
     return row;
   }
   private async state(tx: DbTransaction, row: CampaignRow): Promise<BudgetState> {
-    const sums = (await tx.query<{ outstanding: string; probe_settled: string; probe_reserved: string }>(`SELECT
-      count(*) FILTER (WHERE state IN ('reserved','dispatched','unknown') AND NOT EXISTS
-        (SELECT 1 FROM unfurl.ai_provider_terminal_http_400_receipts terminal WHERE terminal.operation_id=ai_provider_operations.id)
-        AND NOT EXISTS(SELECT 1 FROM unfurl.ai_provider_attempt_retirements retired WHERE retired.operation_id=ai_provider_operations.id
-          AND (retired.kind='ended_probe' OR EXISTS(SELECT 1 FROM unfurl.execution_job_retry_receipts retry
-            WHERE retry.job_id=retired.job_id AND retry.from_epoch=retired.from_epoch AND retry.actor_id=retired.actor_id))))::text AS outstanding,
+    const sums = (await tx.query<{ probe_settled: string; probe_reserved: string }>(`SELECT
       coalesce(sum(actual_micro_usd) FILTER (WHERE purpose='capability_probe' AND state='settled'),0)::text AS probe_settled,
       coalesce(sum(reserved_micro_usd) FILTER (WHERE purpose='capability_probe' AND state IN ('reserved','dispatched','unknown')),0)::text AS probe_reserved
       FROM unfurl.ai_provider_operations WHERE budget_id=$1`, [this.budgetId])).rows[0];
     if (!sums) throw unavailable();
     return { settled: readMicroUsd(row.settled_micro_usd), reserved: readMicroUsd(row.reserved_micro_usd),
-      halted: row.halted, outstandingOperations: Number(sums.outstanding), probeSettled: readMicroUsd(sums.probe_settled), probeReserved: readMicroUsd(sums.probe_reserved) };
+      halted: row.halted, probeSettled: readMicroUsd(sums.probe_settled), probeReserved: readMicroUsd(sums.probe_reserved) };
   }
   private async operation(tx: DbTransaction, value: BudgetReservation): Promise<OperationRow> {
     if (value.budgetId !== this.budgetId) throw unavailable();
@@ -82,7 +77,7 @@ export class PostgresBudget implements BudgetPort {
     await this.transaction(async (tx) => {
       const state = await this.state(tx, await this.lock(tx));
       const admission = canReserve(state, 1n, options.probe);
-      if (!admission.allowed) throw new ProviderFailure(admission.reason === "concurrency" ? "rate_limited" : "budget_exhausted");
+      if (!admission.allowed) throw new ProviderFailure("budget_exhausted");
     });
   }
   /** Resolve an already allocated operation before rebuilding its exact request bytes. */
@@ -127,7 +122,7 @@ export class PostgresBudget implements BudgetPort {
         return reservation(prior);
       }
       const admission = canReserve(await this.state(tx, campaign), amount, request.probe);
-      if (!admission.allowed) throw new ProviderFailure(admission.reason === "concurrency" ? "rate_limited" : "budget_exhausted");
+      if (!admission.allowed) throw new ProviderFailure("budget_exhausted");
       const row = (await tx.query<OperationRow>(`INSERT INTO unfurl.ai_provider_operations
         (id,budget_id,logical_operation_id,attempt,run_step_id,request_digest,purpose,state,reserved_micro_usd,model_id,provider_tag,rate_card_digest,rate_card)
         VALUES ($1,$2,$3,$4,$5,$6,$7,'reserved',$8,$9,$10,$11,$12) RETURNING *`,

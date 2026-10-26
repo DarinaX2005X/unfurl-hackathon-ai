@@ -20,8 +20,8 @@ if (extra.length > 0 || !["--dry-run", "--prove", "--apply-approved"].includes(c
     databaseConnected: false,
     durableWrites: false,
     reportPath,
-    proof: "Five state-relative PostgresBudget scenarios run under BEGIN/ROLLBACK with per-operation SAVEPOINTs.",
-    apply: "A separate --apply-approved command must carry the exact reviewed report SHA-256; it re-proves unchanged state before two vercel budget_accounting receipts are written.",
+    proof: "Five state-relative PostgresBudget scenarios, including 100 unknown holds, run under independent campaign locks and rollback SAVEPOINTs. Live jobs need not pause.",
+    apply: "A separate --apply-approved command must carry the exact reviewed report SHA-256; it reruns the same source-bound protocol against current accounting and saves that fresh report before two vercel budget_accounting receipts are written.",
   }, null, 2));
 } else {
   const environment = { ...process.env,

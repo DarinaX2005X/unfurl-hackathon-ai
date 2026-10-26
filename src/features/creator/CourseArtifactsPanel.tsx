@@ -166,6 +166,7 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
         while (request.isCurrent()) {
           try {
             const value = await getGenerationSnapshot(runId, request.signal);
+            if (!request.isCurrent()) throw new DOMException("Aborted", "AbortError");
             setGenerationError((current) => ({ ...current, [courseId]: false }));
             return value;
           } catch (error) {
@@ -177,6 +178,7 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
         throw new DOMException("Aborted", "AbortError");
       };
       let stream = createGenerationStreamState(await loadSnapshot());
+      if (!request.isCurrent()) return;
       if (stream.run.ownerId !== actorId || stream.run.courseId !== courseId || stream.run.approvalId !== approvalId
         || stream.approvedDraftRevision !== draftRevision) throw new Error("generation_scope_invalid");
       setGenerationStreams((current) => ({ ...current, [courseId]: stream }));
@@ -186,6 +188,7 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
         try {
           await readGenerationEvents(runId, stream.lastAppliedSeq, request.signal, {
             onEvent(event) {
+              if (!request.isCurrent()) return;
               const next = generationStreamReducer(stream, { type: "event", event });
               if (next === stream && event.seq > stream.lastAppliedSeq) snapshotRequired = true;
               else stream = next;
@@ -193,6 +196,7 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
             },
             onSnapshotRequired() { snapshotRequired = true; },
           });
+          if (!request.isCurrent()) return;
           setGenerationError((current) => ({ ...current, [courseId]: false }));
         } catch (error) {
           if (!request.isCurrent() || (error instanceof Error && error.name === "AbortError")) throw error;
@@ -203,6 +207,7 @@ export function CourseArtifactsPanel({ actorId, artifacts, selectedCourseId, onS
         if (!request.isCurrent() || !["queued", "running"].includes(stream.run.status)) break;
         if (snapshotRequired || stream.needsSnapshot || stream.replayAfterSeq !== null) {
           const repair = await loadSnapshot();
+          if (!request.isCurrent()) return;
           stream = generationStreamReducer(stream, { type: "snapshot", snapshot: repair });
           setGenerationStreams((current) => ({ ...current, [courseId]: stream }));
         }
