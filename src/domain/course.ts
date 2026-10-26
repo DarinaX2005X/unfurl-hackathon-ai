@@ -111,12 +111,25 @@ export const CourseSummarySchema = CourseSchema.pick({
   lessonCount: z.number().int().nonnegative(),
   estimatedStudyMinutes: z.number().finite().nonnegative(),
   cover: CourseCoverSchema,
+  publisher: z.literal("Unfurl").optional(),
+}).strict();
+
+export const CoursePreviewReleaseSchema = z.object({
+  kind: z.literal("preview"),
+  availableModuleIds: z.array(IdSchema).min(1),
+  plannedModules: z.array(ModuleOutlineSchema).min(2),
+  notice: z.string().trim().min(1).max(1_000),
+  lessons: z.array(z.object({
+    id: IdSchema, moduleId: IdSchema, title: TitleSchema,
+    tasks: z.array(z.object({ id: IdSchema, instruction: z.string(), mechanicId: z.string() }).strict()),
+  }).strict()).min(1),
 }).strict();
 
 export const CourseDetailPublicSchema = CourseSummarySchema.extend({
   assumedKnowledge: z.array(z.string()),
   outcomes: z.array(OutcomeSchema),
   modules: z.array(ModuleOutlineSchema),
+  release: CoursePreviewReleaseSchema.optional(),
 }).strict();
 
 export const AccessibleCourseDetailSchema = z.object({

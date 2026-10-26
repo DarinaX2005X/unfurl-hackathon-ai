@@ -13,6 +13,7 @@ import { withSystemTransaction, type DbTransaction } from "../db";
 import { executeIdempotentInTransaction, type MutationReceipt } from "../idempotency";
 import { readAccountProgressTx } from "../progression";
 import { revokeActiveShareGrants as defaultRevokeActiveShareGrants } from "../sharing/repository";
+import { readySourceSql } from "../course-materialization/ready-source";
 
 export interface PublicationTransactions {
   run<T>(work: (tx: DbTransaction) => Promise<T>): Promise<T>;
@@ -41,8 +42,7 @@ async function requirePublishableVersion(tx: DbTransaction, actor: Actor, course
        ON source_run.id = version.source_run_id
        AND source_run.course_id = version.course_id
        AND source_run.owner_id = $3
-       AND source_run.output_version_id = version.id
-       AND source_run.status = 'succeeded'
+       AND ${readySourceSql("version", "source_run", "validation")}
      WHERE version.id = $1 AND version.course_id = $2
        AND version.state = 'ready' AND version.cover IS NOT NULL`,
     [versionId, courseId, actor.id],

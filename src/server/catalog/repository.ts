@@ -11,7 +11,7 @@ import {
 
 export const VERSION_SELECT = `v.id, v.course_id, v.number, v.approval_id, v.source_run_id, v.content_digest, v.state,
   v.title, v.summary, v.content_language, v.assumed_knowledge, v.outcomes, v.modules, v.lesson_ids,
-  v.validation_receipt_id, v.cover, v.created_at, v.ready_at, c.slug, c.visibility, c.owner_id`;
+  v.validation_receipt_id, v.cover, v.created_at, v.ready_at, v.release_metadata, c.slug, c.visibility, c.owner_id`;
 export const OWNED_SELECT = `c.id, c.slug, c.title, c.summary, c.content_language, c.visibility, c.current_ready_version_id,
   c.published_version_id, c.cover, c.updated_at, c.revision, relation.conversation_id,
   latest.id AS latest_version_id, latest.number AS latest_version_number, latest.state AS latest_version_state`;

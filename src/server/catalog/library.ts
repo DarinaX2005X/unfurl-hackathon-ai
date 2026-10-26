@@ -72,7 +72,8 @@ export async function listLibrary(tx: DbTransaction, actor: Actor, query: Librar
              'title', v.title, 'summary', v.summary, 'content_language', v.content_language,
              'assumed_knowledge', v.assumed_knowledge, 'outcomes', v.outcomes, 'modules', v.modules,
              'lesson_ids', v.lesson_ids, 'validation_receipt_id', v.validation_receipt_id, 'cover', v.cover,
-             'created_at', v.created_at, 'ready_at', v.ready_at, 'slug', c.slug, 'visibility', c.visibility, 'owner_id', c.owner_id
+             'created_at', v.created_at, 'ready_at', v.ready_at, 'release_metadata', v.release_metadata,
+             'slug', c.slug, 'visibility', c.visibility, 'owner_id', c.owner_id
            ),
            'enrollment', to_jsonb(e)
          ) AS payload

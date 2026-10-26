@@ -4,56 +4,66 @@ status: draft
 ---
 # Unfurl
 
-A service that turns a learning goal into a researched, substantial course with varied interactive practice and an individual learning route.
+A learning workspace that turns a personal goal into a researched, substantial course, then supports study through varied interactive practice.
 
 ## The Unique Kernel
 
-A shared course has a stable set of learning outcomes and a different experience for each learner. The system researches and constructs the course, chooses exercises for the cognitive work they require, and adapts support and practice from evidence of the learner's work. It preserves the depth of the agreed curriculum.
+The difficult part is the relationship between a learning goal and a useful activity. Unfurl researches the subject, forms an editable curriculum, checks the approved outcomes against teaching knowledge, and constructs exercises with explicit criteria and supported interaction capabilities.
 
-Generating a syllabus alone is not the product's distinguishing claim. The proposed contribution must be visible in the generated activities, the quality of their feedback, and the learner's next meaningful action. Learning effectiveness remains an outcome to evaluate, not a claimed result.
+A shared course version preserves its outcomes. Each learner has separate answers, evidence, progress, and a route through additional support. The product's contribution must be visible in the quality of the generated activities and feedback, not merely in a syllabus or a progress animation. Learning effectiveness remains an outcome to measure.
 
 ## Who It's For
 
-A self-directed learner who has a subject or practical goal and wants a substantial course combining explanations, experiments, practice, and independent application. They may begin without a curriculum. Existing alternatives include authored interactive courses, an AI tutor, and AI course generators. The service must earn use through the complete learning experience, not the mere presence of AI or a progress display.
+Self-directed learners who have a subject or practical goal but need a coherent sequence of explanations, experiments, practice, and application. They may create a course themselves or enter a course shared by someone else.
 
-A second entry is a learner opening a course shared by its creator. That learner receives their own progress and route while studying the same course version.
+Unfurl is not restricted to AI. The substantial course used to exercise the system is an English AI curriculum, starting with foundations and continuing into both model creation and AI-system engineering.
 
 ## The Core Loop
 
-The creator describes a goal in an ordinary agent chat, discusses the proposed curriculum, and approves its structure. A conversation is independent of its results: one chat can create or edit several courses. A course exists only after the agent actually creates that artifact. The agent sets its title, summary, and content language from the conversation; the creator can then edit those details on the course. The agent researches each part, prepares and checks activities, and makes the course available in the library. The learner studies, attempts meaningful tasks, receives useful feedback, and returns to the next appropriate part of the course. A creator can share access by link. Learners who reach the required level can submit a course to the public catalog.
+1. Describe the desired ability and relevant background in an account-backed chat.
+2. Discuss the agent's research and inspect the saved curriculum beside the conversation.
+3. Edit the selected course's program or details, then approve its exact current revision.
+4. Continue following the build in the same chat: section research, knowledge coverage, lesson planning, writing, task construction, and validation.
+5. Start a ready version from the course or library, perform meaningful activities, review feedback, and continue from saved progress.
+6. Use additional support when relevant, or request review of uncertain feedback.
+7. Share a version through a revocable link, or publish a ready version once the account meets the publication requirement.
 
-Conversation history and unfinished writing are retained automatically within their stated storage scope. Chat history belongs in the chat; the library contains actual courses and enrollments. Deleting a conversation does not implicitly delete its courses.
-
-Adaptation may be a short explanation followed by continuation. It is not obliged to turn each error into a new exercise. Repeated practice or prerequisite work needs evidence and a clear route back to the common curriculum.
+One chat can contain several course artifacts. Chat history belongs in chat; the library contains courses and enrollments. Deleting a conversation does not implicitly delete its courses. An unsent first draft creates no server conversation until Send.
 
 ## Inspiration & Identity
 
-The desired experience is expressive, tactile, readable, and enjoyable, with crafted motion on the landing and the internal work surfaces. The agent chat should remain familiar. The learning space should let the activity occupy the main stage instead of surrounding it with decorative dashboard panels.
+Unfurl combines the usefulness of making something from a prompt with the satisfaction of learning through interaction. The slogan is **Learn what you've always wanted to**.
 
-The product is called Unfurl. Its brand slogan is "Learn what you've always wanted to". The hero pairs a fixed "Learn" with an automatically rotating, noninteractive topic pill; "everything" is one of many subjects. An unfolding study volume below the text gives the course a physical identity, with its pages becoming varied activities. Reduced motion keeps a readable static "Learn everything" and the scene's meaningful final state.
+Warm paper, dark readable type, and a vermilion action color connect the landing, creator, and player. The unfolding study volume expresses one coherent course becoming varied activities. The hero's rotating topic is noninteractive; reduced motion keeps a stable readable state. Internal surfaces favor the current task and clear feedback over decorative dashboards.
 
-The interface is English only, while course language follows the conversation and can be edited on the created course. The composer has no language selector or manual save action. Public entry routes are `/`, `/explore`, `/library`, `/chat`, and `/try`, without a language prefix; `/create` remains a compatibility entry. The visual system uses warm paper surfaces, dark text, and a vermilion action color. Actual rendered visual quality remains to be reviewed.
+The interface is English. Course language follows the conversation and is editable on the course artifact. Main entry routes are `/`, `/chat`, `/explore`, `/library`, and `/try`.
 
 ## Why This Matters to the Learner
 
-The creator chose the combination of making something from a prompt in minutes and learning through games. Their first requested course is deep AI: it starts with fundamentals, avoids padding, and continues into both creating models and building AI systems. This is a test of the course engine, not a reason to restrict the service to AI.
+A learner should be able to judge the proposed learning path before detailed construction starts, understand what the system is doing during long work, and receive practice that calls for more than recognizing a memorized answer. Returning to a course should preserve both the shared material and the learner's own work.
+
+Alternatives include authored interactive courses, a general AI tutor, and course generators. Unfurl must earn use through connected research, course quality, meaningful activity, and durable personal progress; the presence of AI alone is not the benefit.
 
 ## What "Working" Looks Like
 
-A new learning goal produces a usable, source-grounded curriculum, then a real course after the learner approves it. Its activities use the supported game components and meaningful grading. Two learners can study the same course while receiving different appropriate support, without silently losing required topics or depth. A learner can leave, return, continue, and open a shared course with separate progress.
+A real goal produces a researched curriculum and, after approval, a validated ready course. Changes to the request affect the program. Actual learner actions affect evaluation and support. Two learners retain separate progress in the same immutable version. Leaving, returning, sharing, and revoking access behave consistently.
 
-The demonstration should show both creation and learning, including a meaningful change in the input or learner evidence and its actual consequence. A scripted generation animation does not count as a working result.
+Ready content must be backed by validation, not an optimistic UI state. An uncertain evaluator result earns no XP. A failed external call remains visible without erasing accepted work or pretending it was free.
+
+The current repository includes the implementation and automated tests for these boundaries. Acceptance of the complete generated course, genuine learning, publication, and featured entry requires the separate checks in the [verification checklist](checklist.md); a draft screenshot does not close them.
 
 ## The POC Boundary
 
-The requested scope is a complete product rather than the minimum contest proof of concept. It includes a landing, catalog, personal library, creation chat with visible research actions, curriculum approval, course generation, many distinct game mechanics, learning progress, XP and levels, personal adaptation, sharing, and gated public publication. Several authored courses must be created through the same engine after the engine exists.
+The scope is a complete service: landing, accounts, catalog, library, creator chat, research, approval, course construction, 29 activity families, saved learning, XP and levels, personal support, sharing, and gated publication.
 
-The learner has explicitly authorized starting the foundation and design while model access is pending. Model integration, durable shared services, and hosting must be verified before the complete service is described as ready.
+The authored-content scope is **one full AI course**, created through the ordinary product workflow. Both model-building and AI-system branches remain in that course. Additional history and statistics courses are excluded from this delivery. The implementation is not reduced to a short quiz or an isolated sample.
+
+Services are Supabase Auth/PostgreSQL, OpenRouter, and Vercel Workflow/Sandbox. Configuration, verified runtime capabilities, provider availability, and server-side accounting are real operating requirements. See [setup](../docs/setup.md).
 
 ## Later
 
-A separate executor will create the presentation and demonstration video after the working product and README are handed over. This implementation does not produce those media. The hosting target is Vercel; production publication will use the agreed deployment arrangement.
+A separate assignment produces the presentation and demonstration video after the working product and documentation are handed over. This repository does not include placeholder links or claim those media are complete.
 
 ## Explicitly Cut
 
-No fabricated research events, fake generated courses, invented customer proof, or claims of measured learning gains. No arbitrary punishment or unnecessary tasks for a simple mistake. No isolated course hard-coded as a substitute for the general generation engine. No silent reduction of the requested product to a landing or a short quiz.
+No fabricated research, hard-coded course substituted for generation, fake XP, invented testimonials, or measured-learning claims. No forced remedial detour for every small error. No hidden reduction of approved outcomes, exposure of private answer keys, or browser-reported success treated as authoritative grading.

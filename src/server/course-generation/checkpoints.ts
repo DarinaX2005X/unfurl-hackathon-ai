@@ -21,8 +21,9 @@ export const COURSE_VALIDATION_V2_POLICY_DIGEST = jsonDigest({ legacy: COURSE_VA
 export const COURSE_GENERATION_POLICY_KEY = "course/generation-policy";
 export const CourseGenerationPolicyCheckpointSchema = z.object({ kind: z.literal("course.generation.policy"),
   version: z.literal("course-generation-batch-v2"), batchSize: z.literal(5), maxOutputTokens: z.literal(16384), approvalDigest: DigestSchema,
-  planPagePolicy: z.literal("bounded-plan-pages-v1").optional(),
+  planPagePolicy: z.enum(["bounded-plan-pages-v1", "server-plan-identities-v2"]).optional(),
   knowledgeCoveragePolicy: z.literal("approved-scope-v1").optional(),
+  taskAuthoringContractPolicy: z.literal("complete-task-contract-v1").optional(),
   modelPolicy: ModelPolicySchema.optional(),
   searchPolicy: SearchPolicySchema.optional(),
   readerCapabilities: ReaderCapabilitiesSchema.optional(),

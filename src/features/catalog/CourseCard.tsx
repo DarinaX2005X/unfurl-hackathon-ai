@@ -9,7 +9,7 @@ export function CourseCard({ course, headingLevel = 2 }: { course: CourseSummary
   return <article className="uf-course-card">
     <Link className="uf-course-card__link" href={routes.course(course.slug)}>
       <CourseArtwork motifId={course.cover.motifId} alt={course.cover.alt} />
-      <div className="uf-course-card__body"><Heading>{course.title}</Heading><p>{course.summary}</p>
+      <div className="uf-course-card__body"><Heading>{course.title}</Heading>{course.publisher && <span className="uf-course-card__publisher">Published by {course.publisher}</span>}<p>{course.summary}</p>
         <dl className="uf-course-card__facts"><div><dt>Modules</dt><dd>{course.moduleCount}</dd></div><div><dt>Lessons</dt><dd>{course.lessonCount}</dd></div><div><dt>Study time</dt><dd>{studyTime(course.estimatedStudyMinutes)}</dd></div></dl>
         <div className="uf-course-card__footer"><span>{languageName(course.contentLanguage)}</span><span>View course</span></div>
       </div>

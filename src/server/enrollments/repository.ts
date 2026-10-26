@@ -7,6 +7,7 @@ import type { Actor } from "../auth/actor";
 import { ServiceFault } from "../auth/errors";
 import type { DbTransaction } from "../db";
 import { courseVersionFromRow } from "../catalog/projections";
+import { readySourceSql } from "../course-materialization/ready-source";
 import { hashShareToken } from "../sharing/crypto";
 
 const time = z.union([z.date(), z.string()]).transform((value) => new Date(value).toISOString());
@@ -62,7 +63,7 @@ export async function loadLearningMaterial(tx: DbTransaction, courseId: string, 
      JOIN unfurl.version_validation_receipts receipt
        ON receipt.id = v.validation_receipt_id AND receipt.course_version_id = v.id AND receipt.verdict = 'passed'
      JOIN unfurl.generation_runs run
-       ON run.id = v.source_run_id AND run.course_id = v.course_id AND run.output_version_id = v.id AND run.status = 'succeeded'
+       ON run.id = v.source_run_id AND run.course_id = v.course_id AND ${readySourceSql("v", "run", "receipt")}
      WHERE v.id = $1 AND v.course_id = $2 AND v.state = 'ready' AND v.cover IS NOT NULL`, [versionId, courseId],
   );
   if (!versionResult.rows[0]) throw new ServiceFault(404, "not_found", "catalog.notFound");

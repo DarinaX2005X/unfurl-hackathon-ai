@@ -5,6 +5,7 @@ import { routes } from "@/lib/routes";
 import { BookScene } from "./BookScene";
 import { RotatingHeading } from "./RotatingHeading";
 import { PracticePreview } from "./PracticePreview";
+import { DemoVideo } from "./DemoVideo";
 import { SiteFooter } from "./info";
 import "./landing.css";
 
@@ -22,7 +23,7 @@ export function LandingPage() {
       <section className="landing-hero" aria-label="Learning starts with curiosity">
         <div className="landing-hero__intro">
           <RotatingHeading />
-          <div className="landing-hero__actions"><LinkButton href={routes.chat()}>Create a course</LinkButton></div>
+          <div className="landing-hero__actions"><LinkButton href={routes.chat()}>Create a course</LinkButton><DemoVideo /></div>
         </div>
         <BookScene />
       </section>

@@ -5,6 +5,7 @@ import {
   type AccessibleCourseDetail, type CourseDetailPublic, type CourseSummary, type CourseVersion,
 } from "../../domain/course";
 import { OwnedCourseProjectionSchema, type OwnedCourseProjection } from "../../domain/catalog";
+import { previewFromVersion } from "../course-materialization/preview-metadata";
 
 const timestamp = z.union([z.date(), z.string()]).transform((value) => new Date(value).toISOString());
 
@@ -13,6 +14,7 @@ export const VersionRowSchema = z.object({
   content_digest: z.string(), state: z.string(), title: z.string(), summary: z.string(), content_language: z.string(),
   assumed_knowledge: z.unknown(), outcomes: z.unknown(), modules: z.unknown(), lesson_ids: z.array(z.string()),
   validation_receipt_id: z.string().nullable(), cover: z.unknown().nullable(), created_at: timestamp, ready_at: timestamp.nullable(),
+  release_metadata: z.unknown().optional(),
 }).passthrough();
 
 export const CourseProjectionRowSchema = VersionRowSchema.extend({
@@ -34,18 +36,21 @@ export function summaryFromVersion(value: unknown): CourseSummary {
   const row = CourseProjectionRowSchema.parse(value);
   const version = courseVersionFromRow(row);
   if (version.state !== "ready" || version.cover === null) throw new Error("Public projection requires a ready covered version");
+  const preview = previewFromVersion(row.release_metadata, version);
   return CourseSummarySchema.parse({
     id: version.courseId, slug: row.slug, title: version.title, summary: version.summary,
     contentLanguage: version.contentLanguage, visibility: row.visibility,
     moduleCount: version.modules.length, lessonCount: version.lessonIds.length,
     estimatedStudyMinutes: version.modules.reduce((total, module) => total + module.estimatedStudyMinutes, 0), cover: version.cover,
+    ...(preview ? { publisher: preview.publisher } : {}),
   });
 }
 
 export function detailFromVersion(value: unknown): CourseDetailPublic {
   const version = courseVersionFromRow(value);
+  const preview = previewFromVersion(VersionRowSchema.parse(value).release_metadata, version);
   return CourseDetailPublicSchema.parse({ ...summaryFromVersion(value), assumedKnowledge: version.assumedKnowledge,
-    outcomes: version.outcomes, modules: version.modules });
+    outcomes: version.outcomes, modules: version.modules, ...(preview ? { release: preview.presentation } : {}) });
 }
 
 export function accessibleFromVersion(value: unknown, access: AccessibleCourseDetail["access"], enrollmentId: string | null): AccessibleCourseDetail {

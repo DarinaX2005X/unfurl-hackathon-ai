@@ -104,7 +104,7 @@ export async function pureStage<T extends JsonValue>(input: { context: RunContex
 /** Captured opt-in policies get independent paid identities; legacy stage request bytes never change. */
 export async function mappedPolicyModelStage<T, R>(input: {
   context: RunContext; binding: ApprovedBuildBinding; model: ModelPort; key: string; purpose: GenerationModelPurpose;
-  instructionVersion: "course-plan-pages-v1" | "course-knowledge-coverage-v1" | "course-knowledge-revision-v1" | "course-approved-knowledge-commentary-v1";
+  instructionVersion: "course-plan-pages-v1" | "course-plan-pages-v2" | "course-knowledge-coverage-v1" | "course-knowledge-revision-v1" | "course-approved-knowledge-commentary-v1";
   schema: z.ZodType<T>; resultSchema: z.ZodType<R>; material: unknown; instructions: string;
   commit(tx: DbTransaction, data: T, operationId: string, stepId: string): Promise<R>;
 }): Promise<void> {

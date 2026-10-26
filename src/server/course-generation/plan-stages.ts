@@ -10,6 +10,7 @@ import type { RunContext } from "@/server/runs/ports";
 import type { MechanicRuntimeCapabilities } from "@/server/mechanics/contracts";
 import { getCapabilityCatalogDigest, getGenerationMechanicCatalog } from "@/server/mechanics/catalog";
 import { taskDigest } from "@/server/mechanics/digest";
+import { stableExecutionId } from "@/server/runs/identity";
 import { ModulePlanSchema, type ModulePlan } from "./planning";
 import { OutcomeCoverageSchema, type ModuleKnowledge } from "./contracts";
 import { loadGenerationStep, verifyStoredModelData } from "./repository";
@@ -27,9 +28,55 @@ export const BoundedModulePlanPageSchema = ModulePlanPageSchema.extend({
 });
 const BoundedPageCheckpointSchema = z.object({ kind: z.literal("course.module.plan.page.bounded.v1"),
   operationId: IdSchema, material: JsonValueSchema, proposal: BoundedModulePlanPageSchema }).strict();
-const AnyPageCheckpointSchema = z.union([PageCheckpointSchema, BoundedPageCheckpointSchema]);
+// New plan-local identities are labels until the server assigns their UUIDs.
+// Approved outcomes and source claims keep their original strict identity schema.
+const LocalIdSchema = z.string().min(1).max(200);
+const lessonShape = BoundedModulePlanPageSchema.shape.lessons.element;
+const taskShape = BoundedModulePlanPageSchema.shape.tasks.element;
+const readingShape = lessonShape.shape.blocks.element.options[0];
+const taskBlockShape = lessonShape.shape.blocks.element.options[1];
+export const ServerIdentityPlanPageSchema = BoundedModulePlanPageSchema.extend({
+  lessons: z.array(lessonShape.extend({ id: LocalIdSchema,
+    blocks: z.array(z.union([readingShape.extend({ id: LocalIdSchema }), taskBlockShape.extend({ id: LocalIdSchema, taskId: LocalIdSchema })])).min(1),
+  })).min(1).max(2),
+  tasks: z.array(taskShape.extend({ id: LocalIdSchema, lessonId: LocalIdSchema,
+    design: taskShape.shape.design.extend({ taskId: LocalIdSchema,
+      transfer: taskShape.shape.design.shape.transfer.unwrap().extend({ fromTaskIds: z.array(LocalIdSchema).min(1) }).nullable(),
+    }),
+  })).max(4),
+  coverage: BoundedModulePlanPageSchema.shape.coverage.extend({
+    introducedAt: z.array(BoundedModulePlanPageSchema.shape.coverage.shape.introducedAt.element.extend({ lessonId: LocalIdSchema, blockId: LocalIdSchema })),
+    practicedTaskIds: z.array(LocalIdSchema), demonstratedTaskIds: z.array(LocalIdSchema),
+  }),
+});
+export function projectPlanPageIdentities(raw: z.infer<typeof ServerIdentityPlanPageSchema>, stepId: string): z.infer<typeof BoundedModulePlanPageSchema> {
+  IdSchema.parse(stepId);
+  const identifiers = [...raw.lessons.flatMap(lesson => [lesson.id, ...lesson.blocks.map(block => block.id)]), ...raw.tasks.map(task => task.id)];
+  if (new Set(identifiers).size !== identifiers.length) return invalid();
+  const identityMap = new Map(identifiers.map(id => [id, IdSchema.safeParse(id).success ? id : stableExecutionId(stepId, `plan-id:${id}`)]));
+  if (new Set(identityMap.values()).size !== identityMap.size) return invalid();
+  const identity = (id: string) => identityMap.get(id) ?? IdSchema.parse(id);
+  return BoundedModulePlanPageSchema.parse({ ...raw,
+    lessons: raw.lessons.map(lesson => ({ ...lesson, id: identity(lesson.id), blocks: lesson.blocks.map(block => ({ ...block, id: identity(block.id),
+      ...(block.kind === "task" ? { taskId: identity(block.taskId) } : {}) })) })),
+    tasks: raw.tasks.map(task => ({ ...task, id: identity(task.id), lessonId: identity(task.lessonId), design: { ...task.design, taskId: identity(task.design.taskId),
+      transfer: task.design.transfer ? { ...task.design.transfer, fromTaskIds: task.design.transfer.fromTaskIds.map(identity) } : null } })),
+    coverage: { ...raw.coverage, introducedAt: raw.coverage.introducedAt.map(location => ({ lessonId: identity(location.lessonId), blockId: identity(location.blockId) })),
+      practicedTaskIds: raw.coverage.practicedTaskIds.map(identity), demonstratedTaskIds: raw.coverage.demonstratedTaskIds.map(identity) },
+  });
+}
+const ServerIdentityPageCheckpointSchema = z.object({ kind: z.literal("course.module.plan.page.bounded.v2"),
+  operationId: IdSchema, material: JsonValueSchema, rawProposal: ServerIdentityPlanPageSchema, proposal: BoundedModulePlanPageSchema }).strict();
+const AnyPageCheckpointSchema = z.union([PageCheckpointSchema, BoundedPageCheckpointSchema, ServerIdentityPageCheckpointSchema]);
 const pageSchema = (kind: z.infer<typeof AnyPageCheckpointSchema>["kind"]) =>
   kind === "course.module.plan.page.bounded.v1" ? BoundedModulePlanPageSchema : ModulePlanPageSchema;
+async function verifyPlanPageResponse(tx: DbTransaction, producer: Awaited<ReturnType<typeof loadGenerationStep<z.infer<typeof AnyPageCheckpointSchema>>>>) {
+  const result = producer.result;
+  if (result.kind === "course.module.plan.page.bounded.v2") {
+    if (taskDigest(projectPlanPageIdentities(result.rawProposal, producer.id)) !== taskDigest(result.proposal)) return invalid();
+    await verifyStoredModelData(tx, producer, result.operationId, ServerIdentityPlanPageSchema, result.rawProposal);
+  } else await verifyStoredModelData(tx, producer, result.operationId, pageSchema(result.kind), result.proposal);
+}
 export const ModulePlanCheckpointSchema = z.object({ kind: z.literal("course.module.plan"), moduleId: IdSchema, pageStepIds: z.array(IdSchema).min(1), plan: JsonValueSchema }).strict();
 const invalid = (): never => { throw new ProviderFailure("invalid_output"); };
 
@@ -74,7 +121,7 @@ export async function loadVerifiedModulePlan(tx: DbTransaction, binding: Approve
     validatePageScope(page, moduleId, ordered[outcomeIndex] ?? invalid(), part);
     verifyPageMaterial(producer.result.material, binding, knowledge, page, pages);
     if (producer.inputDigest !== jsonDigest(producer.result.material)) return invalid();
-    await verifyStoredModelData(tx, producer, producer.result.operationId, pageSchema(producer.result.kind), page);
+    await verifyPlanPageResponse(tx, producer);
     pages.push(page); if (page.complete) { outcomeIndex++; part = 0; } else part++;
   }
   if (outcomeIndex !== ordered.length || part !== 0) return invalid();
@@ -91,7 +138,7 @@ After planning the required route, use additional pages for meaningful optional 
 When complete=true, publicCommentary is a concise natural progress message to the creator in the course content language: explain the learning progression just planned for this approved topic and that concrete lessons and activities will now be created. Never expose task answers, private evaluation criteria, source quotes, internal IDs or implementation jargon, and never claim the course is ready. When complete=false, set publicCommentary=null.`;
 export async function advanceModulePlan(input: { context: RunContext; binding: ApprovedBuildBinding; index: StageIndex; key: string; knowledge: ModuleKnowledge;
   runtime: MechanicRuntimeCapabilities; correction: unknown; priorModules: unknown; model: ModelPort;
-  planPagePolicy?: "bounded-plan-pages-v1" }): Promise<{ stepId: string; plan: ModulePlan } | null> {
+  planPagePolicy?: "bounded-plan-pages-v1" | "server-plan-identities-v2" }): Promise<{ stepId: string; plan: ModulePlan } | null> {
   const { context, binding, index, knowledge } = input, moduleId = knowledge.moduleId;
   const saved = await loadStage(context, binding, index, input.key, ModulePlanCheckpointSchema);
   if (saved) return context.read((tx) => loadVerifiedModulePlan(tx, binding, saved.id, knowledge));
@@ -99,14 +146,23 @@ export async function advanceModulePlan(input: { context: RunContext; binding: A
   for (const outcomeId of orderedModuleOutcomeIds(binding, moduleId)) {
     let part = 0, complete = false;
     while (!complete) {
-      const bounded = input.planPagePolicy === "bounded-plan-pages-v1";
-      const key = bounded ? `${input.key}/bounded-v1/${outcomeId}/${part}` : `${input.key}/${outcomeId}/${part}`;
+      const serverIdentities = input.planPagePolicy === "server-plan-identities-v2";
+      const bounded = input.planPagePolicy === "bounded-plan-pages-v1" || serverIdentities;
+      const key = serverIdentities ? `${input.key}/bounded-v2/${outcomeId}/${part}` : bounded ? `${input.key}/bounded-v1/${outcomeId}/${part}` : `${input.key}/${outcomeId}/${part}`;
       const existing = await loadStage(context, binding, index, key, AnyPageCheckpointSchema);
       if (!existing) {
         const material = JsonValueSchema.parse({ module: binding.draft.modules.find((section) => section.id === moduleId), approvedOutcomes: binding.draft.outcomes,
           knowledge, contentLanguage: binding.draft.contentLanguage, catalog: getGenerationMechanicCatalog(input.runtime), correction: input.correction, priorModules: input.priorModules,
           scope: { outcomeId, part }, previousPlan: assembleModulePlanPages(moduleId, pages) });
-        if (bounded) await mappedPolicyModelStage({ context, binding, model: input.model, key, purpose: "task_authoring",
+        if (serverIdentities) await mappedPolicyModelStage({ context, binding, model: input.model, key, purpose: "task_authoring",
+          instructionVersion: "course-plan-pages-v2", schema: ServerIdentityPlanPageSchema, resultSchema: ServerIdentityPageCheckpointSchema,
+          material, instructions: `${BOUNDED_PLAN_PAGE_INSTRUCTIONS}\nNew lesson, block and task IDs may be unique short labels. The server assigns valid UUIDs and preserves all references. Reuse the exact UUIDs from previousPlan when referring to earlier work. Approved module/outcome IDs and source claim IDs must remain unchanged.`,
+          async commit(tx, rawProposal, operationId, stepId) {
+            const proposal = projectPlanPageIdentities(rawProposal, stepId); validatePageScope(proposal, moduleId, outcomeId, part);
+            if (proposal.complete && proposal.publicCommentary) await context.emitGeneration(tx, { type: "generation.commentary", text: proposal.publicCommentary, stepId });
+            return { kind: "course.module.plan.page.bounded.v2" as const, operationId, material, rawProposal, proposal };
+          } });
+        else if (bounded) await mappedPolicyModelStage({ context, binding, model: input.model, key, purpose: "task_authoring",
           instructionVersion: "course-plan-pages-v1", schema: BoundedModulePlanPageSchema, resultSchema: BoundedPageCheckpointSchema,
           material, instructions: BOUNDED_PLAN_PAGE_INSTRUCTIONS,
           async commit(tx, proposal, operationId, stepId) { validatePageScope(proposal, moduleId, outcomeId, part);
@@ -117,7 +173,7 @@ export async function advanceModulePlan(input: { context: RunContext; binding: A
           async commit(_tx, proposal, operationId) { validatePageScope(proposal, moduleId, outcomeId, part); return { kind: "course.module.plan.page" as const, operationId, material, proposal }; } });
         return null;
       }
-      if (bounded !== (existing.result.kind === "course.module.plan.page.bounded.v1")) return invalid();
+      if (existing.result.kind !== (serverIdentities ? "course.module.plan.page.bounded.v2" : bounded ? "course.module.plan.page.bounded.v1" : "course.module.plan.page")) return invalid();
       const page = existing.result.proposal; validatePageScope(page, moduleId, outcomeId, part); verifyPageMaterial(existing.result.material, binding, knowledge, page, pages);
       pages.push(page); pageStepIds.push(existing.id); complete = page.complete; part++;
     }
@@ -128,7 +184,7 @@ export async function advanceModulePlan(input: { context: RunContext; binding: A
       for (const id of pageStepIds) {
         const producer = await loadGenerationStep(tx, binding, id, AnyPageCheckpointSchema);
         if (producer.inputDigest !== jsonDigest(producer.result.material)) return invalid();
-        await verifyStoredModelData(tx, producer, producer.result.operationId, pageSchema(producer.result.kind), producer.result.proposal);
+        await verifyPlanPageResponse(tx, producer);
       }
       return { kind: "course.module.plan" as const, moduleId, pageStepIds, plan: JsonValueSchema.parse(plan) };
     } });

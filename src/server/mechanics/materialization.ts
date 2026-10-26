@@ -37,21 +37,21 @@ function validatePrivateJoin(task: TaskPublic, privateTask: TaskPrivateCandidate
   if (spec.kind === "execution" && !handle.descriptor.supportedEvaluators.includes("execution")) {
     throw new TaskCandidateError("unsupported", "No execution adapter is registered for this mechanic version");
   }
-  requireValid(handle.descriptor.supportedEvaluators.includes(spec.kind), "This evaluation kind is not supported by the mechanic");
+  requireValid(handle.descriptor.supportedEvaluators.includes(spec.kind), `This evaluation kind is not supported by the mechanic; expected one of: ${handle.descriptor.supportedEvaluators.join(", ")}`);
   if (spec.kind === "execution") {
     requireValid(task.mechanicVersion === 3 && spec.executorId === "python_stdlib_v1" && spec.dialect === "python3.14" &&
       spec.testSetId === privateTask.evaluatorData.testSetId && spec.resourceLimits.timeoutMs === 3000 && spec.resourceLimits.memoryMb === 256,
-    "Python execution must bind the private test set and the fixed python_stdlib_v1 resource profile");
+    "Python execution must bind evaluationSpec.testSetId to evaluatorData.testSetId and the fixed python_stdlib_v1 resource profile: mechanicVersion=3, executorId=python_stdlib_v1, dialect=python3.14, resourceLimits.timeoutMs=3000, resourceLimits.memoryMb=256");
   } else if (spec.kind === "deterministic") {
     requireValid(spec.evaluatorId === task.mechanicId && spec.evaluatorVersion === 2 && spec.secretConfig === null,
-      "Production deterministic data belongs only in evaluatorData, with the matching mechanic ID/version and null secretConfig");
+      `Production deterministic data belongs only in evaluatorData; expected evaluatorId=${task.mechanicId}, evaluatorVersion=2, secretConfig=null`);
   } else {
     const rubrics = ["rubric", "basisRubric", "explanationRubric"].flatMap((key) => {
       const value = privateTask.evaluatorData[key];
       return value === undefined || value === null ? [] : [RubricRequestSchema.shape.rubric.parse(value)];
     });
     requireValid(rubrics.length === 1 && rubrics[0]!.id === spec.rubricId &&
-      sameSet(spec.requiredDimensions, rubrics[0]!.dimensions.map(({ id }) => id)), "Evaluation spec must identify the actual private rubric and all its raw dimensions");
+      sameSet(spec.requiredDimensions, rubrics[0]!.dimensions.map(({ id }) => id)), "Evaluation spec must identify the actual private rubric: exactly one non-null evaluatorData rubric/basisRubric/explanationRubric. rubricId must equal its id, and requiredDimensions must contain all its raw dimensions[].id exactly once");
   }
   requireValid(sameSet(task.outcomeIds, privateTask.assessment.outcomes.map((outcome) => outcome.outcomeId)), "Assessment must cover exactly the task's outcomes");
   const available = getAssessmentDimensionIds(task, privateTask.evaluatorData);

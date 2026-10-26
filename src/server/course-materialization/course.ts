@@ -16,7 +16,7 @@ import { prepareModuleCandidate } from "@/server/course-validation/module";
 import { mergeOutcomeCoverage, validateCourseCoverage } from "@/server/course-validation/coverage";
 import { createModuleReviewInput } from "@/server/course-validation/module-review";
 import { loadVerifiedModuleReview } from "@/server/course-generation/module-review-stages";
-import { TaskValidationRepository } from "@/server/course-validation/receipts";
+import { TaskValidationRepository, type StoredTaskValidationProof } from "@/server/course-validation/receipts";
 import { materializeValidatedTask } from "@/server/mechanics/materialization";
 import { taskDigest } from "@/server/mechanics/digest";
 import type { MechanicRuntimeCapabilities } from "@/server/mechanics/contracts";
@@ -40,7 +40,8 @@ export async function findReusableCompletedModule(tx: DbTransaction, binding: Ap
 }
 /** Completed checkpoint reuse always revalidates original immutable model, source and case records. */
 export async function loadVerifiedModule(tx: DbTransaction, binding: ApprovedBuildBinding,
-  step: StoredGenerationStep<CompletedModuleCheckpoint>, runtime: MechanicRuntimeCapabilities): Promise<CompletedModuleCheckpoint> {
+  step: StoredGenerationStep<CompletedModuleCheckpoint>, runtime: MechanicRuntimeCapabilities,
+  onTaskVerified?: (proof: StoredTaskValidationProof) => void): Promise<CompletedModuleCheckpoint> {
   const stored = CompletedModuleCheckpointSchema.parse(step.result), evidence = new GenerationEvidenceRepository();
   const knowledge = await evidence.loadKnowledge(tx, binding, stored.knowledgeStepId);
   const { plan } = await loadVerifiedModulePlan(tx, binding, stored.planStepId, knowledge.knowledge);
@@ -60,6 +61,7 @@ export async function loadVerifiedModule(tx: DbTransaction, binding: ApprovedBui
         loaded.step.result.knowledgeStepId !== stored.knowledgeStepId) return invalid();
     const proof = await validation.validateStoredTask(tx, binding, references);
     if (proof.receipt.verdict !== "passed" || loaded.step.result.moduleId !== stored.module.moduleId) return invalid();
+    onTaskVerified?.(proof);
     tasks.push(loaded.step.result.authored);
   }
   if (tasks.length !== plan.tasks.length || tasks.some((task) => !plan.tasks.some((slot) => slot.id === task.task.id && slot.assessmentRole === task.privateTask.assessment.role && taskDigest(slot.design) === taskDigest(task.design)))) return invalid();

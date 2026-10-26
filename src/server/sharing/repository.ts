@@ -9,6 +9,7 @@ import { lockOwnedCourse } from "../catalog/access";
 import { VERSION_SELECT, enrollmentForVersion } from "../catalog/repository";
 import { accessibleFromVersion, CourseProjectionRowSchema } from "../catalog/projections";
 import { hashShareToken } from "./crypto";
+import { readySourceSql } from "../course-materialization/ready-source";
 
 const time = z.union([z.date(), z.string()]).transform((value) => new Date(value).toISOString());
 const ShareRowSchema = z.object({
@@ -34,7 +35,7 @@ export async function requireReadyVersion(tx: DbTransaction, courseId: string, v
      JOIN unfurl.version_validation_receipts receipt
        ON receipt.id = v.validation_receipt_id AND receipt.course_version_id = v.id AND receipt.verdict = 'passed'
      JOIN unfurl.generation_runs run
-       ON run.id = v.source_run_id AND run.course_id = v.course_id AND run.output_version_id = v.id AND run.status = 'succeeded'
+       ON run.id = v.source_run_id AND run.course_id = v.course_id AND ${readySourceSql("v", "run", "receipt")}
      WHERE v.id = $1 AND v.course_id = $2 AND v.state = 'ready' AND v.cover IS NOT NULL`, [versionId, courseId],
   );
   if (!result.rows[0]) throw new ServiceFault(404, "not_found", "catalog.notFound");

@@ -104,19 +104,21 @@ export async function loadGenerationStep<T>(tx: DbTransaction, binding: Approved
   if (!newProtocol && versioned.success && (versioned.data.kind === "course.model.batch.v2" ||
       versioned.data.kind === "course.module.approved_knowledge" || versioned.data.kind === "course.module.approved_knowledge_gap" || versioned.data.modelProof !== undefined)) return invalid();
   const boundedPlan = versioned.success && versioned.data.kind === "course.module.plan.page.bounded.v1";
+  const serverIdentityPlan = versioned.success && versioned.data.kind === "course.module.plan.page.bounded.v2";
   const coveredKnowledge = versioned.success && ["course.module.knowledge.review.v1", "course.module.knowledge.revision.v1",
     "course.module.knowledge.checked.v1"].includes(versioned.data.kind ?? "");
   const narratedApprovedKnowledge = versioned.success && versioned.data.narration !== undefined;
   const sourceRead = versioned.success && versioned.data.kind === "course.source.read";
   const partsProof = sourceRead && versioned.data.readProof !== undefined;
   const partsAvailability = versioned.success && versioned.data.kind === "course.source.availability.v2";
-  if ((boundedPlan || coveredKnowledge || narratedApprovedKnowledge || partsProof || partsAvailability) && !newProtocol) return invalid();
+  if ((boundedPlan || serverIdentityPlan || coveredKnowledge || narratedApprovedKnowledge || partsProof || partsAvailability) && !newProtocol) return invalid();
   let knowledgeCoveragePolicy: "approved-scope-v1" | undefined;
   if (newProtocol) {
     const policy = z.object({ result: CourseGenerationPolicyCheckpointSchema, schema: z.literal(COURSE_GENERATION_SCHEMA_DIGEST),
       validationPolicy: z.literal(COURSE_VALIDATION_POLICY_DIGEST), capability: z.literal(getCapabilityCatalogDigest()), approval: z.literal(binding.approval.contentDigest) }).safeParse(parsed.data.generation_policy);
     if (!policy.success || policy.data.result.approvalDigest !== binding.approval.contentDigest) return invalid();
     if (boundedPlan && policy.data.result.planPagePolicy !== "bounded-plan-pages-v1" ||
+        serverIdentityPlan && policy.data.result.planPagePolicy !== "server-plan-identities-v2" ||
         (coveredKnowledge || narratedApprovedKnowledge) && policy.data.result.knowledgeCoveragePolicy !== "approved-scope-v1") return invalid();
     if (sourceRead && partsProof !== (policy.data.result.sourceSelectionPolicy === "source-selection-v2") ||
         partsAvailability && policy.data.result.sourceSelectionPolicy !== "source-selection-v2") return invalid();

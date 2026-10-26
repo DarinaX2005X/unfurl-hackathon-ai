@@ -34,6 +34,7 @@
 .uf-course-art__shadow { transform-origin: 216px 238px; transition: transform var(--motion-state) var(--ease-out), opacity var(--motion-state) var(--ease-out); }
 .uf-course-card__body { min-width: 0; padding: 12px 0; }
 .uf-course-card :is(h2,h3) { font-size: 26px; line-height: 1.27; overflow-wrap: anywhere; }
+.uf-course-card__publisher { display: block; margin-top: 8px; color: var(--color-muted); font-size: 14px; font-weight: 600; }
 .uf-course-card__body > p { margin-top: 12px; color: var(--color-muted); max-width: 64ch; display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
 .uf-course-card__facts { display: flex; flex-wrap: wrap; gap: 20px; margin: 24px 0 16px; }
 .uf-course-card__facts > div { display: flex; gap: 6px; }
@@ -51,6 +52,9 @@
 .uf-course-detail__intro { min-width: 0; }
 .uf-course-detail__intro h1 { font-size: clamp(32px, 3.4vw, 46px); line-height: 1.17; overflow-wrap: anywhere; }
 .uf-course-detail__intro > p { margin-top: 20px; color: var(--color-muted); font-size: 18px; line-height: 1.65; }
+.uf-course-detail__byline { display: flex; flex-wrap: wrap; gap: 8px 20px; margin-top: 16px; color: var(--color-muted); font-size: 14px; }
+.uf-course-detail__byline > :first-child:not(:last-child) { color: var(--color-ink); font-weight: 650; }
+.uf-course-detail__intro > .uf-course-detail__release-note { max-width: 64ch; margin-top: 20px; padding: 16px 18px; border-radius: 16px; background: var(--color-surface-inset); color: var(--color-ink); font-size: 15px; line-height: 1.6; }
 .uf-course-detail__facts { display: flex; flex-wrap: wrap; gap: 16px 28px; margin: 24px 0 0; }
 .uf-course-detail__facts dt { font-size: 14px; color: var(--color-muted); }
 .uf-course-detail__facts dd { margin: 3px 0 0; font-weight: 650; }
@@ -64,13 +68,31 @@
 .uf-course-detail__program summary { display: flex; align-items: center; gap: 16px; min-height: 68px; padding: 16px; cursor: pointer; border-radius: 16px; font-weight: 650; transition: background-color var(--motion-hover) var(--ease-out); }
 .uf-course-detail__program summary::-webkit-details-marker { display: none; }
 .uf-course-detail__program summary::after { content: "+"; font-size: 24px; font-weight: 450; margin-left: auto; }
-.uf-course-detail__program details[open] summary::after { content: "−"; }
+.uf-course-detail__program details[open] > summary::after { content: "−"; }
 .uf-course-detail__program details[open] { background: var(--color-surface-inset); }
 .uf-course-detail__program summary:active { background: var(--color-selected); }
 .uf-course-detail__module-number { color: var(--color-muted); font-size: 14px; font-variant-numeric: tabular-nums; }
 .uf-course-detail__module-time { font-size: 14px; font-weight: 500; margin-left: auto; white-space: nowrap; color: var(--color-muted); }
 .uf-course-detail__program details > div { padding: 0 20px 24px; }
 .uf-course-detail__program details > div > ul { margin: 16px 0 0; padding-left: 20px; display: grid; gap: 8px; }
+.uf-course-detail__lessons { margin: 28px 0 0; padding: 0; list-style: none; display: grid; gap: 28px; }
+.uf-course-detail__lessons h3 { font-size: 18px; line-height: 1.45; }
+.uf-course-detail__activities { display: grid; gap: 8px; margin: 12px 0 0; padding: 0; list-style: none; }
+.uf-course-detail__program .uf-course-detail__activity { border-radius: 12px; background: var(--color-surface); }
+.uf-course-detail__program .uf-course-detail__activity summary { min-height: 48px; padding: 12px 14px; border-radius: 12px; gap: 12px; font-size: 14px; }
+.uf-course-detail__activity summary > span { color: var(--color-muted); font-weight: 450; text-transform: capitalize; }
+.uf-course-detail__activity > p { padding: 0 14px 16px; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 15px; line-height: 1.65; }
+.uf-course-detail__planned { margin-top: 36px; }
+.uf-course-detail__planned > details > summary { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 16px; min-height: 52px; padding: 14px 0; cursor: pointer; font-size: 21px; font-weight: 750; border-radius: 8px; }
+.uf-course-detail__planned > details > summary::-webkit-details-marker { display: none; }
+.uf-course-detail__planned > details > summary::after { content: "+"; margin-left: auto; font-size: 24px; font-weight: 450; }
+.uf-course-detail__planned > details[open] > summary::after { content: "−"; }
+.uf-course-detail__planned-count { font-size: 14px; font-weight: 500; color: var(--color-muted); }
+.uf-course-detail__planned ol { display: grid; gap: 28px; list-style: none; padding: 20px 0 0; margin: 0; }
+.uf-course-detail__planned li { display: grid; grid-template-columns: 28px minmax(0, 1fr); align-items: baseline; gap: 14px; }
+.uf-course-detail__planned h3 { font-size: 17px; line-height: 1.45; overflow-wrap: anywhere; }
+.uf-course-detail__planned p { margin-top: 6px; color: var(--color-muted); font-size: 15px; line-height: 1.6; }
+.uf-course-detail__planned summary:focus-visible, .uf-course-detail__program summary:focus-visible { outline: 2px solid var(--color-focus); outline-offset: 4px; }
 .uf-course-detail__prerequisites { padding: 28px; border-radius: 24px; background: var(--color-surface-inset); }
 .uf-course-detail__prerequisites h2 { font-size: 21px; }
 .uf-course-detail__prerequisites > ul { padding-left: 20px; margin: 20px 0 0; display: grid; gap: 12px; }
@@ -79,7 +101,7 @@
 .uf-course-detail__access h3 { font-size: 17px; }
 .uf-course-detail__access p { margin-top: 8px; color: var(--color-muted); font-size: 15px; }
 .uf-course-detail__access > .uf-button { margin-top: 20px; }
-.uf-course-detail__version, .uf-owned-unready__eyebrow { margin-bottom: 10px; color: var(--color-action-hover); font-size: 13px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
+.uf-owned-unready__eyebrow { margin-bottom: 10px; color: var(--color-action-hover); font-size: 13px; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }
 .uf-course-detail__primary-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 28px; }
 .uf-owned-unready { min-height: 460px; display: grid; grid-template-columns: minmax(260px, .8fr) minmax(0, 1.2fr); align-items: center; gap: clamp(28px, 6vw, 84px); padding: clamp(28px, 6vw, 72px); border-radius: var(--radius-scene); background: var(--color-surface); }
 .uf-owned-unready h1 { font-size: clamp(32px, 4vw, 48px); line-height: 1.12; letter-spacing: -.045em; }

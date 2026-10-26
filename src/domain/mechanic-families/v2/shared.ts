@@ -52,7 +52,7 @@ export function parseFamilyTask<C extends JsonValue, R extends JsonValue, V exte
   const task = serializePublicTask(value, descriptor.configSchema);
   if (task.mechanicId !== descriptor.id || task.mechanicVersion !== descriptor.version ||
       task.responseSchemaVersion !== descriptor.responseSchemaVersion) {
-    throw new MechanicValueError("invalid_value", "Unsupported mechanic or response version");
+    throw new MechanicValueError("invalid_value", `Unsupported mechanic or response version; expected mechanicId=${descriptor.id}, mechanicVersion=${descriptor.version}, responseSchemaVersion=${descriptor.responseSchemaVersion}`);
   }
   assertFamilyKind(task.config, descriptor.id);
   return task;

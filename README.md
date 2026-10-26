@@ -4,6 +4,17 @@
 
 <p align="center"><strong>Learn what you've always wanted to</strong></p>
 
+Unfurl turns a learning goal into a researched course with explanations, experiments, and varied practice. Discuss what you want to understand, review the program, then learn through activities chosen for the work the subject actually requires.
+
+A course has a shared structure; each learner has their own saved progress, evidence, and route through additional support. You can move from understanding a worked example to making decisions, testing an idea, and applying it independently.
+
+<p align="center">
+  <a href="https://unfurl-inky.vercel.app"><strong>Open Unfurl</strong></a>&nbsp;&nbsp;
+  <a href="https://unfurl-inky.vercel.app/media/unfurl-film.mp4"><strong>Watch demo</strong></a>&nbsp;&nbsp;
+  <a href="#run-locally">Run locally</a>&nbsp;&nbsp;
+  <a href="docs/setup.md">Configuration and deployment</a>
+</p>
+
 <p align="center">
   <img src="docs/images/readme-next.svg" alt="Next.js 16.4.3" width="136" height="36">
   <img src="docs/images/readme-react.svg" alt="React 19.3.1" width="132" height="36">
@@ -11,65 +22,116 @@
   <img src="docs/images/readme-node.svg" alt="Node.js 22.x" width="132" height="36">
 </p>
 
-Unfurl is a learning workspace for turning a personal goal into a substantial course and studying through varied, interactive practice. Its intended experience combines a researched curriculum that the creator can review with a shared course whose support and next steps can differ for each learner.
+![A real Unfurl conversation researching and revising an AI curriculum, with the saved course program beside it](docs/images/course-authoring.png)
 
-This checkout currently provides a standalone local chat and a guided numerical learning activity. Live research and course generation are not connected yet. You can prepare a learning goal, return to your conversations, and use the activity without an account or API key.
-
-[Run locally](#run-locally), [try the learning activity](#try-the-learning-activity), [repository](https://github.com/DarinaX2005X/hackathon-ai)
-
-![Unfurl home with the Learn everything heading and unfolded course book](docs/images/unfurl-home.jpg)
+*Research and a saved AI curriculum in an actual authoring conversation. The screenshot shows a draft before detailed course construction.*
 
 ## Contents
 
-- [Current scope](#current-scope)
+- [From a question to a course](#from-a-question-to-a-course)
+- [Practice that fits the subject](#practice-that-fits-the-subject)
+- [A shared course, personal progress](#a-shared-course-personal-progress)
+- [How the system works](#how-the-system-works)
 - [Run locally](#run-locally)
-- [Use the local chat](#use-the-local-chat)
-- [Try the learning activity](#try-the-learning-activity)
-- [Storage and privacy](#storage-and-privacy)
-- [How the application works](#how-the-application-works)
-- [Planned complete service](#planned-complete-service)
-- [Checks and evidence](#checks-and-evidence)
-- [Application structure](#application-structure)
-- [Planning and credits](#planning-and-credits)
+- [Configuration and deployment](#configuration-and-deployment)
+- [Storage and access](#storage-and-access)
+- [Checks and current limits](#checks-and-current-limits)
+- [Repository map](#repository-map)
+- [Credits](#credits)
 
-## Current scope
+## From a question to a course
 
-The current experience is useful for preparing a learning goal and trying a concrete piece of interactive practice. It is also the foundation for the complete course service described in the planning documents.
+Start with an outcome: “I want to understand how machine learning works, then build models and AI systems myself.” Include the background you already have, the language you want to study in, and any practical constraints. The interface is English; a course can use another language.
 
-| Available now | What it does |
+1. **Discuss and research.** The agent replies in the conversation, searches for sources, reads web pages and text-based PDFs, and develops the program. Expandable actions show what happened. A conversation can contain several separate course artifacts.
+2. **Review the program.** Inspect the goal, audience, prerequisites, learning outcomes, module order, and estimated study time. Edit the program or ask for a revision. Course details and language belong to the selected artifact.
+3. **Approve that version.** Approval applies to the exact saved program. It appears in the conversation as **Plan approved**, and the artifact shows **Approved**. Approval waits until the authoring agent has finished.
+4. **Follow construction in the chat.** The build researches sections, checks coverage of the approved outcomes, plans lessons, writes reading material, creates activities, and validates them. Work is saved in separate steps. Failure and retry remain visible; a stopped build is never presented as a ready course.
+5. **Begin when the course is ready.** The ready course offers study and course-detail actions. The library keeps created courses and enrollments; chat history stays in the chat.
+
+A new conversation is created on the first send, not while an unsent first message is being typed. Returning to an existing chat restores its saved messages and writing. Stop, retry, and revision operations preserve the identity of the work they affect.
+
+Refine the sample goal with a constraint such as “I know basic Python, but need the mathematics explained through experiments.” Inspect the resulting prerequisites and section order, then ask for a targeted change before approval. The same flow applies to another subject or learning language.
+
+## Practice that fits the subject
+
+Unfurl defines **29 activity families**. The generator chooses from their actual capabilities: what the learner can manipulate, construct, observe, explain, or test, and how the result can be assessed. A course does not have to use every family.
+
+| Learner action | Examples of supported activity families |
 | --- | --- |
-| Product entry | An English landing with an unfolding course illustration, automatically rotating learning topics, and connected creation, exploration, and practice routes |
-| Local chat | Write an ordinary message or start with a complete editable learning scenario; conversations and unfinished writing are retained automatically on the current device |
-| Chat history | Reopen, rename, or delete conversations in the chat; unavailable sends retain the actual user message with retry and edit actions |
-| Catalog and library surfaces | Show the actual empty public collection and unavailable cloud library; library records are courses and enrollments, while conversations remain in chat |
-| Guided model-capacity activity | Follow visual instructions, fit real polynomial models to synthetic data, compare computed errors, and receive deterministic feedback |
-| Help and privacy pages | Explain the current behavior, storage boundaries, and ways to manage local work |
+| Reconstruct and distinguish | Recall reconstruction, confusable discrimination, rule induction, procedure reconstruction |
+| Explain a process | State tracing, outcome prediction, cause diagnosis, self-explanation |
+| Investigate | Experimental investigation, causal intervention, source investigation |
+| Connect representations | Relational mapping, analogy transfer, representation translation, estimation |
+| Build and improve | Example or counterexample construction, plan and artifact construction, diagnosis and repair, adversarial testing, constrained optimization |
+| Communicate and reason | Argument and rebuttal, critique and revision, misconception tutoring, information gap, role simulation, audience mediation |
+| Choose an approach | Strategy selection |
 
-The interface is English only. The composer has no course-language selector. In the planned integrated service, the agent infers course language from the conversation and explicit intent, and the creator can edit it on the actual course artifact.
+Activities share a player, but use different response schemas, controls, and evaluators. Deterministic answers are checked on the server; open responses use criterion-based review; supported Python work runs in an isolated sandbox. Investigation and dialogue tasks save actual actions and observations before evaluating the answer that cites them.
 
-The current application has no connected AI provider, research service, authentication, production database, or durable cloud worker. Sending retains your user message with **Not sent** feedback and **Retry** or **Edit**. It does not create an assistant reply, accepted run, or course, award account XP, or publish anything. The public catalog is empty because there are no released course records in the local adapter.
+The generator checks its own proposed exercises with valid, alternative-valid, and meaningfully wrong cases, then requests an independent content review. A typed response alone is insufficient: sources, criteria, references, task behavior, and the full approved outcome must agree before release.
 
-There is no public deployment URL at present. Vercel is the intended hosting target; a working local build is not a deployed service.
+## A shared course, personal progress
+
+An enrollment pins a learner to a particular course version. The course's required outcomes remain stable while additional practice, diagnostics, or challenges can respond to the learner's evidence. Support can be accepted or declined, with a route back to the main program. A simple mistake does not automatically require a large detour.
+
+Feedback distinguishes correct, partial, incorrect, uncertain, and unavailable results. Uncertainty is not treated as the learner being wrong. Hints and worked examples remain separate from independent evidence; learners can request review of feedback.
+
+The server awards **25 XP** for an independently correct eligible task or **10 XP** when a hint was used. A revealed worked example does not earn XP. Repeated submissions of the same task do not multiply an award. Each 250 XP advances a level; public publication becomes available at level 3, or **500 XP**.
+
+Creators can keep a course private, share a particular version through a revocable link, or publish an eligible ready version. A recipient starts their own enrollment and cannot see the creator's answers. New course versions do not silently rewrite an existing learner's work.
+
+The **Try** entry opens a selected public course in the learning workspace and preserves that destination through sign-in. Each learner starts with their own progress. The configured course and version must remain published and accessible.
+
+## How the system works
+
+The application separates conversation, curriculum approval, course construction, and learning. A successful agent reply does not imply a ready course; only validated, atomically released content can be studied.
+
+```mermaid
+flowchart LR
+    Goal[Learning goal] --> Chat[Conversation and source research]
+    Chat --> Program[Editable curriculum]
+    Program --> Approval[Approval of a saved revision]
+    Approval --> Knowledge[Section research and coverage checks]
+    Knowledge --> Lessons[Lesson and activity construction]
+    Lessons --> Validation[Cases, evaluators and content review]
+    Validation --> Course[Ready course version]
+    Course --> Enrollment[Personal enrollment]
+    Enrollment --> Action[Answer or recorded activity]
+    Action --> Feedback[Evaluation and evidence]
+    Feedback --> Route[Progress, XP and next steps]
+    Route --> Enrollment
+```
+
+- **Next.js and React** provide the interface and ordinary authenticated HTTP endpoints. Typed events and snapshots reconnect long-running work to the conversation.
+- **Supabase Auth and PostgreSQL** store identity, conversations, course versions, attempts, evaluations, progress, and execution records. Mutations check the current actor, ownership, revision, and idempotency key.
+- **Vercel Workflow** continues durable jobs independently of an open browser. Steps have leases, saved results, and explicit recovery; provider effects are recorded before their result becomes usable.
+- **OpenRouter** supplies model inference and web search. Gemini 3.8 Flash handles structured authoring and course content; Kimi K2.6 handles search and rubric evaluation. Saved operations preserve the model and request used by each step so a retry can recover the same work.
+- **Source reading** extracts text from web pages and PDFs. Long PDFs are saved in parts with their original page numbers and read through continued source requests. A partial extract is not treated as evidence that the complete document was read.
+- **Vercel Sandbox** runs supported Python activities in temporary environments with no guest network access and strict execution limits.
+- **Zod and server validators** enforce data shapes, provenance, coverage, public/private separation, and admissible state transitions. The UI cannot award XP or declare its own build complete.
+
+For the component boundaries, data model, HTTP contracts, and failure behavior, see the [technical specification](devpost/spec.md).
 
 ## Run locally
 
-Use **Node.js 22.x** and npm. The exact dependency graph is committed in [package-lock.json](package-lock.json). No environment file, model key, database, or account is required for the current local features.
-
-If you have not checked out the repository:
+Use **Node.js 22.x** and npm. The dependency versions are pinned in [package-lock.json](package-lock.json).
 
 ```sh
 git clone https://github.com/DarinaX2005X/hackathon-ai.git
 cd hackathon-ai
+npm ci
 ```
 
-From the repository root:
+Create `.env.local` from [.env.example](.env.example), supply the services for the functionality you need, and follow the [setup guide](docs/setup.md). The guide covers Supabase Auth, database migrations, OpenRouter, dispatch, sharing, and optional Python execution through Vercel Sandbox. Keep development services separate from the hosted application.
+
+Account-backed authoring and learning require configured services. Automatic provider initialization for a fresh database is not included; review [runtime capability setup](docs/setup.md#runtime-capability-evidence) before expecting generation and grading to run. Installing packages and supplying an API key alone does not enable those operations.
 
 ```sh
-npm ci
 npm run dev
 ```
 
-Open [http://127.0.0.1:3000](http://127.0.0.1:3000). Both development and production-start scripts bind to `127.0.0.1`. If Next.js reports a different port because the default is occupied, use the address printed in the terminal. Stop the server with `Ctrl+C`.
+Open [http://127.0.0.1:3000](http://127.0.0.1:3000) to see the landing page. Both the development server and production-start script bind to `127.0.0.1`. Keep `APP_ORIGIN` aligned with the actual origin. Stop the process with `Ctrl+C`.
 
 For a local production build:
 
@@ -78,138 +140,78 @@ npm run build
 npm run start
 ```
 
-The application does not require migrations or an AI configuration step in this delivery. Provider setup will be documented when real integrations exist; adding an arbitrary API-key environment variable does not enable generation.
+Local Workflow data uses `.cache/workflow-data` instead of `.next`, so rebuilding does not erase its journal. Use a separate development database and deployment configuration; local and hosted workers must not accidentally process the same active jobs.
 
-## Use the local chat
+## Configuration and deployment
 
-1. Open [New chat](http://127.0.0.1:3000/chat).
-2. Describe something you want to learn and what you would like to be able to do. For example, a deep AI course can begin with fundamentals and continue into both creating models and building AI systems.
-3. Alternatively, select a scenario card and edit the complete intention it places in the composer. If you already have text, a dialog lets you keep it or deliberately replace it. Cards never send automatically.
-4. Write normally. **Saved on this device** appears only after storage confirms the write; a storage failure offers **Retry saving**. Opening an untouched empty chat creates no record.
-5. Reopen the conversation under **Your chats**. Use **Chat options** to rename or delete it, or **New chat** to start another conversation.
+The [setup guide](docs/setup.md) covers environment variables, migrations, provider accounting, share keys, runtime capability checks, local execution, and Vercel deployment. It distinguishes server secrets from public configuration and describes the supported account behavior.
 
-Use Enter to send and Shift+Enter for a new line. Sending currently exercises the unavailable-service path: your actual message stays visible as **Not sent**. **Retry** reuses the same message and request identity. **Edit** lets you revise an unsent message and send it with a new identity; existing unfinished composer text must be finished or cleared first.
+The deployment configuration selects Frankfurt (`fra1`) and a daily recovery dispatch. Normal accepted work also triggers dispatch after the response. Vercel's hosted runtime has finite function deadlines; larger courses continue through saved steps rather than depending on one request lasting for the entire build.
 
-An existing conversation opens at `/chat?conversation=<id>`. Older `/create?draft=<id>` links redirect to the same conversation ID and import a valid legacy draft when available. Missing or unreadable records show a recovery state instead of silently opening another conversation.
+Server-side accounting records provider requests, costs, and unresolved outcomes across retries. Provider and sandbox charges depend on actual use and the deployment's service configuration. A key or installed package alone is not proof that a capability is available.
 
-A conversation is separate from its course results. The application contracts and artifact panel support multiple courses in one chat, each with its own metadata and curriculum. Live artifact creation is not connected in this checkout, so sending cannot populate that panel with a generated course. The library is reserved for actual courses and enrollments.
+## Storage and access
 
-## Try the learning activity
+| Record | Authoritative location and behavior |
+| --- | --- |
+| Account, profile, session | Supabase Auth and server-verified session; credentials are not stored in chat data |
+| Saved conversations, composer state, course artifacts | PostgreSQL, scoped to the signed-in account |
+| Curriculum, approval, generated content | Revision-bound records and immutable ready course versions |
+| Learning actions, answers, evaluations, route, XP | Server records belonging to the learner and enrolled version |
+| Unsent first message or unsaved edits | Limited browser recovery until a server save is confirmed; not a backup |
+| Chats from the earlier local-only version | Browser IndexedDB; explicit import preserves the browser original and does not automatically send messages |
+| Share links | Server-verified grants for an exact version; revocation is enforced on access |
 
-Open [the model-capacity activity](http://127.0.0.1:3000/try). It explores a concrete question: why can a model fit its training points perfectly and still perform poorly on other points?
+Clearing browser storage does not delete work already saved to an account. Deleting a chat does not implicitly delete its courses. Read the in-product [privacy explanation](https://unfurl-inky.vercel.app/privacy) for the current user-facing behavior.
 
-The visual guide introduces the orange model line, the circles it learned from, and the diamonds used to check its predictions. Choose **Let me try**, change the model's shape, then compare the result. Dotted gaps show where the line misses the new points. You can skip the guide or reopen it with **Show the guide** without changing your answer or hint history.
-
-Choose **Straight**, **Curved**, or **Flexible**, and a bending limit of **None**, **Gentle**, or **Strong**. The goal is to reduce **Error on new points** below **0.210**, select an explanation for what you observed, and use **Check my model**. More than one configuration meets the target. Feedback evaluates the configuration and explanation separately.
-
-The activity uses a fixed, explicitly synthetic dataset. Training points follow `sin(πx)` with added noise; the separate validation points follow the same curve without that noise. The three shapes correspond to polynomial degrees **1, 3, and 7**; the bending limits correspond to regularization values **0, 0.1, and 1**. **Look inside the model and data** exposes the technical details and values.
-
-Each change recomputes the fitted coefficients, plotted curve, training error, and validation error. The numerical implementation solves the regularized least-squares problem with Householder QR and leaves the intercept unpenalized. The graph is accompanied by readable metrics and a data equivalent.
-
-You can make an optional prediction, use a hint, keep a note, return to the activity, or reset it. Notes are retained but are not graded. Hints remain separately recorded as assistance; the orientation guide does not consume one. Repeating an identical submission reuses its result, and the isolated activity awards **no account XP** or publication privileges.
-
-Because the validation set is used to choose a configuration, its result is not an independent estimate of future performance. The activity explains this limit. It is one working teaching example, not a generated deep course or evidence of measured learning gains.
-
-## Storage and privacy
-
-Local work belongs to the current site's origin and browser profile. Keep using the same address when returning: `localhost`, `127.0.0.1`, and different ports have separate browser storage.
-
-| Data | Storage | Removal and limits |
-| --- | --- | --- |
-| Conversation title, unfinished writing, messages, delivery details, IDs, and timestamps | IndexedDB | Delete the selected chat through Chat options; it is not synced to another device |
-| Pending conversation changes | Temporary tab `sessionStorage`, with an in-memory fallback | Protects writing until IndexedDB confirms it, then clears the recovery copy; it does not itself confirm a successful save |
-| Imported legacy request and import/deletion metadata | IndexedDB | Original legacy drafts are retained. Deleting an imported chat prevents it from being imported again, but does not erase that original copy; clearing site data removes it |
-| Trial settings, attempts, feedback, hints, and notes | A separate `localStorage` namespace | Use Reset in the activity; resetting the sample leaves conversations intact |
-| Whether the trial guide was dismissed | A separate `localStorage` preference | Reopen it with Show the guide; changing this preference does not reset the activity |
-
-Legacy import preserves the original ID, title, text, and update time. Its language metadata remains part of the import record, rather than becoming a composer setting or a course. Deleting a conversation does not delete any courses referenced by it. Clearing all site data also removes retained legacy copies, recovery data, and import/deletion markers.
-
-The app reports storage failures and keeps usable input in the open page where possible. Browser storage is not a backup: clearing site data, changing profiles, or browser eviction can remove local work. There is no cloud copy from which Unfurl can restore it. Keep a separate copy of text you need to retain.
-
-See the application's [privacy page](http://127.0.0.1:3000/privacy) for the current storage behavior and removal controls.
-
-## How the application works
-
-The UI uses one typed [ApplicationPort](src/application/ports.ts). The current [local adapter](src/application/local-adapter.ts) reports three unavailable capabilities: generation, cloud identity, and cloud persistence. It returns empty collection data, a not-found course lookup, and an unavailable response to `sendMessage` before accepting server work. The chat separately retains the user's actual local message and its failed delivery state. These are real capability boundaries, not simulated remote services.
-
-Local conversations use [ChatStore](src/lib/chats.ts) and a [chat session controller](src/features/creator/chat-session.ts). The controller orders writes and keeps recovery state separate from confirmed persistence. The learning trial uses the shared task projection and renderer boundary, but its own sample session and deterministic evaluator.
-
-```mermaid
-flowchart LR
-    Writing[Unfinished writing] --> Chat[Local conversation]
-    Message[User message] --> Chat
-    Chat --> Recovery[Temporary tab recovery]
-    Chat --> History[IndexedDB chat history]
-    Message --> Adapter[Local application adapter]
-    Adapter --> Unavailable[Not sent and retry]
-    Unavailable --> Chat
-    Trial[Learning activity] --> Fit[Polynomial fit and evaluation]
-    Fit --> Feedback[Computed results and feedback]
-    Trial --> Sample[Separate sample storage]
-```
-
-[Zod schemas](src/domain/) validate data at the boundaries. Curriculum validation checks references, dependency cycles, outcome coverage, and revision-bound approval. The creator's [stream reducer](src/features/creator/stream.ts) handles typed events, replay, gaps, cancellation, and artifact snapshots. An `AgentTurnRun` represents a reply that can finish with zero, one, or several course artifacts; a separate `GenerationRun` represents course construction and requires an actual course and saved version for success. Finishing a reply does not mark a course ready. These contracts prepare the interface for future live integration; they do not mean that a model, event server, or course-generation backend is connected now.
-
-## Planned complete service
-
-The full intended experience goes beyond this local delivery:
-
-1. A creator discusses learning goals with an agent that performs real source research. One conversation can create or edit several independent course artifacts.
-2. A real course-creation operation supplies the initial title, summary, and content language. Each course has a curriculum with outcomes, prerequisites, and modules. The creator can edit its details and explicitly approve that course's current curriculum revision and content digest.
-3. A separate course-building job researches individual modules, constructs supported interactive activities, checks their content and evaluation, and releases an immutable course version.
-4. Each learner receives a separate enrollment, evidence record, and personal route. Support can change without deleting required outcomes or rewriting the shared course.
-5. Real progress and XP follow an authoritative policy. Creators can share a specific version and, when eligible, explicitly publish it in the catalog.
-
-The first substantial validation course is intended to cover AI foundations followed by both model creation and AI-system development. Several authored courses should be produced through the same engine once it works, rather than inserted as handcrafted substitutes for generation.
-
-Model and research providers, identity, transactional storage, durable execution, evaluation coverage, and the production arrangement still need to be connected and verified. A single incorrect answer should not automatically trigger a large remedial detour. Adaptation must preserve the agreed depth and use relevant evidence. Neither that proposed policy nor the current activity establishes proven learning effectiveness.
-
-The public planning documents describe the complete target and remaining decisions: [scope](devpost/scope.md), [product requirements](devpost/prd.md), [technical specification](devpost/spec.md), and [build checklist](devpost/checklist.md). They remain drafts and are not a completion report for future functionality.
-
-## Checks and evidence
-
-Run the complete repository check from the application root:
+## Checks and current limits
 
 ```sh
 npm run check
 ```
 
-This command runs route type generation and TypeScript checking, ESLint, Vitest, and the Next.js production build. It stops with a nonzero exit code when a check fails. Individual commands are also available:
+The combined check runs route type generation, TypeScript, ESLint, Vitest, and a production build. Live provider and database operator suites require explicit opt-in; a normal test run does not make paid requests.
 
 | Command | Purpose |
 | --- | --- |
-| `npm run dev` | Start the local development server |
-| `npm run typecheck` | Generate Next.js route types and check TypeScript |
+| `npm run typecheck` | Generate route types and check TypeScript |
 | `npm run lint` | Run ESLint |
-| `npm test` | Run the Vitest suite |
-| `npm run check` | Run type checking, lint, tests, and build together |
-| `npm run build` | Create a production build |
-| `npm run start` | Serve an existing production build locally |
+| `npm test` | Run automated tests, with live suites gated |
+| `npm run build` | Compile a production build |
+| `npm run check` | Run the complete local check sequence |
 
-Tests cover chat persistence and migration, write failures, retry identity, capability responses, artifact-specific curriculum invariants, public-data projections, catalog queries, event handling, numerical fitting, sample evaluation, guide state, isolated session persistence, and shared control contracts. The tests use explicit fixtures where a live service does not exist, including multiple course artifacts and successful agent turns.
+The repository tests cover authorization, revision conflicts, duplicate requests, durable recovery, provider accounting, source evidence, generation validation, activity contracts, grading, progression, and interaction state. Live journeys and visual review have separate acceptance criteria in the [verification checklist](devpost/checklist.md).
 
-A fresh `npm ci` has been verified. Visual and interaction checks are separate from the automated suite. Automated results do not establish live AI integration, deployed durability, measured human comprehension, or learning efficacy.
+Current boundaries:
 
-## Application structure
+- The interface is English. Course content has its own language.
+- Signup uses email and password without sending a confirmation email. Email password recovery is not available in this build.
+- Research reads HTML, XHTML, plain text, Markdown, JSON, and the text layer of PDFs. It does not perform OCR on scanned pages or unlock encrypted documents. Inaccessible sources remain explicit failures so another source can be selected.
+- Generation, rubric grading, and sandbox execution require available external services, valid capability evidence, and sufficient provider credits and quotas. A failed build retains its approved program and completed work; retry may require additional paid calls.
+- The Python sandbox is for bounded exercises, not a persistent notebook or a full local AI training environment. Larger course projects can require tools and resources on the learner's computer.
+- Learning effectiveness has not been measured in a controlled study.
+
+## Repository map
 
 | Area | Responsibility |
 | --- | --- |
-| [src/app](src/app/) | Next.js routes, root document, and metadata |
-| [src/components](src/components/) and [src/styles](src/styles/) | Shared controls, navigation, visual tokens, and layout |
-| [src/domain](src/domain/) | Runtime schemas, curriculum invariants, public projections, and typed errors |
-| [src/application](src/application/) | Application port and current local adapter |
-| [src/features/creator](src/features/creator/) | Chat history, composer, message delivery, course-artifact panels, and event reducer |
-| [src/lib/chats.ts](src/lib/chats.ts) | Local conversation storage and legacy import |
-| [src/features/catalog](src/features/catalog/) and [src/features/library](src/features/library/) | Public course, owned course, and enrollment interfaces |
-| [src/features/learning](src/features/learning/) | Player, mechanic registry, numerical activity, evaluator, and sample session |
-| [src/features/landing](src/features/landing/) | Product entry, authored illustration, help, and privacy content |
-| [public/brand](public/brand/) | Unfurl mark and logo |
-| [tests](tests/) and [scripts/check.mjs](scripts/check.mjs) | Automated checks and their runner |
+| [src/app](src/app/) | Routes, HTTP endpoints, and page metadata |
+| [src/features/creator](src/features/creator/) | Chat, curriculum editing, approval, and build presentation |
+| [src/features/learning](src/features/learning/) | Shared learning player and activity renderers |
+| [src/features/catalog](src/features/catalog/) and [src/features/library](src/features/library/) | Discovery, course access, created courses, and enrollments |
+| [src/domain](src/domain/) and [src/application](src/application/) | Runtime schemas, ports, and HTTP adapters |
+| [src/server](src/server/) | Auth, research, generation, grading, progression, sharing, and durable execution |
+| [src/components](src/components/) and [src/styles](src/styles/) | Shared controls, shell, tokens, and layout |
+| [supabase](supabase/) | Ordered migrations and explicit provisioning/verification tools |
+| [public/brand](public/brand/), [public/media](public/media/), and [docs/images](docs/images/) | Product identity, demo film, and real documentation images |
+| [tests](tests/) and [scripts](scripts/) | Automated checks and operational verification |
 
-## Planning and credits
+Product documents: [scope](devpost/scope.md), [requirements](devpost/prd.md), [technical specification](devpost/spec.md), and [verification checklist](devpost/checklist.md).
 
-Planning used the applicable [Devpost Learn Skill Pack](https://github.com/challengepost/learn-ai-basics) instructions for scope, product requirements, and technical specification.
+## Credits
 
-The application uses [Next.js](https://nextjs.org/docs), [React](https://react.dev/), [TypeScript](https://www.typescriptlang.org/), and [Zod](https://zod.dev/). [Radix Dropdown Menu](https://www.radix-ui.com/primitives/docs/components/dropdown-menu) supports menu interaction, while dialogs use native browser modal behavior. [Lucide](https://lucide.dev/guide/react) supplies icons, and [Fontsource Manrope](https://fontsource.org/fonts/manrope) supplies the font through a declared package dependency. Font files are not copied into a committed font directory. The Unfurl mark and unfolding course illustration are authored application assets.
+Planning follows the applicable [Devpost Learn Skill Pack](https://github.com/challengepost/learn-ai-basics) scope, product-requirements, and technical-specification structures.
 
-A project license has not been selected yet. Third-party dependencies retain their respective licenses; their inclusion does not imply an open-source license for this project.
+Unfurl uses Next.js, React, TypeScript, Zod, Supabase, Vercel Workflow and Sandbox, and OpenRouter. Radix supports dialogs and menus, Lucide supplies icons, Fontsource supplies Manrope, and unpdf provides PDF text extraction. The logo and unfolding course illustration are authored product assets; the authoring image is a real application screenshot.
+
+Third-party dependencies retain their own licenses. See [third-party notices](THIRD_PARTY_NOTICES.md) for the adapted Kimi chat-template material. No project license is declared here.

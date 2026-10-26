@@ -21,6 +21,19 @@ const unavailableBinding = () => new ServiceFault(409, "revision_conflict", "gen
 export async function loadApprovedBuild(tx: DbTransaction, input: {
   runId: string; ownerId?: string; lock?: boolean;
 }): Promise<ApprovedBuildBinding> {
+  return loadBuildBinding(tx, input, false);
+}
+
+/** Explicit release operator only. A stopped build remains stopped; no execution is resumed. */
+export async function loadStoppedBuildForRelease(tx: DbTransaction, input: {
+  runId: string; ownerId: string; lock?: boolean;
+}): Promise<ApprovedBuildBinding> {
+  return loadBuildBinding(tx, input, true);
+}
+
+async function loadBuildBinding(tx: DbTransaction, input: {
+  runId: string; ownerId?: string; lock?: boolean;
+}, stoppedRelease: boolean): Promise<ApprovedBuildBinding> {
   let row = (await tx.query<GenerationRow>("SELECT * FROM unfurl.generation_runs WHERE id=$1", [input.runId])).rows[0];
   if (!row || !row.course_id || !row.approval_id || (input.ownerId !== undefined && row.owner_id !== input.ownerId)) {
     throw new ServiceFault(404, "not_found", "generation.notFound");
@@ -33,7 +46,7 @@ export async function loadApprovedBuild(tx: DbTransaction, input: {
   if (input.lock) row = (await tx.query<GenerationRow>("SELECT * FROM unfurl.generation_runs WHERE id=$1 FOR UPDATE", [input.runId])).rows[0]!;
   const run = generationFromRow(row);
   const conversation = (await tx.query<{ id: string }>(`SELECT id FROM unfurl.conversations WHERE id=$1 AND owner_id=$2 AND deleted_at IS NULL`, [run.conversationId, course.ownerId])).rows[0];
-  if (!conversation || !["queued", "running"].includes(run.status) || run.courseId !== course.id || run.ownerId !== course.ownerId
+  if (!conversation || !(stoppedRelease ? ["failed", "cancelled"] : ["queued", "running"]).includes(run.status) || run.courseId !== course.id || run.ownerId !== course.ownerId
     || run.approvalId !== approval.id || run.sourceDraftRevision !== approval.draftRevision || current.draft.revision !== approval.draftRevision
     || current.draft.conversationId !== run.conversationId) throw unavailableBinding();
   const revision = (await tx.query<{ document: unknown; content_digest: string }>(`SELECT document,content_digest FROM unfurl.curriculum_revisions
@@ -47,7 +60,7 @@ export async function loadApprovedBuild(tx: DbTransaction, input: {
     WHERE source_run_id=$1 AND approval_id=$2 AND course_id=$3 ${input.lock ? "FOR UPDATE" : ""}`, [run.id, approval.id, course.id])).rows[0];
   if (!versionRow) throw unavailableBinding();
   const version = versionFromRow(versionRow);
-  if (!["building", "validating"].includes(version.state) || version.contentDigest !== approval.contentDigest
+  if (!(stoppedRelease ? ["failed"] : ["building", "validating"]).includes(version.state) || version.contentDigest !== approval.contentDigest
     || version.contentLanguage !== draft.contentLanguage || version.title !== draft.title
     || JSON.stringify(version.outcomes) !== JSON.stringify(draft.outcomes) || JSON.stringify(version.modules) !== JSON.stringify(draft.modules)
     || JSON.stringify(version.assumedKnowledge) !== JSON.stringify(draft.assumedKnowledge)) throw unavailableBinding();
