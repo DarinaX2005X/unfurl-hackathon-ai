@@ -9,6 +9,7 @@ export interface ConversationAction {
   afterMessageId: string | undefined;
   action: ResearchAction | undefined;
   labelKey: string | undefined;
+  resultSummary: string | undefined;
   status: "working" | "completed" | "failed";
   facts: ActionFacts;
 }
@@ -45,6 +46,7 @@ export function collectActions(events: ActionEvent[]): ConversationAction[] {
       afterMessageId: previous?.afterMessageId ?? (event.type === "action.started" ? event.afterMessageId : undefined),
       action: event.type === "action.started" ? event.action : previous?.action,
       labelKey: event.type === "action.started" ? event.labelKey : previous?.labelKey,
+      resultSummary: event.type === "action.completed" ? event.resultSummary : previous?.resultSummary,
       status: event.type === "action.started" ? "working" : event.type === "action.completed" ? "completed" : "failed",
       facts: { ...previous?.facts, ...event.details },
     });
@@ -80,7 +82,25 @@ const labels: Record<ResearchAction, [string, string]> = {
   construct_tasks: ["Preparing practice", "Practice prepared"],
   validate_tasks: ["Checking practice", "Practice checked"],
 };
+export function isCourseProgramAction(action: ConversationAction): boolean {
+  return ["generation.createCourse", "generation.reviseCurriculum", "generation.reviseLanguage"].includes(action.labelKey ?? "");
+}
+/** Only the server-authored curriculum progress sentences are public copy.
+ * Other tool summaries may contain private artifact identifiers or raw parameters. */
+export function actionResultSummary(action: ConversationAction): string | undefined {
+  if (action.status !== "completed" || !action.labelKey?.startsWith("generation.planCourse")) return;
+  const text = action.resultSummary?.trim();
+  if (!text || text.length > 1400 || !/^(Planned the learning route|Extended the learning route|Outlined the next part of|Checked sources and study estimates for|Checked the supplied curriculum answers|Translated (the programme's|the learning outcomes|the modules|the remaining curriculum questions))\b/.test(text)) return;
+  if (/[\u0000-\u001f]|\b[0-9a-f]{8}-[0-9a-f-]{27,}\b|\b(?:\w*Id|digest|revision|step_key|run_id|source_id)\s*[:=]/i.test(text)) return;
+  return text;
+}
 export function actionLabel(action: ConversationAction): string {
+  const summary = actionResultSummary(action);
+  if (summary?.startsWith("Planned the learning route")) return "Learning route and foundations";
+  if (summary?.startsWith("Extended the learning route")) return "Additional subjects";
+  if (summary?.startsWith("Outlined the next part")) return "Topics and learning outcomes";
+  if (summary?.startsWith("Checked sources")) return "Sources and study estimates";
+  if (summary?.startsWith("Checked the supplied")) return "Curriculum answers checked";
   const specific: Record<string, [string, string]> = {
     "generation.readArtifact": ["Reviewing the course", "Course reviewed"],
     "generation.createCourse": ["Creating the course program", "Course program created"],
@@ -88,6 +108,15 @@ export function actionLabel(action: ConversationAction): string {
     "generation.updateMetadata": ["Updating course details", "Course details updated"],
     "generation.reviseLanguage": ["Changing the course language", "Course language changed"],
     "generation.planCourse": ["Planning the course", "Course planned"],
+    "generation.planCourse.roadmap": ["Structuring the learning route", "Learning route structured"],
+    "generation.planCourse.outline": ["Outlining topics and outcomes", "Topics and learning outcomes"],
+    "generation.planCourse.research": ["Checking sources and study estimates", "Sources and study estimates checked"],
+    "generation.planCourse.questions": ["Checking curriculum answers", "Curriculum answers checked"],
+    "generation.planCourse.translate_header": ["Translating the goal and audience", "Goal and audience translated"],
+    "generation.planCourse.translate_outcomes": ["Translating learning outcomes", "Learning outcomes translated"],
+    "generation.planCourse.translate_modules": ["Translating course sections", "Course sections translated"],
+    "generation.planCourse.translate_questions": ["Translating curriculum questions", "Curriculum questions translated"],
+    "generation.planCourse.translate_assumptions": ["Translating prerequisites", "Prerequisites translated"],
   };
   const specificLabel = action.labelKey ? specific[action.labelKey] : undefined;
   if (specificLabel) return specificLabel[action.status === "completed" ? 1 : 0];

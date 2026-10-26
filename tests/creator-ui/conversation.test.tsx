@@ -57,7 +57,7 @@ describe("natural conversation presentation", () => {
     expect(active.match(/class="creator-responding"/g)).toHaveLength(1);
     expect(active).not.toContain("Unfurl is responding");
     const stopped = render([message("intro", "I’ll look into it.")], events, false, true);
-    expect(stopped).toContain("Work paused");
+    expect(stopped).toContain("Work interrupted");
     expect(stopped).not.toContain('class="creator-responding"');
     expect(stopped).not.toContain("In progress");
   });
@@ -72,7 +72,7 @@ describe("natural conversation presentation", () => {
     const events = [started(1, "old-step", "old"), started(2, "new-step", "new")];
     const working = render(messages, events, true);
     expect(working.match(/class="creator-responding"/g)).toHaveLength(1);
-    expect(working).toContain("Work paused");
+    expect(working).toContain("Work not completed");
     const responding = render(messages, [...events, completed(3, "new-step")], true);
     expect(responding).toContain("Unfurl is responding");
     expect(responding.match(/class="creator-responding"/g)).toHaveLength(1);
@@ -85,13 +85,45 @@ describe("natural conversation presentation", () => {
     const merged = mergeActionEvents(ids.sample, [second], [old, first, old]);
     expect(merged.map((event) => event.id)).toEqual([old.id, first.id, second.id]);
     const html = render([message("old", "Earlier"), message("new", "Continuing", "assistant", later)], merged, true, false, ids.attempt);
-    expect(html).toContain("Work paused");
+    expect(html).toContain("Work not completed");
     expect(html.match(/class="creator-responding"/g)).toHaveLength(1);
   });
   it("rejects executable and credential-bearing source links", () => {
     expect(sourceLink("javascript:alert(1)")).toBeUndefined();
     expect(sourceLink("https://name:secret@example.org")).toBeUndefined();
     expect(sourceLink("https://example.org/book")).toBe("https://example.org/book");
+  });
+  it("keeps a course parent in progress while its child shows the actual planning phase", () => {
+    const parent = { ...started(1, "course"), action: "build_outline", labelKey: "generation.createCourse" } as ActionEvent;
+    const roadmap = { ...started(2, "roadmap"), action: "build_outline", labelKey: "generation.planCourse" } as ActionEvent;
+    const done = { ...completed(3, "roadmap"), resultSummary: "Planned the learning route and its foundations." } as ActionEvent;
+    const outline = { ...started(4, "outline"), action: "build_outline", labelKey: "generation.planCourse.outline" } as ActionEvent;
+    const html = render([], [parent, roadmap, done, outline], true);
+    expect(html).toContain("Creating the course program</strong><span>In progress");
+    expect(html).toContain("Outlining topics and outcomes");
+    expect(html).toContain("Planned the learning route and its foundations.");
+    expect(html).not.toMatch(/Paused|Work paused|Course planned/);
+    expect(html.match(/class="creator-responding"/g)).toHaveLength(1);
+    const betweenParts = render([], [parent, roadmap, done], true);
+    expect(betweenParts).toContain("Creating the course program</strong><span>In progress");
+    expect(betweenParts).not.toContain("Unfurl is responding");
+  });
+  it("restores distinct saved topics and results for legacy planning events", () => {
+    const first = { ...started(1, "outline"), action: "build_outline", labelKey: "generation.planCourse" } as ActionEvent;
+    const firstDone = { ...completed(2, "outline"), resultSummary: "Outlined the next part of “Model evaluation and generalization”." } as ActionEvent;
+    const second = { ...started(3, "research"), action: "build_outline", labelKey: "generation.planCourse" } as ActionEvent;
+    const secondDone = { ...completed(4, "research"), resultSummary: "Checked sources and study estimates for “Compare validation methods”." } as ActionEvent;
+    const html = render([], [first, firstDone, second, secondDone]);
+    expect(html).toContain("Topics and learning outcomes");
+    expect(html).toContain("Model evaluation and generalization");
+    expect(html).toContain("Sources and study estimates");
+    expect(html).toContain("Compare validation methods");
+    expect(html).not.toContain("Course planned");
+  });
+  it("does not expose internal identifiers hidden inside a curriculum summary", () => {
+    const start = { ...started(1, "outline"), action: "build_outline", labelKey: "generation.planCourse.outline" } as ActionEvent;
+    const done = { ...completed(2, "outline"), resultSummary: "Outlined the next part of sourceId=private-source digest=private-hash." } as ActionEvent;
+    expect(render([], [start, done])).not.toMatch(/private-source|private-hash|sourceId=|digest=/);
   });
   it("keeps the run active after commentary completes and preserves it through reload", () => {
     const run: AgentTurnRun = { id: ids.request, ownerId: ids.actor, conversationId: ids.conversation, branchId: ids.sample,

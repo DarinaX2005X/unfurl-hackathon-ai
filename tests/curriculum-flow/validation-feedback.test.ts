@@ -4,6 +4,7 @@ vi.mock("server-only", () => ({}));
 import { CurriculumValidationFailure, CurriculumValidationFeedbackSchema } from "../../src/server/curriculum-research/validation-feedback";
 import * as composer from "../../src/server/curriculum-research/durable-composer";
 import * as parts from "../../src/server/curriculum-research/part-runtime";
+import * as instructionPolicy from "../../src/server/curriculum-research/instruction-policy";
 import { researchInstructions } from "../../src/server/curriculum-research/composer";
 import * as repository from "../../src/server/agent-turns/repository";
 import { executeAgentTool } from "../../src/server/agent-tools/executor";
@@ -90,6 +91,7 @@ it("sends typed feedback to the planner observation while public failure events 
   vi.spyOn(repository, "loadToolAuthority").mockResolvedValue({ ...target, artifactIds: new Set([ids.course]), sourceIds: new Set([ids.source]) });
   vi.spyOn(PostgresResearchRepository.prototype, "getSources").mockResolvedValue([data.source]);
   vi.spyOn(composer, "composeDurableCurriculum").mockRejectedValue(new CurriculumValidationFailure(feedback));
+  vi.spyOn(instructionPolicy, "resolveCurriculumInstructionPolicy").mockResolvedValue("legacy-v2");
   const snapshot = repository.ContextSnapshotSchema.parse({ kind: "context", index: 0, now, currentMessage: "Revise the saved course.",
     recentMessages: [], artifacts: [], sources: [], recentTools: [], languageIntent: null });
   const result = await executeAgentTool(test.context, { kind: "decision", index: 0, invocationId: ids.task, capturedDraft: data.draft,

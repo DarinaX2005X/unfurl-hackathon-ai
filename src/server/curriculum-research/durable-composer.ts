@@ -13,6 +13,7 @@ import { materializeClaimArtifacts, preparedAnswers, sourceInput, type PreparedC
 import { briefEvidenceDigest, moduleEvidenceDigest, outcomeEvidenceDigest, validateCurriculumEvidence } from "./validation";
 import { persistPartFacts, readCurriculumParts, runCurriculumPart } from "./part-runtime";
 import { CurriculumValidationFailure } from "./validation-feedback";
+import { STRICT_RESEARCH_LINK_INSTRUCTIONS, type CurriculumInstructionPolicy } from "./instruction-policy";
 import { ContentPageSchema, CourseHeaderSchema, QuestionBatchSchema, QuestionPartSchema, ResearchBatchSchema, ResearchPartSchema,
   RoadmapPageSchema, TranslatedAssumptionsSchema, TranslatedHeaderSchema, TranslatedModulesSchema, TranslatedOutcomesSchema,
   TranslatedQuestionsSchema, type QuestionPart, type ResearchPart, type RoadmapSection } from "./part-contracts";
@@ -20,6 +21,7 @@ import { ContentPageSchema, CourseHeaderSchema, QuestionBatchSchema, QuestionPar
 type CurriculumDecision = Extract<AgentDecision, { tool: "create_course" | "revise_curriculum" | "revise_language" }>;
 export interface DurableCompositionInput {
   invocationId: string; decision: CurriculumDecision; capturedDraft: CurriculumDraft | null; now: string; sources: SelectedSource[];
+  researchInstructionPolicy?: CurriculumInstructionPolicy;
 }
 interface ResearchScope { title: string; outcomes: Outcome[]; modules: ModuleOutline[]; sources: SelectedSource[] }
 const invalid = (): never => { throw new ProviderFailure("invalid_output"); };
@@ -209,6 +211,7 @@ export async function composeDurableCurriculum(context: RunContext, model: Model
 
   if (validateCurriculumOrder(draft).length) invalid();
   let researchIndex = 0;
+  const researchPartInstructions = "Research ONLY the supplied outcome and module records. The rest of this curriculum is saved separately. Return exactly one outcomeEvidence entry per supplied outcome ID and one moduleEstimates entry per supplied module ID, no other target IDs. Each outcome needs claims tied to exact uniquely occurring quotes in the supplied source blocks. Claims may refer only to these outcome IDs. An estimates-only batch can have no claims. Keep all rationale/assumptions/limitations in contentLanguage. The estimate range must be justified and include that module's displayed estimatedStudyMinutes. Do not rewrite the curriculum or omit a target to fit the response.";
   for (const scope of scopes) {
     const outcomeBatches = chunks(scope.outcomes, 4), moduleBatches = chunks(scope.modules, 4);
     for (let batchIndex = 0; batchIndex < Math.max(outcomeBatches.length, moduleBatches.length); batchIndex++) {
@@ -221,7 +224,8 @@ export async function composeDurableCurriculum(context: RunContext, model: Model
         request: { goal: draft.goal, audience: draft.audience, contentLanguage: draft.contentLanguage, scope: scope.title,
           outcomes, modules, moduleOutcomeTitles: draft.outcomes.filter((outcome) => moduleOutcomeIds.has(outcome.id)).map(({ id, title }) => ({ id, title })),
           sources: sourceInput(scope.sources) }, outputSchema: ResearchBatchSchema, resultSchema: ResearchPartSchema,
-        instructions: "Research ONLY the supplied outcome and module records. The rest of this curriculum is saved separately. Return exactly one outcomeEvidence entry per supplied outcome ID and one moduleEstimates entry per supplied module ID, no other target IDs. Each outcome needs claims tied to exact uniquely occurring quotes in the supplied source blocks. Claims may refer only to these outcome IDs. An estimates-only batch can have no claims. Keep all rationale/assumptions/limitations in contentLanguage. The estimate range must be justified and include that module's displayed estimatedStudyMinutes. Do not rewrite the curriculum or omit a target to fit the response.",
+        instructions: input.researchInstructionPolicy === "research-links-v1" ? `${researchPartInstructions}\n${STRICT_RESEARCH_LINK_INSTRUCTIONS}` : researchPartInstructions,
+        ...(input.researchInstructionPolicy === "research-links-v1" ? { instructionVersion: "curriculum-parts-v2:research-links-v1" as const } : {}),
         completedSummary: `Checked sources and study estimates for “${outcomes[0]?.title ?? modules[0]!.title}”.`,
         commit: async (tx, output, step) => {
           requireExactIds(output.outcomeEvidence.map((entry) => entry.outcomeId), outcomes.map((entry) => entry.id));

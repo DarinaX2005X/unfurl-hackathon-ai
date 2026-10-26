@@ -5,7 +5,7 @@ import { ArrowDown, Check, ChevronRight, Copy, Pencil, RotateCcw, CircleAlert } 
 import { Button, IconButton } from "@/components/ui";
 import type { ActionEvent } from "@/domain/generation";
 import type { LocalMessage } from "@/domain/chat";
-import { actionFactLines, actionLabel, collectActions, conversationTimeline, sourceLink, type ConversationAction } from "./conversation-timeline";
+import { actionFactLines, actionLabel, actionResultSummary, collectActions, conversationTimeline, isCourseProgramAction, sourceLink, type ConversationAction } from "./conversation-timeline";
 
 export interface ConversationProps {
   messages: LocalMessage[];
@@ -31,8 +31,10 @@ export function Conversation({ messages, actionEvents = [], currentRunId = null,
   const [copyState, setCopyState] = useState<{ id: string; status: "copied" | "error" } | null>(null);
   const latest = messages.at(-1);
   const timeline = conversationTimeline(messages, actionEvents);
-  const lastAction = collectActions(actionEvents).filter((action) => action.runId === currentRunId).at(-1);
-  const activeActionId = pending && !interrupted && lastAction?.status === "working" ? lastAction.id : null;
+  const runActions = collectActions(actionEvents).filter((action) => action.runId === currentRunId);
+  const lastAction = runActions.at(-1);
+  const activeAction = lastAction?.status === "working" ? lastAction : [...runActions].reverse().find((action) => action.status === "working" && isCourseProgramAction(action));
+  const activeActionId = pending && !interrupted ? activeAction?.id ?? null : null;
   const updateKey = `${latest?.id}:${latest?.text.length}:${latest?.delivery}:${actionEvents.length}:${pending}`;
   useEffect(() => {
     const area = scrollRef.current;
@@ -55,7 +57,7 @@ export function Conversation({ messages, actionEvents = [], currentRunId = null,
     }}><div className="creator-conversation__content">
       {(hasEarlierActivity || earlierActivityError) && <div className="creator-conversation__earlier"><Button type="button" variant="quiet" size="compact" pending={earlierActivityPending} disabled={!hasEarlierActivity} onClick={onLoadEarlierActivity}>Earlier activity</Button>{earlierActivityError && <span role="status">Earlier activity couldn’t be loaded.</span>}</div>}
       {timeline.map((item) => {
-        if (item.kind === "actions") return <ActionGroup key={item.id} actions={item.actions} activeActionId={activeActionId} />;
+        if (item.kind === "actions") return <ActionGroup key={item.id} actions={item.actions} activeActionId={activeActionId} currentRunId={currentRunId} pending={pending} interrupted={interrupted} />;
         const message = item.message;
         return <article className={`creator-message creator-message--${message.role}${message.status === "streaming" ? " creator-message--streaming" : ""}`} key={message.id}>
         <h2>{message.role === "user" ? "You" : "Unfurl"}</h2>
@@ -84,28 +86,33 @@ export function Conversation({ messages, actionEvents = [], currentRunId = null,
 export function ActionHistory({ events, interrupted = false }: { events: ActionEvent[]; interrupted?: boolean }) {
   const actions = collectActions(events);
   const last = actions.at(-1);
-  return <ActionGroup actions={actions} activeActionId={!interrupted && last?.status === "working" ? last.id : null} />;
+  return <ActionGroup actions={actions} activeActionId={!interrupted && last?.status === "working" ? last.id : null} currentRunId={last?.runId ?? null} pending={!interrupted} interrupted={interrupted} />;
 }
 
 function RespondingMark() {
   return <span className="creator-responding" aria-hidden="true"><span /><span /><span /></span>;
 }
 
-function ActionGroup({ actions, activeActionId }: { actions: ConversationAction[]; activeActionId: string | null }) {
+function ActionGroup({ actions, activeActionId, currentRunId, pending, interrupted }: { actions: ConversationAction[]; activeActionId: string | null; currentRunId: string | null; pending: boolean; interrupted: boolean }) {
   const current = actions.find((action) => action.id === activeActionId);
-  const working = Boolean(current);
+  const ongoing = actions.find((action) => action.status === "working" && action.runId === currentRunId && pending && !interrupted && isCourseProgramAction(action));
+  const working = Boolean(current || ongoing);
   const failed = actions.some((action) => action.status === "failed");
   const stopped = !working && actions.some((action) => action.status === "working");
   const last = actions.at(-1);
   if (!last) return null;
-  const title = working && current ? actionLabel(current) : stopped ? "Work paused" : failed ? "Some work couldn’t finish" : actions.length === 1 ? actionLabel(last) : `${actions.length} steps completed`;
+  const wasInterrupted = interrupted && actions.some((action) => action.runId === currentRunId);
+  const title = working ? actionLabel(current ?? ongoing!) : stopped ? wasInterrupted ? "Work interrupted" : "Work not completed" : failed ? "Some work couldn’t finish" : actions.length === 1 ? actionLabel(last) : "Completed activity";
   return <details className={`creator-actions${working ? " creator-actions--working" : ""}`}>
-    <summary><span className="creator-actions__state" aria-hidden="true">{working ? <RespondingMark /> : failed || stopped ? <CircleAlert size={16} /> : <Check size={16} />}</span><span className="creator-actions__label" role={working ? "status" : undefined}>{title}</span><ChevronRight className="creator-actions__chevron" size={16} aria-hidden="true" /><span className="creator-actions__hint">Details</span></summary>
+    <summary><span className="creator-actions__state" aria-hidden="true">{current ? <RespondingMark /> : ongoing ? "…" : failed || stopped ? <CircleAlert size={16} /> : <Check size={16} />}</span><span className="creator-actions__label" role={working ? "status" : undefined}>{title}</span><ChevronRight className="creator-actions__chevron" size={16} aria-hidden="true" /><span className="creator-actions__hint">Details</span></summary>
     <ol>{actions.map((action) => {
       const facts = actionFactLines(action.facts);
       const sources = [...(action.facts.source ? [action.facts.source] : []), ...(action.facts.sources ?? [])];
-      const status = action.status === "working" ? action.id === activeActionId ? "In progress" : "Paused" : action.status === "completed" ? "Complete" : "Couldn’t finish";
+      const summary = actionResultSummary(action);
+      const inProgress = action.id === activeActionId || (pending && !interrupted && action.runId === currentRunId && isCourseProgramAction(action));
+      const status = action.status === "working" ? inProgress ? "In progress" : interrupted && action.runId === currentRunId ? "Interrupted" : "No completion recorded" : action.status === "completed" ? "Complete" : "Couldn’t finish";
       return <li key={action.id}><div className="creator-actions__heading"><strong>{actionLabel(action)}</strong><span>{status}</span></div>
+        {summary && <p>{summary}</p>}
         {action.facts.query && <p className="creator-actions__query">{action.facts.query}</p>}
         {facts.length > 0 && <p>{facts.join(" · ")}</p>}
         {sources.length > 0 && <ul className="creator-actions__sources">{sources.map((source, index) => {

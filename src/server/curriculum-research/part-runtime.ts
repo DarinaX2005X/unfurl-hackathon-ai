@@ -45,6 +45,7 @@ export async function readCurriculumParts(context: RunContext, invocationId: str
 /** Each paid part commits independently. The executor yields before a second new effect. */
 export async function runCurriculumPart<T, R>(context: RunContext, model: ModelPort, input: {
   invocationId: string; phase: string; index: number; request: unknown; instructions: string;
+  instructionVersion?: "curriculum-parts-v2:research-links-v1";
   outputSchema: z.ZodType<T>; resultSchema: z.ZodType<R>;
   saved: ReadonlyMap<string, SavedCurriculumPart>;
   completedSummary: string;
@@ -75,13 +76,13 @@ export async function runCurriculumPart<T, R>(context: RunContext, model: ModelP
       const started = (await tx.query(`SELECT id FROM unfurl.agent_turn_events WHERE run_id=$1 AND type='action.started'
         AND event->>'invocationId'=$2 LIMIT 1`, [target.runId, actionId])).rows[0];
       if (!started) await appendChatEvent(tx, target, { type: "action.started", invocationId: actionId,
-        action: "build_outline", labelKey: "generation.planCourse" });
+        action: "build_outline", labelKey: `generation.planCourse.${input.phase}` });
     },
     effect: async (step): Promise<JsonValue> => {
       const budget = step.budgetOperation(input.phase);
       try {
         const response = await model.generateStructured({ operationId: budget.logicalOperationId, purpose: "curriculum",
-          instructionVersion: "curriculum-parts-v2", trustedInstructions: `${researchInstructions}\n${input.instructions}`,
+          instructionVersion: input.instructionVersion ?? "curriculum-parts-v2", trustedInstructions: `${researchInstructions}\n${input.instructions}`,
           untrustedInput: jsonValue(input.request), model: MODEL_ID, maxOutputTokens: 16384, executionProfile: "longform_curriculum",
           deadlineAt: step.deadlineAt, budget, schema: input.outputSchema, schemaId: `curriculum_${input.phase}`, schemaVersion: 2,
         }, step.signal);

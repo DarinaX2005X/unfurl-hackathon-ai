@@ -17,6 +17,7 @@ import type { RunContext, StepEffectContext } from "../runs/ports";
 import { preparedCurriculumOutput, PreparedCurriculumOutputSchema, type SelectedSource } from "../curriculum-research/composer";
 import { composeDurableCurriculum } from "../curriculum-research/durable-composer";
 import { CurriculumValidationFailure, CurriculumValidationFeedbackSchema } from "../curriculum-research/validation-feedback";
+import { resolveCurriculumInstructionPolicy } from "../curriculum-research/instruction-policy";
 import { commitResearchedRevision } from "../curriculum-research/persistence";
 import { createResearchedCourse, curriculumConflict, readArtifact, requireCourseDraft, requireDraft } from "../curricula/repository";
 import { editMetadataInTransaction, readAuthoringSnapshot } from "../curricula/service";
@@ -121,8 +122,9 @@ export async function executeAgentTool(context: RunContext, receipt: AgentDecisi
   if (!receipt.preparationError && ["create_course", "revise_curriculum", "revise_language"].includes(decision.tool)) {
     try {
       if (decision.tool === "create_course" || decision.tool === "revise_curriculum" || decision.tool === "revise_language") {
+        const researchInstructionPolicy = await resolveCurriculumInstructionPolicy(context, receipt.invocationId);
         composed = await composeDurableCurriculum(context, dependencies.model, { invocationId: receipt.invocationId,
-          decision, capturedDraft: receipt.capturedDraft, now: snapshot.now, sources });
+          decision, capturedDraft: receipt.capturedDraft, now: snapshot.now, sources, researchInstructionPolicy });
       }
     } catch (error) {
       if (error instanceof ProviderFailure && error.code === "invalid_output") compositionFailure = { kind: "failure", code: error.code,
