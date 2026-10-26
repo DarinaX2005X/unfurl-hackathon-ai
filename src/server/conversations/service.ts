@@ -58,7 +58,8 @@ export function createConversationService(options: ServiceOptions = {}) {
     },
     get(actor: Actor, id: string) {
       input(IdSchema, id);
-      return transactions.actor(actor, async (tx) => repository.readDetail(tx, actor, await repository.requireConversation(tx, actor, id)));
+      // Build history reads private validation records; authorize the owner before projecting them.
+      return transactions.execution(async (tx) => repository.readDetail(tx, actor, await repository.requireConversation(tx, actor, id)));
     },
     actions(actor: Actor, id: string, query: ConversationActionQuery = {}) {
       input(IdSchema, id);
@@ -133,7 +134,7 @@ export function createConversationService(options: ServiceOptions = {}) {
         });
         await tx.query("INSERT INTO unfurl.local_imports (actor_id, source_id, conversation_id, source_digest) VALUES ($1, $2, $3, $4)", [actor.id, body.sourceId, conversation.conversation.id, digest]);
         return { status: 201, data: { sourceId: body.sourceId, conversation } };
-      });
+      }, true);
       return checkReplayedConversation(actor, receipt.data.conversation.conversation.id, receipt);
     },
     async sendMessage(actor: Actor, value: CloudSendMessageInput, key: string) {
