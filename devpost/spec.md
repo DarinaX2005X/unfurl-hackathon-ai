@@ -238,4 +238,4 @@ Functional acceptance additionally requires an actual generated course, independ
 
 ## Decisions and Open Issues
 
-Supabase Auth/PostgreSQL, Vercel Workflow/Sandbox, OpenRouter, the typed activity registry, and server-side provider accounting are implemented architectural choices. Final live acceptance and reproducible capability setup must be reconciled with the [checklist](checklist.md). No project license is selected here.
+Supabase Auth/PostgreSQL, Vercel Workflow/Sandbox, OpenRouter, the typed activity registry, and server-side provider accounting are implemented architectural choices. Final live acceptance and reproducible capability setup must be reconciled with the [checklist](checklist.md). The project is released under the MIT License.
