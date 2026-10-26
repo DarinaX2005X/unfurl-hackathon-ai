@@ -86,7 +86,6 @@ function CourseDetailContent({ slug, shareToken, services }: Source & { services
       <header className="uf-course-detail__hero"><div className="uf-course-detail__intro"><h1>{course.title}</h1>
         <div className="uf-course-detail__byline">{course.publisher && <span>Published by {course.publisher}</span>}<span>Version {ready.version.number}</span></div>
         <p>{course.summary}</p>
-        {course.release && <p className="uf-course-detail__release-note">{course.release.notice}</p>}
         <dl className="uf-course-detail__facts"><div><dt>Course language</dt><dd>{languageName(course.contentLanguage)}</dd></div><div><dt>{course.release ? "Available study time" : "Study time"}</dt><dd>{studyTime(course.estimatedStudyMinutes)}</dd></div><div><dt>{course.release ? "Available content" : "Course content"}</dt><dd>{course.moduleCount} {course.release ? (course.moduleCount === 1 ? "section" : "sections") : (course.moduleCount === 1 ? "module" : "modules")}, {course.lessonCount} {course.lessonCount === 1 ? "lesson" : "lessons"}</dd></div></dl>
         <div className="uf-course-detail__primary-actions">{ready.enrollmentId ? <LinkButton href={routes.learn(ready.enrollmentId)}>Continue course</LinkButton>
           : <LinkButton href={startCoursePath(course.id, ready.version.id, shareToken)}>Start this course</LinkButton>}

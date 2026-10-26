@@ -56,7 +56,7 @@ export async function releaseOfficialFirstSection(tx: DbTransaction, raw: Offici
   const existingRow = existing[0]!;
   if (existingRow.release_metadata) {
     const version = courseVersionFromRow(existingRow), metadata = previewFromVersion(existingRow.release_metadata, version)!;
-    if (version.state !== "ready" || metadata.completedStepId !== input.completedStepId || existingRow.visibility !== "public"
+    if (metadata.kind !== "official-section-preview-v1" || version.state !== "ready" || metadata.completedStepId !== input.completedStepId || existingRow.visibility !== "public"
       || existingRow.published_version_id !== version.id || input.applyDigest && input.applyDigest !== metadata.releaseDigest) return reject("existing release differs");
     return previewReport({ run: { id: input.runId, status: existingRow.source_status }, course: { id: version.courseId, slug: existingRow.slug }, version } as Pick<ApprovedBuildBinding, "run" | "course" | "version">, metadata, apply, true);
   }
@@ -88,7 +88,7 @@ export async function releaseOfficialFirstSection(tx: DbTransaction, raw: Offici
     sourceRunId: binding.run.id, approvalId: binding.approval.id, approvalDigest: binding.approval.contentDigest,
     courseVersionId: version.id, completedStepId: input.completedStepId, moduleDigest: prepared.moduleDigest,
     presentation: { kind: "preview" as const, availableModuleIds: [prepared.moduleId], plannedModules: binding.draft.modules,
-      notice: `This course has a ${binding.draft.modules.length}-section program. The first section was generated entirely with Unfurl and is available to explore. The remaining sections have not been generated yet because of time and budget constraints.`,
+      notice: "The first section is available to study. The rest of the curriculum is planned.",
       lessons: lessons.map((lesson) => ({ id: lesson.id, moduleId: lesson.moduleId, title: lesson.title,
         tasks: lesson.taskIds.map((id) => { const task = tasks.find(({ candidate }) => candidate.task.id === id)?.candidate.task;
           if (!task) return reject("lesson task is absent"); return { id: task.id, instruction: task.instruction, mechanicId: task.mechanicId }; }) })) } };

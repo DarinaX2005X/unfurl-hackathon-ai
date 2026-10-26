@@ -26,6 +26,18 @@ import { advanceReadableSources,ReadOutputSchema,ReadCheckpointSchema } from "./
 import { advanceReadableSourceParts,type SelectedReadPart } from "./source-selection-parts";
 export { ReadCheckpointSchema } from "./source-selection";
 
+/** A repair researches reviewed gaps; the resulting knowledge still covers the whole module. */
+export function assertResearchPlanCoverage(plan: z.infer<typeof ModuleResearchPlanSchema>, moduleId: string,
+  outcomeIds: readonly string[], reviews?: readonly KnowledgeCoverageReview[]): void {
+  const invalid = (): never => { throw new ProviderFailure("invalid_output"); };
+  if (reviews && (reviews.length !== outcomeIds.length || new Set(reviews.map(review => review.outcomeId)).size !== reviews.length ||
+      reviews.some(review => !outcomeIds.includes(review.outcomeId)))) return invalid();
+  const requiredOutcomeIds = reviews ? reviews.filter(review => review.checks.some(check => check.status !== "passed")).map(review => review.outcomeId) : outcomeIds;
+  if (plan.moduleId !== moduleId || new Set(plan.queries.map(query => query.key)).size !== plan.queries.length ||
+      plan.queries.some(query => query.outcomeIds.some(id => !outcomeIds.includes(id))) ||
+      requiredOutcomeIds.some(id => !plan.queries.some(query => query.outcomeIds.includes(id)))) return invalid();
+}
+
 /** Returns null after one new durable step; callers yield before attempting another external effect. */
 export async function advanceModuleResearch(input: {
   context: RunContext; binding: ApprovedBuildBinding; index: StageIndex; moduleId: string;
@@ -64,7 +76,7 @@ export async function advanceModuleResearch(input: {
     return null;
   }
   const plan = ModuleResearchPlanSchema.parse(planStep.result.data);
-  if (plan.moduleId !== moduleId || new Set(plan.queries.map((q) => q.key)).size !== plan.queries.length || plan.queries.some((q) => q.outcomeIds.some((id) => !section.outcomeIds.includes(id))) || section.outcomeIds.some((id) => !plan.queries.some((q) => q.outcomeIds.includes(id)))) throw new ProviderFailure("invalid_output");
+  assertResearchPlanCoverage(plan, moduleId, section.outcomeIds, revision?.reviews.map(item => item.review));
   const searches = [];
   for (const query of plan.queries) {
     const key = `${prefix}/search/${query.key}`, existing = await loadStage(context, binding, index, key, SearchResultSchema);

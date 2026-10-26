@@ -51,7 +51,7 @@ describe("official course preview", () => {
     expect(container.textContent).toContain("Published by Unfurl");
     expect(container.textContent).toContain("Available content1 section, 1 lesson");
     expect(container.textContent).toContain("Available study time30 min");
-    expect(container.textContent).toContain(value.release!.notice);
+    expect(container.textContent).not.toContain(value.release!.notice);
     expect(container.textContent).toContain("Inspect real validation evidence");
     expect(container.textContent).toContain("Compare the two error curves and explain your choice.");
     const start = [...container.querySelectorAll("a")].find((link) => link.textContent === "Start this course");
