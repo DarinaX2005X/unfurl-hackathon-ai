@@ -39,6 +39,7 @@ import { checkpointJson, jsonCheckpointSchema, generationDigests, loadStage, loa
 import { materializeCourse, loadVerifiedModule, findReusableCompletedModule } from "@/server/course-materialization/course";
 import { CompletedModuleCheckpointSchema, type CompletedModuleCheckpoint } from "./completion";
 import { COMPLETE_TASK_AUTHORING_CONTRACT_POLICY } from "./authored-output-contract";
+import { TASK_PRIVATE_IDENTITY_POLICY } from "./task-authoring-identities";
 
 import { CandidateResultSchema, advanceTaskBatch, advanceCandidateBatch, advanceCasesBatch, advanceReviewBatch, plannedTaskBatches, loadLaterBatchCandidates } from "./newbatch-stages";
 const ValidationStageSchema = z.object({ kind: z.literal("course.task.validation"), references: TaskValidationReferencesSchema,
@@ -71,6 +72,8 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
           async commit(tx) { return { kind: "course.generation.policy" as const, version: "course-generation-batch-v2" as const, batchSize: 5 as const, maxOutputTokens: 16384 as const, approvalDigest: binding.approval.contentDigest, modelPolicy: await readActiveModelPolicy(tx),
             planPagePolicy: "server-plan-identities-v2" as const, knowledgeCoveragePolicy: "approved-scope-v1" as const,searchPolicy:SEARCH_HEADROOM_POLICY,
             taskAuthoringContractPolicy: COMPLETE_TASK_AUTHORING_CONTRACT_POLICY,
+            taskIdentityPolicy: TASK_PRIVATE_IDENTITY_POLICY,
+            sourceClaimIdentityPolicy: "server-source-identities-v1" as const,
             readerCapabilities: currentReaderCapabilities(),sourceSelectionPolicy:"source-selection-v2" as const }; } });
         return { status: "continue" };
       }
@@ -108,11 +111,13 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
           async commit() { return { kind: "course.module.repair" as const, issues: checkpointJson(issues) }; } });
         let researched = await advanceModuleResearch({ context, binding, index, moduleId: outline.id, model, research: dependencies.research, priorKnowledge: completed.map((entry) => entry.module.knowledge), batchingV2,
           ...(policy?.knowledgeCoveragePolicy ? { knowledgeCoveragePolicy: policy.knowledgeCoveragePolicy } : {}),...(policy?.searchPolicy?{searchPolicy:policy.searchPolicy}:{}),
+          ...(policy?.sourceClaimIdentityPolicy ? { sourceClaimIdentityPolicy: policy.sourceClaimIdentityPolicy } : {}),
           ...(policy?.sourceSelectionPolicy?{sourceSelectionPolicy:policy.sourceSelectionPolicy,readerCapabilities:policy.readerCapabilities!}:{}) });
         if (!researched) return { status: "continue" };
         if (policy?.knowledgeCoveragePolicy === "approved-scope-v1") {
           researched = await advanceKnowledgeCoverage({ context, binding, index, source: researched, round, correction: moduleCorrection,
             model, research: dependencies.research, priorKnowledge: completed.map(entry => entry.module.knowledge),...(policy.searchPolicy?{searchPolicy:policy.searchPolicy}:{}),
+            ...(policy.sourceClaimIdentityPolicy ? { sourceClaimIdentityPolicy: policy.sourceClaimIdentityPolicy } : {}),
             ...(policy.sourceSelectionPolicy?{sourceSelectionPolicy:policy.sourceSelectionPolicy,readerCapabilities:policy.readerCapabilities!}:{}) });
           if (!researched) return { status: "continue" };
         }
@@ -137,6 +142,8 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
           if (batchingV2 && currentBatch && !await advanceTaskBatch({ context, binding, index, model, moduleId: outline.id, prefix,
             batchKey: `${prefix}/batch/v2/${slot.id}/0`, slots: currentBatch,
             ...(policy?.taskAuthoringContractPolicy ? { taskAuthoringContractPolicy: policy.taskAuthoringContractPolicy } : {}),
+            ...(policy?.taskIdentityPolicy ? { taskIdentityPolicy: policy.taskIdentityPolicy,
+              passedPreviousTasks: [...completed.flatMap((entry) => entry.module.tasks.map(({ candidate }) => candidate)), ...authoredTasks] } : {}),
             previousTasks: [...completed.flatMap((entry) => entry.module.tasks.map(({ candidate }) => candidate)), ...authoredTasks],
             knowledge: researched.knowledge, knowledgeStepId: researched.step.id, facts: researched.facts })) return { status: "continue" };
           const allPreviousTasks = [...completed.flatMap((entry) => entry.module.tasks.map(({ candidate }) => candidate)), ...authoredTasks];
@@ -151,6 +158,7 @@ export function createCourseGenerationHandler(dependencies: CourseGenerationDepe
                 await advanceCandidateBatch({ context, binding, index, model, moduleId: outline.id, prefix,
                   batchKey: `${prefix}/batch/v2/repair/${slot.id}/${attempt}`, slots: [slot], attempt,
                   ...(policy?.taskAuthoringContractPolicy ? { taskAuthoringContractPolicy: policy.taskAuthoringContractPolicy } : {}),
+                  ...(policy?.taskIdentityPolicy ? { taskIdentityPolicy: policy.taskIdentityPolicy, passedPreviousTasks: allPreviousTasks } : {}),
                   previousTasks: [...allPreviousTasks, ...await loadLaterBatchCandidates({ context, binding, index, prefix, taskId: slot.id,
                     slots: taskBatches.find((batch) => batch.some((entry) => entry.id === slot.id))! })],
                   knowledge: researched.knowledge, knowledgeStepId: researched.step.id, facts: researched.facts, correction });

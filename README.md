@@ -22,9 +22,9 @@ A course has a shared structure; each learner has their own saved progress, evid
   <img src="docs/images/readme-node.svg" alt="Node.js 22.x" width="132" height="36">
 </p>
 
-![A real Unfurl conversation researching and revising an AI curriculum, with the saved course program beside it](docs/images/course-authoring.png)
+[![An approved AI Engineering program beside its saved conversation and earlier build activity](docs/images/course-program.png)](docs/images/course-program.png)
 
-*Research and a saved AI curriculum in an actual authoring conversation. The screenshot shows a draft before detailed course construction.*
+*The approved program stays beside the conversation, with earlier build activity available for review.*
 
 ## Contents
 
@@ -52,6 +52,10 @@ Start with an outcome: “I want to understand how machine learning works, then 
 A new conversation is created on the first send, not while an unsent first message is being typed. Returning to an existing chat restores its saved messages and writing. Stop, retry, and revision operations preserve the identity of the work they affect.
 
 Refine the sample goal with a constraint such as “I know basic Python, but need the mathematics explained through experiments.” Inspect the resulting prerequisites and section order, then ask for a targeted change before approval. The same flow applies to another subject or learning language.
+
+[![The course program editor showing the title, learning goal, audience, and Save program action](docs/images/edit-program.png)](docs/images/edit-program.png)
+
+*Edit the program's title, learning goal, and audience. Changes are checked against the latest saved version before they are applied.*
 
 ## Practice that fits the subject
 
@@ -81,27 +85,45 @@ The server awards **25 XP** for an independently correct eligible task or **10 X
 
 Creators can keep a course private, share a particular version through a revocable link, or publish an eligible ready version. A recipient starts their own enrollment and cannot see the creator's answers. New course versions do not silently rewrite an existing learner's work.
 
+[![The library showing a private AI Engineering course with Building status and a View in chat action](docs/images/course-library.png)](docs/images/course-library.png)
+
+*A created course appears in the library while its content is being built. View in chat returns to its saved conversation.*
+
 The **Try** entry opens a selected public course in the learning workspace and preserves that destination through sign-in. Each learner starts with their own progress. The configured course and version must remain published and accessible.
 
 ## How the system works
 
 The application separates conversation, curriculum approval, course construction, and learning. A successful agent reply does not imply a ready course; only validated, atomically released content can be studied.
 
+### Building a course
+
 ```mermaid
-flowchart LR
-    Goal[Learning goal] --> Chat[Conversation and source research]
-    Chat --> Program[Editable curriculum]
-    Program --> Approval[Approval of a saved revision]
-    Approval --> Knowledge[Section research and coverage checks]
-    Knowledge --> Lessons[Lesson and activity construction]
-    Lessons --> Validation[Cases, evaluators and content review]
-    Validation --> Course[Ready course version]
-    Course --> Enrollment[Personal enrollment]
-    Enrollment --> Action[Answer or recorded activity]
-    Action --> Feedback[Evaluation and evidence]
-    Feedback --> Route[Progress, XP and next steps]
-    Route --> Enrollment
+flowchart TD
+    Goal[Learning goal] --> Program[Researched program]
+    Program --> Approval[Approve a saved revision]
+    Approval --> Build[Generate lessons and practice]
+    Build --> Review[Validate content and tasks]
+    Review --> Course[Ready course version]
 ```
+
+Source research informs the program and each section. The build saves its work between steps, and validation checks the proposed content before a version becomes available to learners.
+
+### Learning from the course
+
+```mermaid
+flowchart TD
+    Activity[Current activity] --> Answer[Saved answer or action]
+    Answer --> Feedback[Evaluation and feedback]
+    Feedback --> Progress[Update learning evidence]
+    Progress --> Next{Next step}
+    Next -->|Continue| Activity
+    Next -->|Accept support| Support[Targeted practice]
+    Support --> Activity
+```
+
+Each enrollment stays attached to its course version. Feedback updates the learner's evidence and eligible XP; additional support has a route back to the main program.
+
+### Services and responsibilities
 
 - **Next.js and React** provide the interface and ordinary authenticated HTTP endpoints. Typed events and snapshots reconnect long-running work to the conversation.
 - **Supabase Auth and PostgreSQL** store identity, conversations, course versions, attempts, evaluations, progress, and execution records. Mutations check the current actor, ownership, revision, and idempotency key.
@@ -212,6 +234,6 @@ Product documents: [scope](devpost/scope.md), [requirements](devpost/prd.md), [t
 
 Planning follows the applicable [Devpost Learn Skill Pack](https://github.com/challengepost/learn-ai-basics) scope, product-requirements, and technical-specification structures.
 
-Unfurl uses Next.js, React, TypeScript, Zod, Supabase, Vercel Workflow and Sandbox, and OpenRouter. Radix supports dialogs and menus, Lucide supplies icons, Fontsource supplies Manrope, and unpdf provides PDF text extraction. The logo and unfolding course illustration are authored product assets; the authoring image is a real application screenshot.
+Unfurl uses Next.js, React, TypeScript, Zod, Supabase, Vercel Workflow and Sandbox, and OpenRouter. Radix supports dialogs and menus, Lucide supplies icons, Fontsource supplies Manrope, and unpdf provides PDF text extraction. The logo and unfolding course illustration are authored product assets; the screenshots show actual application states.
 
 Third-party dependencies retain their own licenses. See [third-party notices](THIRD_PARTY_NOTICES.md) for the adapted Kimi chat-template material. No project license is declared here.

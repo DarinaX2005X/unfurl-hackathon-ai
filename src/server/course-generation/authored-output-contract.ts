@@ -6,6 +6,7 @@ import { PYTHON_RUNTIME_PROFILE } from "@/domain/mechanic-families/v3/python";
 import { PYTHON_PROFILE_LIMITS } from "@/server/execution/python/profile";
 import { getServerMechanic } from "@/server/mechanics/registry";
 import { TaskDesignSchema } from "./contracts";
+import { TASK_PRIVATE_IDENTITY_POLICY, taskIdentityOutputContract, type TaskPrivateIdentityPolicy } from "./task-authoring-identities";
 
 /** Additive generation policy. The historical mechanic catalog and its digest remain unchanged. */
 export const COMPLETE_TASK_AUTHORING_CONTRACT_POLICY = "complete-task-contract-v1" as const;
@@ -25,7 +26,7 @@ const pythonExecution = {
  * JSON Schema cannot express every cross-field join; those are explicit below and
  * remain enforced by the existing validators, never waived by this authoring aid.
  */
-export function getCompleteTaskAuthoringContract(id: string, version: number) {
+export function getCompleteTaskAuthoringContract(id: string, version: number, identityPolicy?: TaskPrivateIdentityPolicy) {
   const registration = getServerMechanic(id, version);
   if (!registration) throw new Error(`Unsupported mechanic: ${id}@${version}`);
   const descriptor = registration.descriptor;
@@ -52,7 +53,14 @@ export function getCompleteTaskAuthoringContract(id: string, version: number) {
     policy: COMPLETE_TASK_AUTHORING_CONTRACT_POLICY,
     mechanicIdentity: { mechanicId: descriptor.id, mechanicVersion: descriptor.version, responseSchemaVersion: descriptor.responseSchemaVersion },
     // Output exposes concrete validated data behind the family preflight/normalization pipes.
-    authoredTaskSchema: z.toJSONSchema(authoredTask, { io: "output" }),
+    authoredTaskSchema: identityPolicy === TASK_PRIVATE_IDENTITY_POLICY
+      ? taskIdentityOutputContract(z.toJSONSchema(authoredTask, { io: "output" })) : z.toJSONSchema(authoredTask, { io: "output" }),
+    ...(identityPolicy ? { privateIdentityPolicy: identityPolicy, privateIdentityRules: {
+      evidenceGroupId: "Use {kind:'local',key:'meaningful-local-key'} for a new evidence group. Reuse the same local key only when those tasks intentionally share evidence. Use {kind:'existing',id:'...'} only for an ID listed in taskIdentityContext.existingEvidenceGroupIds.",
+      freshEvaluatorIds: "Set rubricId, every authored rubric.id/basisRubric.id/explanationRubric.id, and both testSetId fields to null. The server creates and binds these private UUIDs.",
+      calibrationSetId: "Always null. No calibration set is provided by this authoring operation.",
+      preservedReferences: "Copy existing task, outcome, sourceClaim and design references exactly. Never replace those UUIDs with local keys or null.",
+    } } : {}),
     crossFieldConstraints: {
       identity: [
         "task.id = slot.id = privateTask.taskId = design.taskId",
@@ -87,10 +95,12 @@ export function getCompleteTaskAuthoringContract(id: string, version: number) {
 }
 
 /** No property at all for historical captures: absence preserves paid request bytes. */
-export function taskAuthoringContractMaterial(policy: TaskAuthoringContractPolicy | undefined, id: string, version: number) {
-  return policy === COMPLETE_TASK_AUTHORING_CONTRACT_POLICY ? { authoredOutputContract: getCompleteTaskAuthoringContract(id, version) } : {};
+export function taskAuthoringContractMaterial(policy: TaskAuthoringContractPolicy | undefined, id: string, version: number, identityPolicy?: TaskPrivateIdentityPolicy) {
+  if (identityPolicy && policy !== COMPLETE_TASK_AUTHORING_CONTRACT_POLICY) throw new Error("Task identity projection requires the complete authoring contract");
+  return policy === COMPLETE_TASK_AUTHORING_CONTRACT_POLICY ? { authoredOutputContract: getCompleteTaskAuthoringContract(id, version, identityPolicy) } : {};
 }
 
-export function taskAuthoringInstructions(legacy: string, policy: TaskAuthoringContractPolicy | undefined) {
-  return policy === COMPLETE_TASK_AUTHORING_CONTRACT_POLICY ? `${legacy}\nThe separately captured authoredOutputContract describes the complete {task,privateTask,design} value. Follow its exact identity constants, full privateTask.evaluationSpec schema and crossFieldConstraints. Python config.language is not the evaluation dialect; copy the exact execution profile values rather than choosing your own.` : legacy;
+export function taskAuthoringInstructions(legacy: string, policy: TaskAuthoringContractPolicy | undefined, identityPolicy?: TaskPrivateIdentityPolicy) {
+  const instructions = policy === COMPLETE_TASK_AUTHORING_CONTRACT_POLICY ? `${legacy}\nThe separately captured authoredOutputContract describes the complete {task,privateTask,design} value. Follow its exact identity constants, full privateTask.evaluationSpec schema and crossFieldConstraints. Python config.language is not the evaluation dialect; copy the exact execution profile values rather than choosing your own.` : legacy;
+  return identityPolicy ? `${instructions}\nFor fresh private identities follow authoredOutputContract.privateIdentityRules: evidenceGroupId is a typed local key or a listed existing group; rubric and test-set IDs are null placeholders. Never generate these UUIDs. The server assigns them before validation. Preserve intentional evidence grouping. calibrationSetId is null. All references to existing tasks, outcomes, sources and design remain the supplied UUIDs. Under this policy contract describes public/config/response schemas; private evaluatorData follows only the complete authoredOutputContract.` : instructions;
 }

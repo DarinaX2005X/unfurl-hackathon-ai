@@ -5,7 +5,9 @@ vi.mock("@/server/runs/observer", () => ({ requireObservedRun: async () => retry
 vi.mock("@/server/runs/enqueue", () => ({ enqueueAcceptedRun: async (_tx: unknown, input: unknown) => retryState.enqueued(input) }));
 vi.mock("@/server/runs/composition", () => ({ getRuntimeAdmission: vi.fn() }));
 import { projectSourcePassages } from "@/server/course-generation/source-passage-projection";
-import { SourceClaimsCheckpointSchema, SourceClaimsProposalSchema, COURSE_GENERATION_SCHEMA_DIGEST, COURSE_VALIDATION_POLICY_DIGEST } from "@/server/course-generation/checkpoints";
+import { AnySourceClaimsCheckpointSchema, SourceClaimsCheckpointSchema, SourceClaimsProposalSchema, ServerIdentitySourceClaimsCheckpointSchema, ServerIdentitySourceClaimsProposalSchema,
+  COURSE_GENERATION_SCHEMA_DIGEST, COURSE_VALIDATION_POLICY_DIGEST, COURSE_GENERATION_V2_SCHEMA_DIGEST, COURSE_VALIDATION_V2_POLICY_DIGEST } from "@/server/course-generation/checkpoints";
+import { projectSourceClaimIdentities } from "@/server/course-generation/source-claim-identities";
 import { advanceModuleResearch } from "@/server/course-generation/research-stages";
 import * as sourceSelection from "@/server/course-generation/source-selection";
 import { LegacyReaderCapabilitiesSchema } from "@/server/research/reader-capabilities";
@@ -108,7 +110,7 @@ function providerHarness(proposal: ReturnType<typeof extractionFixture>["proposa
   return { model: new OpenRouterModel({ apiKey: () => "synthetic-key", budget, gate, fetcher, rateCards }), fetcher, budget, receipts, saved: () => saved };
 }
 
-function commitHarness(model: ModelPort, legacyFailure = false, retryRunId?: string, options?:{captured:boolean;fixture:ReturnType<typeof extractionFixture>}) {
+function commitHarness(model: ModelPort, legacyFailure = false, retryRunId?: string, options?:{captured:boolean;fixture:ReturnType<typeof extractionFixture>;identities?:boolean}) {
   const test = options?.fixture??extractionFixture(), { binding, document, moduleId } = test;
   const prefix = `course/${moduleId}/research`, readStepId = id(810), hitId = id(811), searchStepId = id(812);
   const jobId = retryRunId ? stableExecutionId(retryRunId, "synthetic-job") : id(814);
@@ -151,10 +153,101 @@ function commitHarness(model: ModelPort, legacyFailure = false, retryRunId?: str
       return checkpoint;
     },
   } as unknown as RunContext;
-  return { ...test, context, readStepId, stepId, savedPassages, savedClaims, checkpoint: () => SourceClaimsCheckpointSchema.parse(checkpoint),
+  return { ...test, context, readStepId, stepId, savedPassages, savedClaims, checkpoint: () => AnySourceClaimsCheckpointSchema.parse(checkpoint),
     advance: () => advanceModuleResearch({ context, binding, index: new Map(), moduleId, model, research: () => { throw new Error("No source/provider calls here"); }, priorKnowledge: [],
-      ...(options?.captured?{sourceSelectionPolicy:"source-selection-v1" as const,readerCapabilities:currentReaderCapabilities()}:{}) }) };
+      ...(options?.captured?{sourceSelectionPolicy:"source-selection-v1" as const,readerCapabilities:currentReaderCapabilities()}:{}),
+      ...(options?.identities?{sourceClaimIdentityPolicy:"server-source-identities-v1" as const}:{}) }) };
 }
+
+function localIdentityFixture() {
+  const test = extractionFixture();
+  test.proposal.passages[1]!.id = "passage-two";
+  test.proposal.passages[2]!.id = "00000000-0000-4000-8000-not-valid-uuid";
+  test.proposal.claims[0]!.id = "claim-one";
+  test.proposal.claims[0]!.passageIds = test.proposal.passages.map(passage => passage.id);
+  return test;
+}
+
+it("projects extraction-local passage, claim and conflict references deterministically without changing trusted evidence", () => {
+  const test = localIdentityFixture(), raw = test.proposal;
+  raw.claims.push({ ...structuredClone(raw.claims[0]!), id: "claim-two", unresolvedConflicts: [{ description: "Different scope", otherClaimIds: ["claim-one"], blocking: false }] });
+  const before = JSON.stringify(raw), projected = projectSourceClaimIdentities(raw, id(813));
+  expect(SourceClaimsProposalSchema.safeParse(raw).success).toBe(false);
+  expect(ServerIdentitySourceClaimsProposalSchema.safeParse(raw).success).toBe(true);
+  expect(SourceClaimsProposalSchema.safeParse(projected).success).toBe(true);
+  expect(projectSourceClaimIdentities(raw, id(813))).toEqual(projected);
+  expect(projectSourceClaimIdentities(raw, id(814)).claims[0]!.id).not.toBe(projected.claims[0]!.id);
+  expect(projected.claims[0]!.passageIds).toEqual(projected.passages.map(passage => passage.id));
+  expect(projected.claims[1]!.unresolvedConflicts[0]!.otherClaimIds).toEqual([projected.claims[0]!.id]);
+  projected.passages.forEach((passage, index) => expect({ ...passage, id: raw.passages[index]!.id }).toEqual(raw.passages[index]));
+  expect({ ...projected.claims[0], id: raw.claims[0]!.id, passageIds: raw.claims[0]!.passageIds }).toEqual(raw.claims[0]);
+  expect(JSON.stringify(raw)).toBe(before);
+});
+
+it.each(["source ID", "outcome ID", "duplicate passage", "duplicate claim", "unknown passage", "unknown conflicting claim"])("rejects %s instead of repairing trusted or dangling identities", reason => {
+  const raw = localIdentityFixture().proposal;
+  if (reason === "source ID") raw.passages[0]!.sourceId = "source-label";
+  if (reason === "outcome ID") raw.claims[0]!.outcomeIds = ["outcome-label"];
+  if (reason === "duplicate passage") raw.passages[1]!.id = raw.passages[0]!.id;
+  if (reason === "duplicate claim") raw.claims.push(structuredClone(raw.claims[0]!));
+  if (reason === "unknown passage") raw.claims[0]!.passageIds = [id(999)];
+  if (reason === "unknown conflicting claim") raw.claims[0]!.unresolvedConflicts = [{ description: "Unknown", otherClaimIds: [id(999)], blocking: false }];
+  expect(() => projectSourceClaimIdentities(raw, id(813))).toThrow();
+});
+
+it("commits server identities and exact quotes while preserving the raw paid response and database passage mapping", async () => {
+  const data = localIdentityFixture(), before = JSON.stringify(data.proposal);
+  const generateStructured = vi.fn<(request: unknown) => Promise<{ data: typeof data.proposal }>>(async () => ({ data: data.proposal }));
+  const test = commitHarness({ generateStructured } as unknown as ModelPort, false, undefined, { captured: true, identities: true, fixture: data });
+  vi.mocked(PostgresResearchRepository.prototype.savePassage).mockImplementationOnce(async (_tx, passage) => ({ ...passage, id: id(777) }));
+  await expect(test.advance()).resolves.toBeNull();
+  const checkpoint = ServerIdentitySourceClaimsCheckpointSchema.parse(test.checkpoint());
+  expect(checkpoint.rawProposal).toEqual(data.proposal);
+  expect(checkpoint.proposal).toEqual(projectSourceClaimIdentities(data.proposal, test.stepId));
+  expect(checkpoint.passages.map(passage => passage.end)).toEqual([369, 202, 218]);
+  expect(checkpoint.claims[0]!.passageIds).toEqual(checkpoint.passages.map(passage => passage.id));
+  expect(checkpoint.claims[0]!.passageIds[0]).toBe(id(777));
+  expect(JSON.stringify(data.proposal)).toBe(before);
+  expect(generateStructured.mock.calls[0]![0]).toMatchObject({ instructionVersion: "course-source-identities-v1", schema: ServerIdentitySourceClaimsProposalSchema });
+});
+
+it.each(["foreign source", "foreign outcome", "absent quote", "unknown block"])("still rejects %s after server identity projection", async reason => {
+  const data = localIdentityFixture();
+  if (reason === "foreign source") data.proposal.passages[0]!.sourceId = id(999);
+  if (reason === "foreign outcome") data.proposal.claims[0]!.outcomeIds = [id(999)];
+  if (reason === "absent quote") data.proposal.passages[0]!.quote = "Absent from the source";
+  if (reason === "unknown block") data.proposal.passages[0]!.blockId = "unknown-block";
+  const test = commitHarness({ generateStructured: vi.fn(async () => ({ data: data.proposal })) } as unknown as ModelPort, false, undefined,
+    { captured: true, identities: true, fixture: data });
+  await expect(test.advance()).rejects.toThrow("provider.invalid_output");
+  expect(test.savedClaims).toHaveLength(0);
+});
+
+it("does not opt an existing capture into relaxed producer IDs", async () => {
+  const data = localIdentityFixture(), generateStructured = vi.fn<(request: unknown) => Promise<{ data: typeof data.proposal }>>(async () => ({ data: data.proposal }));
+  const test = commitHarness({ generateStructured } as unknown as ModelPort, false, undefined, { captured: true, fixture: data });
+  await expect(test.advance()).rejects.toThrow();
+  expect(test.savedPassages).toHaveLength(0);
+  expect(generateStructured.mock.calls[0]![0]).toMatchObject({ instructionVersion: "course-generation-v1", schema: SourceClaimsProposalSchema });
+});
+
+it("reuses a successful legacy source extraction without a new paid request", async () => {
+  const data = extractionFixture(), generateStructured = vi.fn();
+  const test = commitHarness({ generateStructured } as unknown as ModelPort, false, undefined, { captured: true, identities: true, fixture: data });
+  const legacy = SourceClaimsCheckpointSchema.parse({ kind: "course.source.claims", moduleId: data.moduleId, operationId: id(831), sourceReadStepIds: [test.readStepId],
+    proposal: data.proposal, passageProjection: "exact-quote-v1", passages: projectSourcePassages(data.document, data.proposal.passages),
+    claims: [{ ...data.proposal.claims[0]!, ownerId: data.binding.course.ownerId, runStepId: id(813), createdAt: "2026-10-26T00:00:00.000Z" }] });
+  const load = vi.mocked(stages.loadStage).getMockImplementation()!;
+  vi.mocked(stages.loadStage).mockImplementation(async (...args) => {
+    const key = args[3];
+    if (key === `course/${data.moduleId}/research/claims/${id(811)}`) return { id: id(813), inputDigest: digest, result: legacy } as never;
+    if (key === `course/${data.moduleId}/research/knowledge`) throw new Error("Reached knowledge after reusing extraction");
+    return load(...args);
+  });
+  await expect(test.advance()).rejects.toThrow("Reached knowledge after reusing extraction");
+  expect(generateStructured).not.toHaveBeenCalled();
+  expect(test.savedPassages).toHaveLength(0); expect(test.savedClaims).toHaveLength(0);
+});
 
 function manyPassagesFixture(){
   const test=extractionFixture();
@@ -252,17 +345,23 @@ it.each(["foreign source", "foreign outcome", "unknown passage reference", "dupl
   expect(test.savedClaims).toHaveLength(0);
 });
 
-function evidenceHarness(marked = true) {
-  const test = extractionFixture(), { binding, document, proposal, data, moduleId } = test;
+function evidenceHarness(marked = true, identities = false) {
+  const test = identities ? localIdentityFixture() : extractionFixture(), { binding, document, data, moduleId } = test;
   const readStepId = id(810), extractionStepId = id(813), knowledgeStepId = id(840);
+  const rawProposal = structuredClone(test.proposal);
+  const proposal = identities ? projectSourceClaimIdentities(rawProposal, extractionStepId) : test.proposal;
   const passages = projectSourcePassages(document, proposal.passages);
   if (!marked) proposal.passages = structuredClone(passages);
   const claim: SourceClaim = { ...proposal.claims[0]!, ownerId: binding.course.ownerId, runStepId: extractionStepId, createdAt: "2026-10-26T00:00:00.000Z" };
-  const extraction = SourceClaimsCheckpointSchema.parse({ kind: "course.source.claims", moduleId, operationId: id(831), sourceReadStepIds: [readStepId],
-    proposal, claims: [claim], passages, ...(marked ? { passageProjection: "exact-quote-v1" } : {}) });
+  const extraction = AnySourceClaimsCheckpointSchema.parse({ kind: identities ? "course.source.claims.v2" : "course.source.claims", moduleId, operationId: id(831), sourceReadStepIds: [readStepId],
+    proposal, claims: [claim], passages, ...(marked ? { passageProjection: "exact-quote-v1" } : {}), ...(identities ? { rawProposal } : {}) });
+  const knowledge = structuredClone(data.knowledge[0]!);
+  if (identities) for (const outcome of knowledge.outcomes) for (const evidence of [...outcome.concepts, ...outcome.misconceptions]) evidence.claimIds = [claim.id];
   const records = new Map<string, unknown>([[readStepId, { kind: "course.source.read", moduleId, approvalDigest: digest, sourceId: document.id, contentDigest: document.contentDigest }],
-    [extractionStepId, extraction], [knowledgeStepId, { kind: "course.module.knowledge", knowledge: data.knowledge[0]!, operationId: id(841), sourceReadStepIds: [readStepId] }]]);
-  const providers = new Map([[id(831), { stepId: extractionStepId, data: structuredClone(proposal) }], [id(841), { stepId: knowledgeStepId, data: data.knowledge[0]! }]]);
+    [extractionStepId, extraction], [knowledgeStepId, { kind: "course.module.knowledge", knowledge, operationId: id(841), sourceReadStepIds: [readStepId] }]]);
+  const providers = new Map([[id(831), { stepId: extractionStepId, data: structuredClone(identities ? rawProposal : proposal) }], [id(841), { stepId: knowledgeStepId, data: knowledge }]]);
+  const capturedPolicy: Record<string, unknown> = { kind: "course.generation.policy", version: "course-generation-batch-v2", batchSize: 5, maxOutputTokens: 16384,
+    approvalDigest: digest, sourceClaimIdentityPolicy: "server-source-identities-v1" };
   const rateCard = { policyVersion: CANDIDATE_MODEL_POLICY, model: candidatePolicy.model, provider: candidatePolicy.provider };
   const tx = { query: vi.fn(async (sql: string, values: unknown[]) => {
     const provider = providers.get(String(values[0])), result = records.get(String(values[0]));
@@ -272,8 +371,14 @@ function evidenceHarness(marked = true) {
     else if (sql.includes("FROM unfurl.ai_provider_operations o JOIN")) row = provider ? { operation_id: values[0], run_step_id: provider.stepId,
       input_digest: digest, request_digest: digest, response_digest: digest, provider_request_id: "synthetic-only", rate_card_digest: jsonDigest(rateCard),
       state: "settled", usage: {}, result: { model: candidatePolicy.model, provider: candidatePolicy.providerName, failure: null, finishReason: "stop", content: JSON.stringify(provider.data) } } : undefined;
-    else row = result ? { id: values[0], input_digest: digest, result_reference: result, schema_digest: COURSE_GENERATION_SCHEMA_DIGEST,
-      capability_digest: getCapabilityCatalogDigest(), validation_policy_digest: COURSE_VALIDATION_POLICY_DIGEST, approval_digest: digest, generation_policy: null } : undefined;
+    else {
+      const newProtocol = identities && result === extraction;
+      row = result ? { id: values[0], input_digest: digest, result_reference: result,
+        schema_digest: newProtocol ? COURSE_GENERATION_V2_SCHEMA_DIGEST : COURSE_GENERATION_SCHEMA_DIGEST,
+        capability_digest: getCapabilityCatalogDigest(), validation_policy_digest: newProtocol ? COURSE_VALIDATION_V2_POLICY_DIGEST : COURSE_VALIDATION_POLICY_DIGEST,
+        approval_digest: digest, generation_policy: newProtocol ? { result: capturedPolicy, schema: COURSE_GENERATION_SCHEMA_DIGEST,
+          validationPolicy: COURSE_VALIDATION_POLICY_DIGEST, capability: getCapabilityCatalogDigest(), approval: digest } : null } : undefined;
+    }
     return { rows: row ? [row] : [] };
   }) } as unknown as DbTransaction;
   vi.spyOn(PostgresResearchRepository.prototype, "getSource").mockResolvedValue(document);
@@ -282,7 +387,7 @@ function evidenceHarness(marked = true) {
   });
   vi.spyOn(PostgresCurriculumResearchRepository.prototype, "getClaim").mockImplementation(async (_tx, ownerId, claimId) =>
     ownerId === claim.ownerId && claimId === claim.id ? claim : null);
-  return { ...test, extraction, passages, providers, load: () => new GenerationEvidenceRepository().loadKnowledge(tx, binding, knowledgeStepId) };
+  return { ...test, extraction, passages, providers, capturedPolicy, load: () => new GenerationEvidenceRepository().loadKnowledge(tx, binding, knowledgeStepId) };
 }
 
 it.each([true, false])("verifies source-bound evidence for marked=%s while retaining the original paid proposal", async marked => {
@@ -300,5 +405,28 @@ it.each(["canonical coordinates", "raw proposal", "source text", "wrong source r
   if (mutation === "raw proposal") test.extraction.proposal.passages[0]!.quote = "Forged quote";
   if (mutation === "source text") { test.document.blocks[0]!.text = "Changed source"; test.document.contentDigest = jsonDigest(test.document.blocks, 2 * 1024 * 1024); }
   if (mutation === "wrong source read") test.extraction.sourceReadStepIds = [id(999)];
+  await expect(test.load()).rejects.toThrow("provider.invalid_output");
+});
+
+it("verifies the exact raw receipt before using server-assigned source identities", async () => {
+  const test = evidenceHarness(true, true), before = JSON.stringify(test.extraction);
+  const loaded = await test.load();
+  expect(loaded.facts.claims[0]!.id).toBe(projectSourceClaimIdentities(test.proposal, id(813)).claims[0]!.id);
+  expect(loaded.facts.passages.map(passage => passage.end)).toEqual([369, 202, 218]);
+  expect(JSON.stringify(test.extraction)).toBe(before);
+});
+
+it.each(["raw response", "raw and projection", "projected identity", "projection step", "canonical coordinates", "missing capture"])("rejects changed %s for source identity checkpoints", async mutation => {
+  const test = evidenceHarness(true, true);
+  if (test.extraction.kind !== "course.source.claims.v2") throw new Error("Missing identity checkpoint");
+  if (mutation === "raw response") test.extraction.rawProposal.claims[0]!.text = "Rewritten claim";
+  if (mutation === "raw and projection") {
+    test.extraction.rawProposal.claims[0]!.text = "Rewritten claim";
+    test.extraction.proposal = projectSourceClaimIdentities(test.extraction.rawProposal, id(813));
+  }
+  if (mutation === "projected identity") test.extraction.proposal.claims[0]!.id = id(999);
+  if (mutation === "projection step") test.extraction.proposal = projectSourceClaimIdentities(test.extraction.rawProposal, id(999));
+  if (mutation === "canonical coordinates") test.extraction.passages[0]!.end = 341;
+  if (mutation === "missing capture") delete test.capturedPolicy.sourceClaimIdentityPolicy;
   await expect(test.load()).rejects.toThrow("provider.invalid_output");
 });

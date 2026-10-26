@@ -24,6 +24,8 @@ export const CourseGenerationPolicyCheckpointSchema = z.object({ kind: z.literal
   planPagePolicy: z.enum(["bounded-plan-pages-v1", "server-plan-identities-v2"]).optional(),
   knowledgeCoveragePolicy: z.literal("approved-scope-v1").optional(),
   taskAuthoringContractPolicy: z.literal("complete-task-contract-v1").optional(),
+  taskIdentityPolicy: z.literal("task-private-identities-v1").optional(),
+  sourceClaimIdentityPolicy: z.literal("server-source-identities-v1").optional(),
   modelPolicy: ModelPolicySchema.optional(),
   searchPolicy: SearchPolicySchema.optional(),
   readerCapabilities: ReaderCapabilitiesSchema.optional(),
@@ -115,9 +117,27 @@ export const SourceClaimsProposalSchema = z.object({
   passages: z.array(PassageSchema).min(1),
   claims: z.array(SourceClaimSchema.omit({ ownerId: true, runStepId: true, createdAt: true })).min(1),
 }).strict();
+const SourceLocalIdSchema = z.string().min(1).max(200);
+const SourceClaimProposalSchema = SourceClaimsProposalSchema.shape.claims.element;
+/** Only identities created by this extraction are labels; trusted source/outcome IDs stay strict. */
+export const ServerIdentitySourceClaimsProposalSchema = SourceClaimsProposalSchema.extend({
+  passages: z.array(PassageSchema.safeExtend({ id: SourceLocalIdSchema })).min(1),
+  claims: z.array(SourceClaimProposalSchema.extend({ id: SourceLocalIdSchema,
+    passageIds: z.array(SourceLocalIdSchema).min(1).max(64),
+    unresolvedConflicts: z.array(SourceClaimProposalSchema.shape.unresolvedConflicts.element.extend({
+      otherClaimIds: z.array(SourceLocalIdSchema),
+    })).max(32),
+  })).min(1),
+});
 export const SourceClaimsCheckpointSchema = z.object({
   kind: z.literal("course.source.claims"), moduleId: IdSchema, sourceReadStepIds: z.array(IdSchema).min(1),
   operationId: IdSchema, proposal: SourceClaimsProposalSchema,
   passageProjection: z.literal("exact-quote-v1").optional(),
   claims: z.array(SourceClaimSchema).min(1), passages: z.array(PassageSchema).min(1),
 }).strict();
+export const ServerIdentitySourceClaimsCheckpointSchema = SourceClaimsCheckpointSchema.extend({
+  kind: z.literal("course.source.claims.v2"),
+  rawProposal: ServerIdentitySourceClaimsProposalSchema,
+  passageProjection: z.literal("exact-quote-v1"),
+});
+export const AnySourceClaimsCheckpointSchema = z.union([SourceClaimsCheckpointSchema, ServerIdentitySourceClaimsCheckpointSchema]);

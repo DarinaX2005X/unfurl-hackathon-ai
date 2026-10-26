@@ -21,6 +21,7 @@ import { checkpointJson, jsonCheckpointSchema, loadStage, mappedModelStageV2, pu
 import type { ModuleKnowledge } from "./contracts";
 import type { ModulePlan } from "./planning";
 import { taskAuthoringContractMaterial, taskAuthoringInstructions, type TaskAuthoringContractPolicy } from "./authored-output-contract";
+import { TaskIdentityProposalSchema, projectTaskIdentityBatch, taskIdentityMaterial, type TaskPrivateIdentityPolicy } from "./task-authoring-identities";
 
 export const RejectedTaskSchema = z.object({ kind: z.literal("course.task.rejected"), authored: AuthoredTaskSchema,
   authoringOperationId: IdSchema, reason: z.string(), modelProof: BatchItemProofSchema.optional() }).strict();
@@ -99,8 +100,17 @@ export async function advanceModelBatch<T, R>(input: BatchContext & {
 
 const AUTHOR_INSTRUCTIONS = "Author this exact planned task and private evaluator. Preserve task ID, chosen mechanic/version, outcome IDs, design, assessmentRole and canonical criterion mappings. taskVersion=1. Set privateTask.assessment.role exactly to slot.assessmentRole: optional practice, diagnostic and challenge tasks must remain optional. Use actual contract JSON schemas; no invented fields. All private hints, expected answers, hidden cases and rubrics belong only in privateTask. Build nontrivial assessment of the learner action, accept valid alternatives and avoid answer leakage. Optional tasks must address their particular learning need with a genuinely different problem/context, not a cosmetic rewrite of existingTaskContexts. Give every independent optional assessment a new evidenceGroupId distinct from all existing material. Include real sourceClaimIds supporting every outcome. For source investigation, copy selected canonicalSourceEvidence.sources objects exactly into public/private source snapshots, including URL, title, retrieval timestamp, content digest and complete passage list. Never invent or rewrite source metadata. Claims from unavailable source snapshots cannot support a task. Return a complete corrected candidate when corrections are supplied.";
 const CASE_INSTRUCTIONS = "Independently design adversarial evaluator cases: a substantively valid response, a distinct valid alternative, and a meaningful field-valid but behaviorally wrong response. Include boundary/trap cases where helpful. Malformed-only negatives are insufficient. For a truly unique deterministic response, supply a replayable alternativeSpaceProof instead of an invented alternative. For activity tasks include action plans with real action types; receipt fields start null or empty and are bound by the server. Never invent activity observations or execution receipts.";
+function candidateMechanicContract(id: string, version: number, identityPolicy?: TaskPrivateIdentityPolicy) {
+  const contract = getMechanicAuthoringContract(id, version);
+  if (!identityPolicy) return contract;
+  // The complete raw contract is the single private-output authority for this capture.
+  const { evaluatorDataSchema: _privateSchema, ...publicContract } = contract;
+  void _privateSchema; return publicContract;
+}
 type CandidateBatchInput = BatchContext & { prefix: string; batchKey: string; slots: ModulePlan["tasks"]; attempt: number;
   taskAuthoringContractPolicy?: TaskAuthoringContractPolicy;
+  taskIdentityPolicy?: TaskPrivateIdentityPolicy;
+  passedPreviousTasks?: Pick<AuthoredTask, "task" | "privateTask">[];
   previousTasks: Pick<AuthoredTask, "task" | "privateTask">[]; knowledge: ModuleKnowledge; knowledgeStepId: string; facts: CurriculumEvidenceFacts; correction: unknown };
 
 export function assertIndependentOptionalCandidate(authored: AuthoredTask, peers: readonly Pick<AuthoredTask, "task" | "privateTask">[]): void {
@@ -110,15 +120,14 @@ export function assertIndependentOptionalCandidate(authored: AuthoredTask, peers
     throw new Error("Optional material must use a new problem/context and evidence group; changing only task identity is not independent assessment.");
 }
 export async function advanceCandidateBatch(input: CandidateBatchInput) {
-  return advanceModelBatch({ ...input, key: `${input.batchKey}/candidate`, batchKind: "candidate", schema: AuthoredTaskSchema,
-    resultSchema: CandidateResultSchema, instructions: taskAuthoringInstructions(AUTHOR_INSTRUCTIONS, input.taskAuthoringContractPolicy),
-    items: input.slots.map((slot) => ({ itemId: slot.id, key: `${input.prefix}/task/${slot.id}/${input.attempt}/candidate`,
+  const items = input.slots.map((slot) => ({ itemId: slot.id, key: `${input.prefix}/task/${slot.id}/${input.attempt}/candidate`,
       material: checkpointJson({ slot, contentLanguage: input.binding.draft.contentLanguage, approvalDigest: input.binding.approval.contentDigest, knowledge: input.knowledge,
-        contract: getMechanicAuthoringContract(slot.mechanicId, slot.mechanicVersion), claims: input.facts.claims, passages: input.facts.passages,
-        ...taskAuthoringContractMaterial(input.taskAuthoringContractPolicy, slot.mechanicId, slot.mechanicVersion),
+        contract: candidateMechanicContract(slot.mechanicId, slot.mechanicVersion, input.taskIdentityPolicy), claims: input.facts.claims, passages: input.facts.passages,
+        ...taskAuthoringContractMaterial(input.taskAuthoringContractPolicy, slot.mechanicId, slot.mechanicVersion, input.taskIdentityPolicy),
+        ...taskIdentityMaterial(input.taskIdentityPolicy, input.passedPreviousTasks),
         canonicalSourceEvidence: projectCanonicalResearchSources(input.facts), existingTaskContexts: input.previousTasks.filter((entry) => entry.task.outcomeIds.some((id) => slot.outcomeIds.includes(id)))
-          .map((entry) => ({ task: entry.task, assessment: entry.privateTask.assessment })), correction: input.correction }) })),
-    async commit(_tx, authored, authoringOperationId, modelProof, peers) {
+          .map((entry) => ({ task: entry.task, assessment: entry.privateTask.assessment })), correction: input.correction }) }));
+  const commitAuthored = (authored: AuthoredTask, authoringOperationId: string, modelProof: BatchProof, peers: AuthoredTask[]) => {
       const slot = input.slots.find((entry) => entry.id === modelProof.itemId)!;
       try {
         const mapping = (values: { outcomeId: string; criterionIds: string[] }[]) => values.map((value) => ({ outcomeId: value.outcomeId,
@@ -132,7 +141,17 @@ export async function advanceCandidateBatch(input: CandidateBatchInput) {
         assertIndependentOptionalCandidate(authored, [...input.previousTasks, ...peers]);
         return { kind: "course.task.candidate" as const, moduleId: input.moduleId, knowledgeStepId: input.knowledgeStepId, candidate, authored, authoringOperationId, modelProof };
       } catch (error) { return { kind: "course.task.rejected" as const, authored, authoringOperationId, modelProof, reason: error instanceof Error ? error.message : "Invalid task" }; }
+  };
+  const batch = { ...input, key: `${input.batchKey}/candidate`, batchKind: "candidate" as const, items,
+    resultSchema: CandidateResultSchema, instructions: taskAuthoringInstructions(AUTHOR_INSTRUCTIONS, input.taskAuthoringContractPolicy, input.taskIdentityPolicy) };
+  if (input.taskIdentityPolicy) return advanceModelBatch({ ...batch, schema: TaskIdentityProposalSchema,
+    async commit(_tx, _proposal, operationId, proof, peers) {
+      const projected = projectTaskIdentityBatch(proof.batchStepId, { batchKind: "candidate", requestedIds: input.slots.map(({ id }) => id), items },
+        peers.map((value, index) => ({ itemId: input.slots[index]!.id, value })));
+      return commitAuthored(projected[proof.itemIndex]!.value, operationId, proof, projected.map(({ value }) => value));
     } });
+  return advanceModelBatch({ ...batch, schema: AuthoredTaskSchema,
+    async commit(_tx, authored, operationId, proof, peers) { return commitAuthored(authored, operationId, proof, peers); } });
 }
 
 /** A singleton repair must remain distinct from future candidates already authored in its original group. */

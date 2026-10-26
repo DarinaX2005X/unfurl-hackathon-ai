@@ -19,7 +19,7 @@ import { assessKnowledgeCoverageReview, createKnowledgeCoverageInput, KnowledgeC
 import {
   AuthoredTaskSchema, COURSE_GENERATION_SCHEMA_DIGEST, COURSE_VALIDATION_POLICY_DIGEST,
   AnyModuleKnowledgeCheckpointSchema, ApprovedKnowledgeProposalSchema, ApprovedKnowledgeSufficientProposalSchema, ApprovedKnowledgeCommentaryResponseSchema,
-  ApprovedKnowledgeNarrationProofSchema, SourceClaimsCheckpointSchema, SourceClaimsProposalSchema,
+  ApprovedKnowledgeNarrationProofSchema, AnySourceClaimsCheckpointSchema, SourceClaimsProposalSchema, ServerIdentitySourceClaimsProposalSchema,
   SourceReadCheckpointSchema, TaskCandidateCheckpointSchema, COURSE_GENERATION_V2_SCHEMA_DIGEST, COURSE_VALIDATION_V2_POLICY_DIGEST,
   COURSE_GENERATION_POLICY_KEY, CourseGenerationPolicyCheckpointSchema, ModelBatchCheckpointSchema, batchResponseSchema,
   KnowledgeCoverageCheckpointSchema,
@@ -28,7 +28,9 @@ import {
 import { ModuleKnowledgeSchema, type ModuleKnowledge } from "./contracts";
 import { approvedResearchFactsDigest, assertBatchItemProjection } from "./batch-provenance";
 import { projectSourcePassages } from "./source-passage-projection";
+import { projectSourceClaimIdentities } from "./source-claim-identities";
 import { validateCompleteSourceReadChains,type SourceReadEvidence } from "./source-read-chain";
+import { TASK_PRIVATE_IDENTITY_POLICY, TaskIdentityProposalSchema, projectTaskIdentityBatch, usesTaskIdentityProjection } from "./task-authoring-identities";
 
 const StepRowSchema = z.object({ id: IdSchema, input_digest: DigestSchema, result_reference: z.unknown(),
   schema_digest: DigestSchema, capability_digest: DigestSchema, validation_policy_digest: DigestSchema, approval_digest: DigestSchema,
@@ -109,9 +111,11 @@ export async function loadGenerationStep<T>(tx: DbTransaction, binding: Approved
     "course.module.knowledge.checked.v1"].includes(versioned.data.kind ?? "");
   const narratedApprovedKnowledge = versioned.success && versioned.data.narration !== undefined;
   const sourceRead = versioned.success && versioned.data.kind === "course.source.read";
+  const serverIdentitySourceClaims = versioned.success && versioned.data.kind === "course.source.claims.v2";
+  const serverIdentityTasks = versioned.success && versioned.data.kind === "course.model.batch.v2" && usesTaskIdentityProjection(versioned.data.material);
   const partsProof = sourceRead && versioned.data.readProof !== undefined;
   const partsAvailability = versioned.success && versioned.data.kind === "course.source.availability.v2";
-  if ((boundedPlan || serverIdentityPlan || coveredKnowledge || narratedApprovedKnowledge || partsProof || partsAvailability) && !newProtocol) return invalid();
+  if ((boundedPlan || serverIdentityPlan || serverIdentitySourceClaims || coveredKnowledge || narratedApprovedKnowledge || partsProof || partsAvailability) && !newProtocol) return invalid();
   let knowledgeCoveragePolicy: "approved-scope-v1" | undefined;
   if (newProtocol) {
     const policy = z.object({ result: CourseGenerationPolicyCheckpointSchema, schema: z.literal(COURSE_GENERATION_SCHEMA_DIGEST),
@@ -119,6 +123,8 @@ export async function loadGenerationStep<T>(tx: DbTransaction, binding: Approved
     if (!policy.success || policy.data.result.approvalDigest !== binding.approval.contentDigest) return invalid();
     if (boundedPlan && policy.data.result.planPagePolicy !== "bounded-plan-pages-v1" ||
         serverIdentityPlan && policy.data.result.planPagePolicy !== "server-plan-identities-v2" ||
+        serverIdentitySourceClaims && policy.data.result.sourceClaimIdentityPolicy !== "server-source-identities-v1" ||
+        serverIdentityTasks && policy.data.result.taskIdentityPolicy !== TASK_PRIVATE_IDENTITY_POLICY ||
         (coveredKnowledge || narratedApprovedKnowledge) && policy.data.result.knowledgeCoveragePolicy !== "approved-scope-v1") return invalid();
     if (sourceRead && partsProof !== (policy.data.result.sourceSelectionPolicy === "source-selection-v2") ||
         partsAvailability && policy.data.result.sourceSelectionPolicy !== "source-selection-v2") return invalid();
@@ -169,13 +175,26 @@ export async function verifyStoredBatchItem<T>(tx: DbTransaction, binding: Appro
   if (proof.batchStepId === childStep.id) return invalid();
   const parent = await loadGenerationStep(tx, binding, proof.batchStepId, ModelBatchCheckpointSchema);
   if (parent.result.operationId !== operationId || parent.inputDigest !== jsonDigest(parent.result.material)) return invalid();
-  const responseSchema = batchResponseSchema(itemSchema), response = responseSchema.parse({ items: parent.result.items });
-  const modelId = await verifyStoredModelDataAndIdentity(tx, parent, operationId, responseSchema, response);
+  const verified = await (async () => {
+    if (batchKind === "candidate" && usesTaskIdentityProjection(parent.result.material)) {
+      const responseSchema = batchResponseSchema(TaskIdentityProposalSchema), response = responseSchema.parse({ items: parent.result.items });
+      const modelId = await verifyStoredModelDataAndIdentity(tx, parent, operationId, responseSchema, response);
+      const raw = response.items[proof.itemIndex];
+      if (!raw || raw.itemId !== proof.itemId || taskDigest(raw.value) !== proof.itemDigest) return invalid();
+      const items = projectTaskIdentityBatch(parent.id, parent.result.material, response.items);
+      // The saved proof binds the raw paid item. Only this deterministic projection
+      // supplies a derived digest for the unchanged canonical slot/reference checks.
+      return { modelId, items, projectionProof: { ...proof, itemDigest: taskDigest(items[proof.itemIndex]!.value) } };
+    }
+    const responseSchema = batchResponseSchema(itemSchema), response = responseSchema.parse({ items: parent.result.items });
+    return { modelId: await verifyStoredModelDataAndIdentity(tx, parent, operationId, responseSchema, response),
+      items: response.items, projectionProof: proof };
+  })();
   const child = z.object({ moduleId: IdSchema.optional(), knowledgeStepId: IdSchema.optional(), candidateStepId: IdSchema.optional(), candidateDigest: DigestSchema.optional(),
     material: z.unknown().optional() }).passthrough().parse(childStep.result);
   const candidateDigest = child.candidateDigest ?? (batchKind === "review" ? z.object({ candidateDigest: DigestSchema }).parse(child.material).candidateDigest : undefined);
-  const projection = assertBatchItemProjection({ proof, batchKind: parent.result.batchKind, expectedKind: batchKind,
-    material: parent.result.material, items: response.items, childInputDigest: childStep.inputDigest,
+  const projection = assertBatchItemProjection({ proof: verified.projectionProof, batchKind: parent.result.batchKind, expectedKind: batchKind,
+    material: parent.result.material, items: verified.items, childInputDigest: childStep.inputDigest,
     approvalDigest: binding.approval.contentDigest, expected, candidateStepId: child.candidateStepId, candidateDigest });
   if (!binding.draft.modules.some((module) => module.id === projection.material.moduleId)) return invalid();
   if (batchKind === "candidate") {
@@ -189,7 +208,7 @@ export async function verifyStoredBatchItem<T>(tx: DbTransaction, binding: Appro
     if (candidate.result.candidate.task.id !== proof.itemId || candidate.result.candidate.candidateDigest !== candidateDigest ||
         candidate.result.moduleId !== projection.material.moduleId || candidate.result.authoringOperationId === operationId) return invalid();
   }
-  return modelId;
+  return verified.modelId;
 }
 
 export async function verifyStoredModelItem<T>(tx: DbTransaction, binding: ApprovedBuildBinding, step: StoredGenerationStep<unknown>,
@@ -242,9 +261,12 @@ export class GenerationEvidenceRepository {
       if (!claim) return invalid();
       if (!approvedClaims.has(claim.id)) {
         if (!claim.runStepId) return invalid();
-        const extraction = await loadGenerationStep(tx, binding, claim.runStepId, SourceClaimsCheckpointSchema);
+        const extraction = await loadGenerationStep(tx, binding, claim.runStepId, AnySourceClaimsCheckpointSchema);
         if (extraction.result.moduleId !== knowledge.moduleId || extraction.result.sourceReadStepIds.some((id) => !readStepIds.includes(id))) return invalid();
-        await verifyStoredModelData(tx, extraction, extraction.result.operationId, SourceClaimsProposalSchema, extraction.result.proposal);
+        if (extraction.result.kind === "course.source.claims.v2") {
+          if (taskDigest(projectSourceClaimIdentities(extraction.result.rawProposal, extraction.id)) !== taskDigest(extraction.result.proposal)) return invalid();
+          await verifyStoredModelData(tx, extraction, extraction.result.operationId, ServerIdentitySourceClaimsProposalSchema, extraction.result.rawProposal);
+        } else await verifyStoredModelData(tx, extraction, extraction.result.operationId, SourceClaimsProposalSchema, extraction.result.proposal);
         const savedClaim = extraction.result.claims.find((item) => item.id === claim.id);
         const proposed = extraction.result.proposal.claims.find((item) => item.id === claim.id);
         if (!savedClaim || !proposed || taskDigest(savedClaim) !== taskDigest(claim)) return invalid();
